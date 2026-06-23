@@ -97,7 +97,8 @@ pub fn all_reduce(
     ctx: &DistributedContext,
     gradients: &mut HashMap<String, Vec<f32>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if ctx.world_size <= 1 {
+    if ctx.world_size <= 1
+    {
         return Ok(());
     }
     let g = ctx.group.as_ref().ok_or_else(|| {
@@ -107,7 +108,8 @@ pub fn all_reduce(
     // Phase 1 — publish this rank's contribution for every key.
     {
         let mut slots = g.slots.lock().unwrap();
-        for (k, v) in gradients.iter() {
+        for (k, v) in gradients.iter()
+        {
             let entry = slots
                 .entry(k.clone())
                 .or_insert_with(|| vec![None; g.world_size]);
@@ -120,20 +122,24 @@ pub fn all_reduce(
     {
         let slots = g.slots.lock().unwrap();
         let inv = 1.0f32 / g.world_size as f32;
-        for (k, v) in gradients.iter_mut() {
+        for (k, v) in gradients.iter_mut()
+        {
             let contribs = slots
                 .get(k)
                 .ok_or_else(|| "workers disagree on the gradient keys".to_string())?;
             let mut acc = vec![0.0f32; v.len()];
-            for slot in contribs.iter() {
+            for slot in contribs.iter()
+            {
                 let c = slot
                     .as_ref()
                     .ok_or_else(|| "a rank did not contribute this key".to_string())?;
-                for (a, &x) in acc.iter_mut().zip(c) {
+                for (a, &x) in acc.iter_mut().zip(c)
+                {
                     *a += x;
                 }
             }
-            for (dst, &a) in v.iter_mut().zip(&acc) {
+            for (dst, &a) in v.iter_mut().zip(&acc)
+            {
                 *dst = a * inv;
             }
         }
@@ -141,7 +147,8 @@ pub fn all_reduce(
     g.barrier.wait();
 
     // Phase 3 — rank 0 clears the round once everyone has finished reading.
-    if ctx.rank == 0 {
+    if ctx.rank == 0
+    {
         g.slots.lock().unwrap().clear();
     }
     g.barrier.wait();
@@ -150,7 +157,8 @@ pub fn all_reduce(
 
 /// Block until every worker in the group has arrived.
 pub fn barrier(ctx: &DistributedContext) -> Result<(), Box<dyn std::error::Error>> {
-    if ctx.world_size <= 1 {
+    if ctx.world_size <= 1
+    {
         return Ok(());
     }
     let g = ctx
@@ -167,18 +175,24 @@ pub fn broadcast(
     key: &str,
     value: &mut Vec<f32>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if ctx.world_size <= 1 {
+    if ctx.world_size <= 1
+    {
         return Ok(());
     }
     let g = ctx
         .group
         .as_ref()
         .ok_or_else(|| "multi-worker broadcast needs a group context".to_string())?;
-    if ctx.rank == 0 {
-        g.bcast.lock().unwrap().insert(key.to_string(), value.clone());
+    if ctx.rank == 0
+    {
+        g.bcast
+            .lock()
+            .unwrap()
+            .insert(key.to_string(), value.clone());
     }
     g.barrier.wait();
-    if ctx.rank != 0 {
+    if ctx.rank != 0
+    {
         let b = g.bcast.lock().unwrap();
         *value = b
             .get(key)
@@ -186,7 +200,8 @@ pub fn broadcast(
             .clone();
     }
     g.barrier.wait();
-    if ctx.rank == 0 {
+    if ctx.rank == 0
+    {
         g.bcast.lock().unwrap().clear();
     }
     g.barrier.wait();
@@ -241,7 +256,8 @@ mod tests {
             .collect();
         let results: Vec<Vec<f32>> = handles.into_iter().map(|h| h.join().unwrap()).collect();
         // mean of [1,2,3,4] = 2.5 ; mean of [2,4,6,8] = 5.0 — every worker agrees.
-        for r in &results {
+        for r in &results
+        {
             assert_eq!(r, &vec![2.5, 5.0]);
         }
     }
@@ -255,7 +271,8 @@ mod tests {
                 thread::spawn(move || {
                     let r = ctx.rank as f32;
                     let mut out = Vec::new();
-                    for round in 0..2 {
+                    for round in 0..2
+                    {
                         let mut g = HashMap::new();
                         g.insert("g".to_string(), vec![r + round as f32]);
                         all_reduce(&ctx, &mut g).unwrap();
@@ -265,7 +282,8 @@ mod tests {
                 })
             })
             .collect();
-        for h in handles {
+        for h in handles
+        {
             // round 0: mean(0,1)=0.5 ; round 1: mean(1,2)=1.5
             assert_eq!(h.join().unwrap(), vec![0.5, 1.5]);
         }
@@ -284,7 +302,8 @@ mod tests {
                 })
             })
             .collect();
-        for h in handles {
+        for h in handles
+        {
             assert_eq!(h.join().unwrap(), 42.0);
         }
     }
@@ -293,7 +312,8 @@ mod tests {
     fn group_assigns_distinct_ranks() {
         let ctxs = DistributedContext::group(4);
         assert_eq!(ctxs.len(), 4);
-        for (i, c) in ctxs.iter().enumerate() {
+        for (i, c) in ctxs.iter().enumerate()
+        {
             assert_eq!(c.rank, i);
             assert_eq!(c.world_size, 4);
             assert!(c.is_distributed());

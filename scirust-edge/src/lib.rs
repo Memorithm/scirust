@@ -382,7 +382,10 @@ mod tests {
 
     #[test]
     fn rejects_bad_magic() {
-        assert_eq!(buffer_requirements(b"NOPE0000", 1), Err(EdgeError::BadMagic));
+        assert_eq!(
+            buffer_requirements(b"NOPE0000", 1),
+            Err(EdgeError::BadMagic)
+        );
     }
 
     #[test]

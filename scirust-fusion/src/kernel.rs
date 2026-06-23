@@ -117,7 +117,11 @@ impl FusedKernel {
         let n = a.len();
         assert_eq!(b.len(), n, "b must match the state dimension");
         assert_eq!(c.len(), n, "c must match the state dimension");
-        assert_eq!(output.len(), x.len(), "output length must equal the sequence length");
+        assert_eq!(
+            output.len(),
+            x.len(),
+            "output length must equal the sequence length"
+        );
 
         let mut h = vec![0.0f32; n];
         for (t, &xt) in x.iter().enumerate()
