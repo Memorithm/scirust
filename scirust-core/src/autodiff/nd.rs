@@ -1,5 +1,5 @@
+#[cfg(test)] use std::sync::Arc;
 // Reverse-mode autodiff over **N-D tensors** ([`TensorND`]) with numpy-style
-use std::sync::Arc;
 // broadcasting — the N-D autograd path (roadmap P2.4).
 //
 // This coexists with the production 2D [`crate::autodiff::reverse`] tape rather
@@ -573,7 +573,12 @@ impl<'t> NdVar<'t> {
 /// Elementwise op on two equally-shaped tensors.
 fn ew(a: &TensorND, b: &TensorND, f: impl Fn(f32, f32) -> f32) -> TensorND {
     debug_assert_eq!(a.shape, b.shape);
-    let data = a.data.iter().zip(b.data.iter()).map(|(&x, &y)| f(x, y)).collect();
+    let data = a
+        .data
+        .iter()
+        .zip(b.data.iter())
+        .map(|(&x, &y)| f(x, y))
+        .collect();
     TensorND::new(data, a.shape.clone())
 }
 

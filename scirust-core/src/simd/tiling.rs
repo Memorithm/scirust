@@ -139,9 +139,7 @@ pub fn matmul_tiled_f32(
     n: usize,
     config: Option<&TilingConfig>,
 ) {
-    matmul_tiled_strided_f32(
-        alpha, a, b, beta, c, m, k, n, k, 1, n, 1, n, 1, config,
-    )
+    matmul_tiled_strided_f32(alpha, a, b, beta, c, m, k, n, k, 1, n, 1, n, 1, config)
 }
 
 /// Matmul tuilée avec support complet des strides pour A, B et C.

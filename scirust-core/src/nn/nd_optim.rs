@@ -1,5 +1,5 @@
+#[cfg(test)] use std::sync::Arc;
 // A reusable **Adam** optimizer (Kingma & Ba, 2014) for the N-D layers
-use std::sync::Arc;
 // ([`crate::nn::nd_layers`], [`crate::nn::nd_decoder`]).
 //
 // The 2-D path keys its moments by tape-node index ([`crate::autodiff::optim`]);
@@ -145,7 +145,8 @@ impl NdAdam {
                 let vhat = vk[j] / bc2;
                 // AdamW: decoupled weight decay on the pre-update parameter.
                 let theta = p.value.data_mut()[j];
-                p.value.data_mut()[j] = theta - lr * (mhat / (vhat.sqrt() + eps) + weight_decay * theta);
+                p.value.data_mut()[j] =
+                    theta - lr * (mhat / (vhat.sqrt() + eps) + weight_decay * theta);
             }
         }
     }
@@ -1860,7 +1861,12 @@ impl NdSam {
         {
             let g = &grads[p.grad_idx].data;
             let store = &mut self.eps_store[k];
-            for ((pv, &gi), e_slot) in p.value.data_mut().iter_mut().zip(g.iter()).zip(store.iter_mut())
+            for ((pv, &gi), e_slot) in p
+                .value
+                .data_mut()
+                .iter_mut()
+                .zip(g.iter())
+                .zip(store.iter_mut())
             {
                 let e = scale * gi;
                 *e_slot = e;
@@ -1885,7 +1891,12 @@ impl NdSam {
         {
             let g = &grads_perturbed[p.grad_idx].data;
             let store = &self.eps_store[k];
-            for ((pv, &gi), &e) in p.value.data_mut().iter_mut().zip(g.iter()).zip(store.iter())
+            for ((pv, &gi), &e) in p
+                .value
+                .data_mut()
+                .iter_mut()
+                .zip(g.iter())
+                .zip(store.iter())
             {
                 *pv -= e; // restore θ
                 *pv -= lr * (gi + weight_decay * *pv); // SGD step at the perturbed gradient
@@ -2767,7 +2778,8 @@ mod tests {
         let mut opt = NdMuon::with_lr(0.1);
 
         let loss = |w: &TensorND| -> f32 {
-            w.data.to_vec()
+            w.data
+                .to_vec()
                 .iter()
                 .zip(&target)
                 .map(|(&a, &b)| (a - b) * (a - b))
@@ -2930,7 +2942,12 @@ mod tests {
         }
         for (&xi, &ti) in x.data.to_vec().iter().zip(&target)
         {
-            assert!((xi - ti).abs() < 0.1, "x={:?}, target={:?}", x.data.to_vec(), target);
+            assert!(
+                (xi - ti).abs() < 0.1,
+                "x={:?}, target={:?}",
+                x.data.to_vec(),
+                target
+            );
         }
     }
 
@@ -3278,7 +3295,8 @@ mod tests {
         let mut w = TensorND::new(vec![0.0; rows * cols], vec![rows, cols]);
         let mut opt = NdAdafactor::with_lr(0.05);
         let loss = |w: &TensorND| -> f32 {
-            w.data.to_vec()
+            w.data
+                .to_vec()
                 .iter()
                 .zip(&target)
                 .map(|(&a, &b)| 0.5 * (a - b) * (a - b))
@@ -3287,7 +3305,13 @@ mod tests {
         let first = loss(&w);
         for _ in 0..1500
         {
-            let gd: Vec<f32> = w.data.to_vec().iter().zip(&target).map(|(&a, &b)| a - b).collect();
+            let gd: Vec<f32> = w
+                .data
+                .to_vec()
+                .iter()
+                .zip(&target)
+                .map(|(&a, &b)| a - b)
+                .collect();
             let grads = vec![TensorND::new(gd, vec![rows, cols])];
             opt.step(
                 &mut [NdParam {
@@ -3349,7 +3373,13 @@ mod tests {
             let mut opt = NdShampoo::with_lr(0.2);
             for _ in 0..1500
             {
-                let gd: Vec<f32> = w.data.to_vec().iter().zip(&target).map(|(&a, &b)| a - b).collect();
+                let gd: Vec<f32> = w
+                    .data
+                    .to_vec()
+                    .iter()
+                    .zip(&target)
+                    .map(|(&a, &b)| a - b)
+                    .collect();
                 let grads = vec![TensorND::new(gd, vec![rows, cols])];
                 opt.step(
                     &mut [NdParam {
@@ -3407,7 +3437,12 @@ mod tests {
         // ε = ρ·g/‖g‖ = 0.1·[3,0,4]/5 = [0.06, 0, 0.08].
         let expected = [0.06f32, 0.0, 0.08];
         let mut dnorm2 = 0.0f32;
-        for ((xi, t0), e) in x.data.to_vec().iter().zip(theta0.iter()).zip(expected.iter())
+        for ((xi, t0), e) in x
+            .data
+            .to_vec()
+            .iter()
+            .zip(theta0.iter())
+            .zip(expected.iter())
         {
             let disp = xi - t0;
             assert!((disp - e).abs() < 1e-6, "perturbation off: {disp} vs {e}");

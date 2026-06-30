@@ -154,8 +154,18 @@ impl CrownIbpMlp {
         let xv = tape.input(TensorND::new(x.to_vec(), vec![1, x.len()]));
         let (c, r) = self.ibp_propagate(&tape, xv, eps);
         let (cv, rv) = (tape.value(c), tape.value(r));
-        let lo = cv.data.iter().zip(rv.data.iter()).map(|(&c, &r)| c - r).collect();
-        let hi = cv.data.iter().zip(rv.data.iter()).map(|(&c, &r)| c + r).collect();
+        let lo = cv
+            .data
+            .iter()
+            .zip(rv.data.iter())
+            .map(|(&c, &r)| c - r)
+            .collect();
+        let hi = cv
+            .data
+            .iter()
+            .zip(rv.data.iter())
+            .map(|(&c, &r)| c + r)
+            .collect();
         (lo, hi)
     }
 

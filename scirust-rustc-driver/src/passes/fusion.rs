@@ -90,7 +90,7 @@ impl FusionPass {
                 let func_ty = func.ty(body, tcx);
                 let func_name = format!("{:?}", func_ty);
                 let is_consuming_result = args.iter().any(|arg| {
-                    if let Operand::Copy(p) | Operand::Move(p) = arg {
+                    if let Operand::Copy(p) | Operand::Move(p) = &arg.node {
                         *p == result_place
                     } else {
                         false

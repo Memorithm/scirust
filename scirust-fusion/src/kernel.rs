@@ -5,7 +5,7 @@
 //! registres CPU ou dans un tampon local de taille fixe.
 
 #[cfg(feature = "portable-simd")]
-use std::simd::{f32x4, StdFloat};
+use std::simd::{StdFloat, f32x4};
 
 use super::fusion::KernelType;
 
@@ -204,7 +204,8 @@ impl FusedKernel {
                 {
                     let mut acc_v = f32x4::splat(0.0);
                     let mut k = 0;
-                    while k + 4 <= in_features {
+                    while k + 4 <= in_features
+                    {
                         let xv = f32x4::from_slice(&x[x_off + k..x_off + k + 4]);
                         // Weight access assumes row-major: W[k, out_row] = w[k * out_features + out_row]
                         // This is non-contiguous in row-major, so we might need a better layout for SIMD
@@ -219,7 +220,8 @@ impl FusedKernel {
                         k += 4;
                     }
                     acc = acc_v.reduce_sum();
-                    for remain_k in k..in_features {
+                    for remain_k in k..in_features
+                    {
                         acc += x[x_off + remain_k] * w[remain_k * out_features + out_row];
                     }
                 }

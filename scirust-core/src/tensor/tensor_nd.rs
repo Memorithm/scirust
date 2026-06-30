@@ -576,7 +576,9 @@ mod tests {
         assert_eq!(b.shape(), &[3, 4]);
         assert_eq!(
             b.data,
-            Arc::from(vec![1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 3.0, 3.0, 3.0, 3.0])
+            Arc::from(vec![
+                1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 3.0, 3.0, 3.0, 3.0
+            ])
         );
 
         // Row vector [1,3] → [2,3]: the row replicated down.

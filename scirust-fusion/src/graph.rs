@@ -240,11 +240,13 @@ impl OpGraph {
         use sha2::{Digest, Sha256};
 
         let mut hasher = Sha256::new();
-        for op in &self.ops {
+        for op in &self.ops
+        {
             // On utilise un hasher stable pour sérialiser le type d'op.
             // Pour la démo, on utilise le nom du variant.
             hasher.update(format!("{:?}", op.kind).as_bytes());
-            for &input in &op.inputs {
+            for &input in &op.inputs
+            {
                 hasher.update(input.to_le_bytes());
             }
         }
