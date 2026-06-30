@@ -26,6 +26,7 @@ impl<'tcx> MirPass<'tcx> for FusionPass {
         &mut self, tcx: TyCtxt<'tcx>, def_id: LocalDefId, body: &Body<'tcx>
     ) {
         println!("[fusion] Analyzing MIR for fusion opportunities in {:?}", def_id);
+        eprintln!("[fusion] Analyzing MIR for fusion opportunities in {:?}", def_id);
 
         let mut opportunities = Vec::new();
 
@@ -72,6 +73,13 @@ impl<'tcx> MirPass<'tcx> for FusionPass {
             // 5. Type Safety Verification:
             //    Use `tcx.type_check_body` or similar if available in the driver context to ensure
             //    the new MIR is valid before proceeding to codegen.
+            eprintln!("[fusion] Found candidate: BB{:?} (MatMul) -> BB{:?} ({:?})", matmul_bb, act_bb, act_type);
+            // Transformation strategy:
+            // 1. Locate the MatMul call in matmul_bb.
+            // 2. Identify the fused kernel corresponding to act_type (e.g., KernelType::MatmulRelu).
+            // 3. Replace the original call with a call to the fused kernel.
+            // 4. Remove the activation statement/call in act_bb.
+            // 5. Update local variable usage to bypass the intermediate un-activated result.
         }
     }
 }
@@ -99,6 +107,9 @@ impl FusionPass {
             if let StatementKind::Assign(assign) = &stmt.kind {
                 let (_, rvalue) = &**assign;
 
+                // Check for ReLU pattern: max(0, x)
+                // In MIR this might be a specific intrinsic or a branch.
+                // Simplified: check for UnaryOp or custom calls.
                 if let Rvalue::UnaryOp(_, operand) = rvalue {
                      if operand == &Operand::Copy(result_place) || operand == &Operand::Move(result_place) {
                          return Some(ActivationType::ReLU);

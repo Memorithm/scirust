@@ -3,8 +3,6 @@
 //! A deterministic, pure-Rust dense-retrieval engine, positioned as an
 //! **auditable alternative to RAG**.
 
-pub mod contrastive;
-pub mod index;
 pub mod ann;
 pub mod feedback;
 pub mod hybrid;
@@ -13,8 +11,6 @@ pub mod metrics;
 pub mod rerank;
 pub mod vector;
 
-pub use contrastive::{ContrastiveConfig, ProjectedEncoder, ProjectionHead};
-pub use index::DenseIndex;
 pub use ann::LshIndex;
 pub use feedback::ImprovementLoop;
 pub use hybrid::{Bm25Index, HybridRetriever, reciprocal_rank_fusion};
