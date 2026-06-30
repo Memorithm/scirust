@@ -1,4 +1,5 @@
-#[cfg(test)] use std::sync::Arc;
+#[cfg(test)]
+use std::sync::Arc;
 // A reusable **Adam** optimizer (Kingma & Ba, 2014) for the N-D layers
 // ([`crate::nn::nd_layers`], [`crate::nn::nd_decoder`]).
 //
@@ -3528,7 +3529,7 @@ mod tests {
             let eps_fd = 1e-2;
             for _ in 0..400
             {
-                let g0 = grad_at(&x.data.to_vec()); // ∇L(θ)
+                let g0 = grad_at(&x.data); // ∇L(θ)
                 opt.probe(
                     &mut [NdParam {
                         value: &mut x,
@@ -3536,7 +3537,7 @@ mod tests {
                     }],
                     eps_fd,
                 );
-                let g1 = grad_at(&x.data.to_vec()); // ∇L(θ+εv)
+                let g1 = grad_at(&x.data); // ∇L(θ+εv)
                 opt.step(
                     &mut [NdParam {
                         value: &mut x,

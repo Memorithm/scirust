@@ -1,4 +1,5 @@
-#[cfg(test)] use std::sync::Arc;
+#[cfg(test)]
+use std::sync::Arc;
 // Reverse-mode autodiff over **N-D tensors** ([`TensorND`]) with numpy-style
 // broadcasting — the N-D autograd path (roadmap P2.4).
 //
