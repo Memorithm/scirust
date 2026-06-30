@@ -1,22 +1,7 @@
-//! Reverse-mode autodiff over **N-D tensors** ([`TensorND`]) with numpy-style
-//! broadcasting — the N-D autograd path (roadmap P2.4).
+//! Reverse-mode autodiff over **N-D tensors** (['TensorND']) with numpy-style
 //!
-//! This coexists with the production 2D [`crate::autodiff::reverse`] tape rather
-//! than replacing it: the 2D tape stays the battle-tested default while this
-//! module grows the N-D capability the compiler/IR ambitions need. Every
-//! backward rule is validated by a **numerical gradient check** in the tests
-//! (finite differences vs. the analytic gradient), the gold standard for
-//! autodiff correctness.
-//!
-//! Ops: elementwise `add`/`sub`/`mul` (broadcasting), 2-D `matmul`, **batched
-//! `bmm`**, `relu`, `softmax` (last axis), `transpose_last2`, `reshape`,
-//! `permute`, `layernorm` (last axis), and `sum` to a scalar — enough to build
-//! a full transformer block (see `nn::nd_layers`). The shape building blocks
-//! (`broadcast_shape`, `broadcast_to`, `matmul_shape`) live on [`TensorND`].
-
-use std::cell::RefCell;
-
 use crate::tensor::tensor_nd::TensorND;
+use std::cell::RefCell;
 
 #[derive(Clone)]
 enum Op {
@@ -101,7 +86,7 @@ impl NdTape {
 
     /// The forward value of a node.
     pub fn value(&self, v: NdVar<'_>) -> TensorND {
-        self.nodes.borrow()[v.idx].value.clone()
+        self.nodes.borrow()[v.idx].value.to_contiguous()
     }
 
     /// Reverse-mode backward from a **scalar** root (shape `[1]`). Returns the
@@ -193,7 +178,7 @@ impl NdTape {
                 {
                     // Reshape the upstream grad back to the input's shape.
                     let shape = nodes[a].value.shape.clone();
-                    accumulate(&mut grads[a], &TensorND::new(g.data.clone(), shape));
+                    accumulate(&mut grads[a], &TensorND::new(g.data.to_vec(), shape));
                 },
                 Op::Permute(a, ref perm) =>
                 {
@@ -222,7 +207,7 @@ impl NdTape {
                     let d: Vec<f32> = g
                         .data
                         .iter()
-                        .zip(&y.data)
+                        .zip(y.data.iter())
                         .map(|(&gi, &yi)| gi * yi * (1.0 - yi))
                         .collect();
                     accumulate(&mut grads[a], &TensorND::new(d, y.shape.clone()));
@@ -234,7 +219,7 @@ impl NdTape {
                     let d: Vec<f32> = g
                         .data
                         .iter()
-                        .zip(&y.data)
+                        .zip(y.data.iter())
                         .map(|(&gi, &yi)| gi * yi)
                         .collect();
                     accumulate(&mut grads[a], &TensorND::new(d, y.shape.clone()));
@@ -247,7 +232,7 @@ impl NdTape {
                 Op::Relu(a) =>
                 {
                     let av = &nodes[a].value;
-                    let mut d = g.data.clone();
+                    let mut d = g.data.to_vec();
                     for (gi, &x) in d.iter_mut().zip(av.data.iter())
                     {
                         if x <= 0.0
@@ -255,7 +240,7 @@ impl NdTape {
                             *gi = 0.0;
                         }
                     }
-                    accumulate(&mut grads[a], &TensorND::new(d, av.shape.clone()));
+                    accumulate(&mut grads[a], &TensorND::new(d, av.shape.to_vec()));
                 },
                 Op::Sum(a) =>
                 {
@@ -274,7 +259,7 @@ impl NdTape {
                     {
                         for c in 0..dim
                         {
-                            grads[a].data[ix * dim + c] += g.data[r * dim + c];
+                            grads[a].data_mut()[ix * dim + c] += g.data[r * dim + c];
                         }
                     }
                 },
@@ -380,27 +365,27 @@ impl<'t> NdVar<'t> {
 
     /// Softmax over the last axis (e.g. attention weights over keys).
     pub fn softmax(self) -> NdVar<'t> {
-        let a = self.tape.nodes.borrow()[self.idx].value.clone();
+        let a = self.tape.nodes.borrow()[self.idx].value.to_contiguous();
         let out = softmax_lastaxis(&a);
         self.tape.push(Op::Softmax(self.idx), out)
     }
 
     /// Swap the last two axes (e.g. `Kᵀ` inside attention).
     pub fn transpose_last2(self) -> NdVar<'t> {
-        let a = self.tape.nodes.borrow()[self.idx].value.clone();
+        let a = self.tape.nodes.borrow()[self.idx].value.to_contiguous();
         let out = transpose_last2(&a);
         self.tape.push(Op::TransposeLast2(self.idx), out)
     }
 
     /// Reshape to `shape` (same number of elements; data order preserved).
     pub fn reshape(self, shape: &[usize]) -> NdVar<'t> {
-        let a = self.tape.nodes.borrow()[self.idx].value.clone();
+        let a = self.tape.nodes.borrow()[self.idx].value.to_contiguous();
         assert_eq!(
             a.data.len(),
             shape.iter().product::<usize>(),
             "reshape: element count mismatch"
         );
-        let out = TensorND::new(a.data.clone(), shape.to_vec());
+        let out = TensorND::new(a.data.to_vec(), shape.to_vec());
         self.tape.push(Op::Reshape(self.idx), out)
     }
 
@@ -408,7 +393,7 @@ impl<'t> NdVar<'t> {
     /// no affine — the `gamma`/`beta` of a `LayerNorm` layer are applied as a
     /// separate `mul`/`add`.
     pub fn layernorm(self, eps: f32) -> NdVar<'t> {
-        let a = self.tape.nodes.borrow()[self.idx].value.clone();
+        let a = self.tape.nodes.borrow()[self.idx].value.to_contiguous();
         let out = layernorm_lastaxis(&a, eps);
         self.tape.push(Op::LayerNormLast(self.idx, eps), out)
     }
@@ -418,7 +403,7 @@ impl<'t> NdVar<'t> {
     /// is applied as a separate `mul`. Cheaper than `layernorm` (no centring);
     /// the LLaMA-family normalisation.
     pub fn rmsnorm(self, eps: f32) -> NdVar<'t> {
-        let a = self.tape.nodes.borrow()[self.idx].value.clone();
+        let a = self.tape.nodes.borrow()[self.idx].value.to_contiguous();
         let out = rmsnorm_lastaxis(&a, eps);
         self.tape.push(Op::RmsNormLast(self.idx, eps), out)
     }
@@ -426,7 +411,7 @@ impl<'t> NdVar<'t> {
     /// Elementwise logistic sigmoid `σ(x) = 1/(1+e^-x)` (e.g. the gate of SiLU /
     /// SwiGLU).
     pub fn sigmoid(self) -> NdVar<'t> {
-        let a = self.tape.nodes.borrow()[self.idx].value.clone();
+        let a = self.tape.nodes.borrow()[self.idx].value.to_contiguous();
         let data: Vec<f32> = a.data.iter().map(|&x| 1.0 / (1.0 + (-x).exp())).collect();
         let out = TensorND::new(data, a.shape.clone());
         self.tape.push(Op::Sigmoid(self.idx), out)
@@ -435,7 +420,7 @@ impl<'t> NdVar<'t> {
     /// Elementwise `exp(x)` — the discretisation `exp(Δ·A)` of a state-space
     /// model (e.g. Mamba's selective scan) and positive reparametrisations.
     pub fn exp(self) -> NdVar<'t> {
-        let a = self.tape.nodes.borrow()[self.idx].value.clone();
+        let a = self.tape.nodes.borrow()[self.idx].value.to_contiguous();
         let data: Vec<f32> = a.data.iter().map(|&x| x.exp()).collect();
         let out = TensorND::new(data, a.shape.clone());
         self.tape.push(Op::Exp(self.idx), out)
@@ -448,7 +433,7 @@ impl<'t> NdVar<'t> {
     /// attention score depend only on the **relative** position. `base` is
     /// typically `10000`.
     pub fn rope(self, base: f32) -> NdVar<'t> {
-        let a = self.tape.nodes.borrow()[self.idx].value.clone();
+        let a = self.tape.nodes.borrow()[self.idx].value.to_contiguous();
         let out = rope_lastaxis(&a, base, false);
         self.tape.push(Op::Rope(self.idx, base), out)
     }
@@ -467,7 +452,7 @@ impl<'t> NdVar<'t> {
 
     /// Elementwise ReLU.
     pub fn relu(self) -> NdVar<'t> {
-        let a = self.tape.nodes.borrow()[self.idx].value.clone();
+        let a = self.tape.nodes.borrow()[self.idx].value.to_contiguous();
         let data = a.data.iter().map(|&x| x.max(0.0)).collect();
         let out = TensorND::new(data, a.shape.clone());
         self.tape.push(Op::Relu(self.idx), out)
@@ -475,7 +460,7 @@ impl<'t> NdVar<'t> {
 
     /// Sum of all elements → scalar (shape `[1]`).
     pub fn sum(self) -> NdVar<'t> {
-        let a = self.tape.nodes.borrow()[self.idx].value.clone();
+        let a = self.tape.nodes.borrow()[self.idx].value.to_contiguous();
         let s: f32 = a.data.iter().sum();
         self.tape
             .push(Op::Sum(self.idx), TensorND::new(vec![s], vec![1]))
@@ -485,7 +470,7 @@ impl<'t> NdVar<'t> {
     /// `(indices.len(), dim)` stack of the selected rows. Gradients
     /// scatter-add back to the table (repeated indices accumulate).
     pub fn gather(self, indices: &[usize]) -> NdVar<'t> {
-        let w = self.tape.nodes.borrow()[self.idx].value.clone();
+        let w = self.tape.nodes.borrow()[self.idx].value.to_contiguous();
         assert_eq!(w.ndim(), 2, "gather: table must be 2-D (vocab, dim)");
         let (vocab, dim) = (w.shape[0], w.shape[1]);
         let mut data = Vec::with_capacity(indices.len() * dim);
@@ -510,7 +495,7 @@ impl<'t> NdVar<'t> {
         let first = &nodes[self.idx].value;
         let trailing: Vec<usize> = first.shape[1..].to_vec();
         let mut rows = first.shape[0];
-        let mut data = first.data.clone();
+        let mut data = first.data.to_vec();
         let mut idxs = vec![self.idx];
         for p in rest
         {
@@ -523,7 +508,7 @@ impl<'t> NdVar<'t> {
         drop(nodes);
         let mut shape = vec![rows];
         shape.extend_from_slice(&trailing);
-        let out = TensorND::new(data, shape);
+        let out = TensorND::new(data.to_vec(), shape);
         self.tape.push(Op::Cat(idxs), out)
     }
 
@@ -531,7 +516,7 @@ impl<'t> NdVar<'t> {
     /// logits, `targets` holds one class index per row. Returns the scalar mean
     /// loss, computed with the log-sum-exp trick for numerical stability.
     pub fn cross_entropy(self, targets: &[usize]) -> NdVar<'t> {
-        let logits = self.tape.nodes.borrow()[self.idx].value.clone();
+        let logits = self.tape.nodes.borrow()[self.idx].value.to_contiguous();
         assert_eq!(
             logits.ndim(),
             2,
@@ -561,8 +546,8 @@ impl<'t> NdVar<'t> {
     fn pair(self, other: NdVar<'t>) -> (TensorND, TensorND) {
         let nodes = self.tape.nodes.borrow();
         (
-            nodes[self.idx].value.clone(),
-            nodes[other.idx].value.clone(),
+            nodes[self.idx].value.to_contiguous(),
+            nodes[other.idx].value.to_contiguous(),
         )
     }
 }
@@ -572,7 +557,12 @@ impl<'t> NdVar<'t> {
 /// Elementwise op on two equally-shaped tensors.
 fn ew(a: &TensorND, b: &TensorND, f: impl Fn(f32, f32) -> f32) -> TensorND {
     debug_assert_eq!(a.shape, b.shape);
-    let data = a.data.iter().zip(&b.data).map(|(&x, &y)| f(x, y)).collect();
+    let data = a
+        .data
+        .iter()
+        .zip(b.data.iter())
+        .map(|(&x, &y)| f(x, y))
+        .collect();
     TensorND::new(data, a.shape.clone())
 }
 
@@ -590,7 +580,7 @@ fn ew_broadcast(a: &TensorND, b: &TensorND, f: impl Fn(f32, f32) -> f32) -> Tens
 /// `acc += g` (same shape).
 fn accumulate(acc: &mut TensorND, g: &TensorND) {
     debug_assert_eq!(acc.shape, g.shape);
-    for (a, &x) in acc.data.iter_mut().zip(&g.data)
+    for (a, &x) in acc.data_mut().iter_mut().zip(g.data.iter())
     {
         *a += x;
     }
@@ -1006,6 +996,7 @@ fn bmm_backward(a: &TensorND, b: &TensorND, g: &TensorND) -> (TensorND, TensorND
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     /// Build `loss = sum( relu(X·W + b) * V )` and return the scalar loss.
     /// `b` is `(1, out)` and broadcasts over the batch — exercising add/mul
@@ -1353,8 +1344,8 @@ mod tests {
         let loss = a.add(b).sum();
         let grads = tape.backward(loss);
         assert_eq!(grads[b.idx()].shape, vec![1, 3]);
-        assert_eq!(grads[b.idx()].data, vec![2.0, 2.0, 2.0]);
-        assert_eq!(grads[a.idx()].data, vec![1.0; 6]);
+        assert_eq!(grads[b.idx()].data, Arc::from(vec![2.0, 2.0, 2.0]));
+        assert_eq!(grads[a.idx()].data, Arc::from(vec![1.0; 6]));
     }
 
     #[test]
@@ -1370,7 +1361,7 @@ mod tests {
         ));
         let c = a.matmul(b);
         // row0·cols: [1*1+2*0+3*1, 1*0+2*1+3*1] = [4, 5]; row1: [10, 11]
-        assert_eq!(tape.value(c).data, vec![4.0, 5.0, 10.0, 11.0]);
+        assert_eq!(tape.value(c).data, Arc::from(vec![4.0, 5.0, 10.0, 11.0]));
     }
 
     /// Batched matmul with a **broadcast** batch axis: forward matches a manual
