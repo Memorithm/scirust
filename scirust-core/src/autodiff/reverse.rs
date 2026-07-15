@@ -3469,10 +3469,14 @@ impl<'t> Var<'t> {
 
     pub fn try_add(self, other: Var<'t>) -> crate::error::Result<Var<'t>> {
         self.ensure_same_tape(&other, "add")?;
-        let a = self.tape.values.borrow()[self.idx].as_cpu().clone();
-        let b = self.tape.values.borrow()[other.idx].as_cpu().clone();
-        crate::error::check_shape("add", a.shape(), b.shape())?;
-        let out = a.add(&b);
+        // Borrow the operands (no clone); drop the borrow before the mutable push.
+        let out = {
+            let values = self.tape.values.borrow();
+            let a = values[self.idx].as_cpu();
+            let b = values[other.idx].as_cpu();
+            crate::error::check_shape("add", a.shape(), b.shape())?;
+            a.add(b)
+        };
         let new_idx = self.tape.push_with_saved(
             Op::Add(self.idx, other.idx),
             DeviceTensor::cpu(out),
@@ -3545,10 +3549,13 @@ impl<'t> Var<'t> {
 
     pub fn try_sub(self, other: Var<'t>) -> crate::error::Result<Var<'t>> {
         self.ensure_same_tape(&other, "sub")?;
-        let a = self.tape.values.borrow()[self.idx].as_cpu().clone();
-        let b = self.tape.values.borrow()[other.idx].as_cpu().clone();
-        crate::error::check_shape("sub", a.shape(), b.shape())?;
-        let out = a.sub(&b);
+        let out = {
+            let values = self.tape.values.borrow();
+            let a = values[self.idx].as_cpu();
+            let b = values[other.idx].as_cpu();
+            crate::error::check_shape("sub", a.shape(), b.shape())?;
+            a.sub(b)
+        };
         let new_idx = self.tape.push_with_saved(
             Op::Sub(self.idx, other.idx),
             DeviceTensor::cpu(out),
@@ -3562,10 +3569,13 @@ impl<'t> Var<'t> {
 
     pub fn try_div(self, other: Var<'t>) -> crate::error::Result<Var<'t>> {
         self.ensure_same_tape(&other, "div")?;
-        let a = self.tape.values.borrow()[self.idx].as_cpu().clone();
-        let b = self.tape.values.borrow()[other.idx].as_cpu().clone();
-        crate::error::check_shape("div", a.shape(), b.shape())?;
-        let out = a.div(&b);
+        let out = {
+            let values = self.tape.values.borrow();
+            let a = values[self.idx].as_cpu();
+            let b = values[other.idx].as_cpu();
+            crate::error::check_shape("div", a.shape(), b.shape())?;
+            a.div(b)
+        };
         let new_idx = self.tape.push_with_saved(
             Op::Div(self.idx, other.idx),
             DeviceTensor::cpu(out),
@@ -4302,17 +4312,20 @@ impl<'t> Var<'t> {
 
     pub fn try_add_broadcast(self, other: Var<'t>) -> crate::error::Result<Var<'t>> {
         self.ensure_same_tape(&other, "add_broadcast")?;
-        let a = self.tape.values.borrow()[self.idx].as_cpu().clone();
-        let b = self.tape.values.borrow()[other.idx].as_cpu().clone();
-        if !((b.rows == a.rows || b.rows == 1) && (b.cols == a.cols || b.cols == 1))
-        {
-            return Err(crate::error::SciRustError::ShapeMismatch {
-                op: "add_broadcast",
-                expected: (a.rows, a.cols),
-                got: (b.rows, b.cols),
-            });
-        }
-        let out = a.zip_broadcasted(&b, |x, y| x + y);
+        let out = {
+            let values = self.tape.values.borrow();
+            let a = values[self.idx].as_cpu();
+            let b = values[other.idx].as_cpu();
+            if !((b.rows == a.rows || b.rows == 1) && (b.cols == a.cols || b.cols == 1))
+            {
+                return Err(crate::error::SciRustError::ShapeMismatch {
+                    op: "add_broadcast",
+                    expected: (a.rows, a.cols),
+                    got: (b.rows, b.cols),
+                });
+            }
+            a.zip_broadcasted(b, |x, y| x + y)
+        };
         let new_idx = self.tape.push_with_saved(
             Op::AddBroadcast(self.idx, other.idx),
             DeviceTensor::cpu(out),
@@ -4351,17 +4364,20 @@ impl<'t> Var<'t> {
 
     pub fn try_mul_broadcast(self, other: Var<'t>) -> crate::error::Result<Var<'t>> {
         self.ensure_same_tape(&other, "mul_broadcast")?;
-        let a = self.tape.values.borrow()[self.idx].as_cpu().clone();
-        let b = self.tape.values.borrow()[other.idx].as_cpu().clone();
-        if !((b.rows == a.rows || b.rows == 1) && (b.cols == a.cols || b.cols == 1))
-        {
-            return Err(crate::error::SciRustError::ShapeMismatch {
-                op: "mul_broadcast",
-                expected: (a.rows, a.cols),
-                got: (b.rows, b.cols),
-            });
-        }
-        let out = a.zip_broadcasted(&b, |x, y| x * y);
+        let out = {
+            let values = self.tape.values.borrow();
+            let a = values[self.idx].as_cpu();
+            let b = values[other.idx].as_cpu();
+            if !((b.rows == a.rows || b.rows == 1) && (b.cols == a.cols || b.cols == 1))
+            {
+                return Err(crate::error::SciRustError::ShapeMismatch {
+                    op: "mul_broadcast",
+                    expected: (a.rows, a.cols),
+                    got: (b.rows, b.cols),
+                });
+            }
+            a.zip_broadcasted(b, |x, y| x * y)
+        };
         let new_idx = self.tape.push_with_saved(
             Op::MulBroadcast(self.idx, other.idx),
             DeviceTensor::cpu(out),
