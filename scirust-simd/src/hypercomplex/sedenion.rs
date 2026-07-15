@@ -10,9 +10,10 @@
 // La vue Cayley-Dickson s = (a, b) coïncide avec les deux moitiés
 // 256 bits du registre. Sur AVX-512 le sédénion tient dans **un** registre
 // ZMM et la séparation est une extraction de moitié (`vextractf32x8`) ;
-// sur AVX2 LLVM alloue une paire de YMM et sur NEON quatre registres Q —
-// dans tous les cas le déroulage est entièrement décidé à la compilation
-// (`-C target-cpu=native`), sans boucle ni indirection à l'exécution.
+// sur AVX2 LLVM peut employer une paire de YMM et sur NEON plusieurs
+// registres Q. Le déroulage est décidé à la compilation avec
+// `-C target-cpu=native`, mais la répartition exacte entre registres et
+// pile reste une décision de LLVM qui doit être auditée dans l'appelant final.
 //
 // 𝕊 n'est ni associatif, ni alternatif, et possède des diviseurs de zéro
 // (voir les tests) : c'est le prix de la 4ᵉ itération de Cayley-Dickson.
@@ -73,8 +74,9 @@ impl SedenionSimd {
     ///
     /// Mêmes garanties qu'[`OctonionSimd::split`] : les swizzles constants
     /// [0..8) / [8..16) sont des extractions de moitié de registre
-    /// (`vextractf32x8` sur AVX-512, renommage de registres sur AVX2/NEON
-    /// où les moitiés vivent déjà dans des registres distincts).
+    /// (`vextractf32x8` sur certaines cibles AVX-512 ou valeurs séparées
+    /// sur AVX2/NEON). Le coût exact dépend de l'abaissement LLVM et du
+    /// contexte d'inlining.
     #[inline(always)]
     #[must_use]
     pub fn split(self) -> (OctonionSimd, OctonionSimd) {
@@ -161,7 +163,10 @@ impl Mul for SedenionSimd {
     /// Les 4 produits d'octonions s'inlinent récursivement en 16 produits
     /// de Hamilton — la « boucle » de récursion est totalement déroulée à
     /// la compilation. Bilan : ~64 FMA + ~64 shuffles/broadcasts en pur
-    /// registre, zéro allocation, zéro écriture cache/RAM intermédiaire.
+    /// registre et sans allocation dynamique. Sur le probe AArch64 isolé,
+    /// aucun spill vectoriel complet n'est généré ; seules les sauvegardes
+    /// ABI des registres `d8` à `d13` apparaissent. Un appelant inliné peut
+    /// toutefois produire davantage de trafic de pile.
     #[inline(always)]
     fn mul(self, rhs: Self) -> Self {
         let (a, b) = self.split();

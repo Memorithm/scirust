@@ -11,8 +11,10 @@
 //
 // La vue Cayley-Dickson o = (a, b) correspond exactement aux deux moitiés
 // 128 bits du registre : sur x86_64/AVX2 ce sont les lanes basses/hautes
-// d'un YMM, sur ARM64/NEON les deux registres Q jumelés que LLVM alloue
-// pour un vecteur 256 bits. La « séparation » est donc gratuite.
+// d'un YMM, tandis que LLVM représente généralement le vecteur par deux
+// registres Q sur ARM64/NEON. Le coût exact de séparation dépend toutefois
+// de la cible et du contexte d'inlining ; il doit être vérifié dans
+// l'assembleur final plutôt que supposé nul.
 
 use core::ops::{Add, Mul, Neg, Sub};
 use std::simd::{f32x4, f32x8, num::SimdFloat, simd_swizzle};
@@ -71,8 +73,10 @@ impl OctonionSimd {
     /// par LLVM comme une extraction de moitié de registre :
     /// `vextractf128` (ou un simple renommage de la moitié basse) sur
     /// AVX2, et une réutilisation directe des deux registres Q sur NEON
-    /// où le vecteur 256 bits vit déjà en paire {q_lo, q_hi}. Coût : 0 ou
-    /// 1 µop, jamais de passage par la pile.
+    /// où le vecteur 256 bits est généralement abaissé en une paire de
+    /// registres Q. Dans le probe AArch64 isolé, LLVM ne génère aucun accès
+    /// à la pile ; un appelant fortement inliné peut néanmoins modifier la
+    /// pression registre et la forme finale du code.
     #[inline(always)]
     #[must_use]
     pub fn split(self) -> (f32x4, f32x4) {
@@ -157,7 +161,9 @@ impl Mul for OctonionSimd {
     /// Bilan après inlining : 4 produits de Hamilton (4 × [4 shuffles +
     /// 4 broadcasts + 1 mul + 3 FMA]) + 2 conjugaisons (XOR de signes) +
     /// 1 add + 1 sub + les extractions/insertions de moitiés — soit une
-    /// trentaine de µops vectoriels, sans aucun accès mémoire.
+    /// trentaine de µops vectoriels. Le probe AArch64 isolé est sans
+    /// accès à la pile ; cette propriété n'est pas une garantie du langage
+    /// et doit être contrôlée pour chaque cible et configuration.
     #[inline(always)]
     fn mul(self, rhs: Self) -> Self {
         let (a, b) = self.split();
