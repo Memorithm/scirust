@@ -6,7 +6,8 @@
 > qualified counsel, and publish it at the URL referenced in
 > [LICENSING.md](../LICENSING.md) § 5. It is drafted to meet the transparency
 > requirements of Articles 13–14 of Regulation (EU) 2016/679 (**GDPR**). Provide a
-> French-language version for French data subjects (Loi « Toubon »).
+> French-language version for French data subjects (Loi « Toubon »):
+> [PRIVACY_NOTICE.fr.md](PRIVACY_NOTICE.fr.md).
 
 ## 1. Who is responsible (controller)
 

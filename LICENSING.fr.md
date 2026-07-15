@@ -100,7 +100,7 @@ nécessaire à l'authenticité, aux droits d'usage et à l'attribution des fuite
 (**minimisation des données, art. 5, §1, c**). Les droits des personnes concernées
 (art. 12 à 22) ainsi que l'identité complète et les coordonnées du responsable de
 traitement figurent dans la notice de confidentialité distincte :
-[docs/PRIVACY_NOTICE.md](docs/PRIVACY_NOTICE.md).
+[docs/PRIVACY_NOTICE.fr.md](docs/PRIVACY_NOTICE.fr.md) (à compléter et publier).
 
 **6. Réserve au titre de la fouille de textes et de données / entraînement d'IA.**
 Le titulaire des droits **réserve expressément** les droits sur le code source de
