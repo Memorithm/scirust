@@ -30,7 +30,9 @@ fn main() {
     let re = reynolds_number(rho, velocity, diameter, mu);
     let f = colebrook_friction(re, roughness / diameter);
     let h_loss = darcy_head_loss(f, length, diameter, velocity, g);
-    println!("Écoulement  : Re = {re:.0} (turbulent), f = {f:.4} → perte de charge = {h_loss:.2} m");
+    println!(
+        "Écoulement  : Re = {re:.0} (turbulent), f = {f:.4} → perte de charge = {h_loss:.2} m"
+    );
 
     // --- Pompe : débit à partir de la section, puissances -------------------
     let area = std::f64::consts::PI * diameter * diameter / 4.0;

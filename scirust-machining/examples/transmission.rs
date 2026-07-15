@@ -13,9 +13,12 @@
 
 use scirust_machining::bearings::{BearingType, basic_rating_life_hours, basic_rating_life_revs};
 use scirust_machining::gears::{
-    SpurGear, gear_ratio, lewis_bending_stress, pitch_line_velocity_m_s, tangential_force_from_power,
+    SpurGear, gear_ratio, lewis_bending_stress, pitch_line_velocity_m_s,
+    tangential_force_from_power,
 };
-use scirust_machining::induction_motor::{induction_rotor_speed_rpm, induction_synchronous_speed_rpm};
+use scirust_machining::induction_motor::{
+    induction_rotor_speed_rpm, induction_synchronous_speed_rpm,
+};
 use scirust_machining::keyway_stress::keyway_shear_stress;
 use scirust_machining::shaft_sizing::{shaft_diameter_from_torque, shaft_torque_from_power};
 
@@ -28,11 +31,21 @@ fn main() {
 
     let ns = induction_synchronous_speed_rpm(supply_hz, pole_pairs);
     let n_motor = induction_rotor_speed_rpm(ns, slip); // régime en charge
-    println!("Moteur      : Ns = {ns:.0} tr/min, N charge = {n_motor:.0} tr/min ({motor_power_kw} kW)");
+    println!(
+        "Moteur      : Ns = {ns:.0} tr/min, N charge = {n_motor:.0} tr/min ({motor_power_kw} kW)"
+    );
 
     // --- Réducteur à engrenage droit (pignon z20 → roue z80, i = 4) ---------
-    let pinion = SpurGear { module_mm: 3.0, teeth: 20, pressure_angle_deg: 20.0 };
-    let wheel = SpurGear { module_mm: 3.0, teeth: 80, pressure_angle_deg: 20.0 };
+    let pinion = SpurGear {
+        module_mm: 3.0,
+        teeth: 20,
+        pressure_angle_deg: 20.0,
+    };
+    let wheel = SpurGear {
+        module_mm: 3.0,
+        teeth: 80,
+        pressure_angle_deg: 20.0,
+    };
     let ratio = gear_ratio(pinion.teeth, wheel.teeth); // rapport de réduction
     let n_out = n_motor / ratio;
     println!(
@@ -72,5 +85,7 @@ fn main() {
     let p_load = 4_800.0_f64; // charge dynamique équivalente P (N)
     let l10_mrev = basic_rating_life_revs(c_dyn, p_load, BearingType::Ball);
     let l10_h = basic_rating_life_hours(l10_mrev, n_out);
-    println!("Roulement   : L10 ≈ {l10_mrev:.0} Mtr → {l10_h:.0} h à {n_out:.0} tr/min (bille, C = 35 kN)");
+    println!(
+        "Roulement   : L10 ≈ {l10_mrev:.0} Mtr → {l10_h:.0} h à {n_out:.0} tr/min (bille, C = 35 kN)"
+    );
 }
