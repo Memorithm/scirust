@@ -2408,13 +2408,16 @@ impl Tape {
                 },
                 Op::Softmax { input, axis } =>
                 {
-                    let av = &values[input].as_cpu();
-                    let sm = av.softmax(axis);
-                    let g_broadcast = g.broadcast_to(av.rows, av.cols);
-                    let gs = g_broadcast.hadamard(&sm);
+                    // Reuse the stored forward output softmax(input) = values[i]
+                    // instead of recomputing it — identical values, but no extra
+                    // exp pass and no softmax allocation per attention layer.
+                    let sm = values[i].as_cpu();
+                    let (rows, cols) = (sm.rows, sm.cols);
+                    let g_broadcast = g.broadcast_to(rows, cols);
+                    let gs = g_broadcast.hadamard(sm);
                     let sum_gs = gs.sum_axis(axis);
-                    let diff = gs.sub(&sm.hadamard(&sum_gs.broadcast_to(av.rows, av.cols)));
-                    grads[input] = grads[input].add(&diff);
+                    let diff = gs.sub(&sm.hadamard(&sum_gs.broadcast_to(rows, cols)));
+                    grads[input].add_assign(&diff);
                 },
                 Op::SoftmaxPortable { input } =>
                 {
