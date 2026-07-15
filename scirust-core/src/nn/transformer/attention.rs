@@ -473,6 +473,70 @@ mod tests {
         assert!(max_abs > 1e-6, "gradient is zero — autograd broken");
     }
 
+    /// Finite-difference check of the **input** gradient through the full
+    /// attention backward (QKᵀ, scale, softmax, ·V, head split/merge). This
+    /// pins the gradient *values*, not just non-zeroness, so a future
+    /// batched-matmul rewrite of `scaled_dot_attention` can't silently change
+    /// them. Covers both causal and non-causal.
+    fn mha_finite_diff_case(causal: bool) {
+        let mut rng = PcgEngine::new(7);
+        let (d_model, n_heads, batch, seq) = (4usize, 2usize, 1usize, 3usize);
+        let mut mha = MultiHeadAttention::new(
+            d_model,
+            n_heads,
+            0,
+            causal,
+            &KaimingNormal,
+            &Zeros,
+            &mut rng,
+        );
+        let n = batch * seq * d_model;
+        let x0: Vec<f32> = (0..n).map(|i| (i as f32 * 0.13).sin()).collect();
+        // Non-uniform output weighting so the input gradient isn't degenerate.
+        let wl: Vec<f32> = (0..n).map(|i| (i as f32 * 0.21).cos()).collect();
+
+        let loss_at = |mha: &mut MultiHeadAttention, x: &[f32]| -> f32 {
+            let tape = Tape::new();
+            let xv = tape.input(Tensor::from_vec(x.to_vec(), batch * seq, d_model));
+            let out = mha.forward_3d(&tape, Var3D::from_var(xv, batch, seq, d_model));
+            let w = tape.input(Tensor::from_vec(wl.clone(), batch * seq, d_model));
+            let loss = out.as_var().hadamard(w).sum();
+            tape.value(loss.idx()).data[0]
+        };
+
+        // Analytic input gradient.
+        let tape = Tape::new();
+        let xv = tape.input(Tensor::from_vec(x0.clone(), batch * seq, d_model));
+        let out = mha.forward_3d(&tape, Var3D::from_var(xv, batch, seq, d_model));
+        let w = tape.input(Tensor::from_vec(wl.clone(), batch * seq, d_model));
+        let loss = out.as_var().hadamard(w).sum();
+        loss.backward();
+        let analytic = tape.grad(xv.idx()).data;
+
+        // Central finite differences.
+        let eps = 1e-3f32;
+        for i in 0..n
+        {
+            let mut xp = x0.clone();
+            xp[i] += eps;
+            let mut xm = x0.clone();
+            xm[i] -= eps;
+            let num = (loss_at(&mut mha, &xp) - loss_at(&mut mha, &xm)) / (2.0 * eps);
+            let a = analytic[i];
+            let tol = 5e-2 * (1.0 + a.abs().max(num.abs()));
+            assert!(
+                (a - num).abs() < tol,
+                "causal={causal} dL/dx[{i}]: analytic {a} vs finite-diff {num}"
+            );
+        }
+    }
+
+    #[test]
+    fn mha_input_gradient_matches_finite_differences() {
+        mha_finite_diff_case(false);
+        mha_finite_diff_case(true);
+    }
+
     #[test]
     fn mha_causal_mask_shape_preserved() {
         let mut rng = PcgEngine::new(0);
