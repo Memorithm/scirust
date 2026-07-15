@@ -156,8 +156,8 @@ impl MultiHeadAttention {
                 let k_hb = k_h.try_slice_rows(b * seq_len, seq_len).unwrap();
                 let v_hb = v_h.try_slice_rows(b * seq_len, seq_len).unwrap();
 
-                let k_hb_t = k_hb.transpose_2d();
-                let scores = q_hb.try_matmul(k_hb_t).unwrap();
+                // scores = Q·Kᵀ without materializing Kᵀ (no transpose node).
+                let scores = q_hb.try_matmul_bt(k_hb).unwrap();
                 let scaled = scores.scale(scale);
                 let pre_softmax = if self.causal
                 {
@@ -220,8 +220,7 @@ impl MultiHeadAttention {
                 let k_hb = k_h.slice_rows(b * kv_seq_len, kv_seq_len);
                 let v_hb = v_h.slice_rows(b * kv_seq_len, kv_seq_len);
 
-                let k_hb_t = k_hb.transpose_2d();
-                let scores = q_hb.matmul(k_hb_t);
+                let scores = q_hb.matmul_bt(k_hb); // Q·Kᵀ, no transpose node
                 let scaled = scores.scale(scale);
                 // Cross-attention n'est jamais causal
                 let attn = scaled.softmax(1);
@@ -279,7 +278,7 @@ impl MultiHeadAttention {
             let kh = k_cached.slice_cols(h * d_h, d_h);
             let vh = v_cached.slice_cols(h * d_h, d_h);
             heads.push(
-                qh.matmul(kh.transpose_2d())
+                qh.matmul_bt(kh) // Q·Kᵀ, no transpose node
                     .scale(scale)
                     .softmax(1)
                     .matmul(vh),
