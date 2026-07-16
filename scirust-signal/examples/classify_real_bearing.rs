@@ -47,8 +47,8 @@ fn main() {
     let fs = 12_000.0;
     println!("# CWRU bearing vibration (drive-end, 12 kHz), 4096 samples\n");
     println!(
-        "{:<18} {:>9} {:>7} {:>7}   {}",
-        "record", "verdict", "kurt", "crest", "note"
+        "{:<18} {:>9} {:>7} {:>7}   note",
+        "record", "verdict", "kurt", "crest"
     );
     for (tag, x) in [
         ("healthy (rec 97)", &normal),
