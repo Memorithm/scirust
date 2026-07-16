@@ -20,7 +20,8 @@ fn rigid_rotation_has_constant_vorticity() {
     let vx = Field2::from_fn(n, n, |i, _| -c[i]);
     let vy = Field2::from_fn(n, n, |_, j| c[j]);
     let w = vorticity(&vx, &vy, &geom, BoundaryMode::Finite).unwrap();
-    for &value in w.as_slice() {
+    for &value in w.as_slice()
+    {
         assert!((value - 2.0).abs() < 1e-12, "vorticity {value} != 2");
     }
 }
@@ -34,7 +35,8 @@ fn expansion_is_irrotational() {
     let vx = Field2::from_fn(n, n, |_, j| c[j]);
     let vy = Field2::from_fn(n, n, |i, _| c[i]);
     let w = vorticity(&vx, &vy, &geom, BoundaryMode::Finite).unwrap();
-    for &value in w.as_slice() {
+    for &value in w.as_slice()
+    {
         assert!(value.abs() < 1e-12, "vorticity {value} != 0");
     }
     let density = w.map(|v| v * v);

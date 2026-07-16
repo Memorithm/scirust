@@ -16,12 +16,14 @@ impl Field2 {
     /// Builds a field from row-major data. Fails if `data.len() != ny * nx` or
     /// either dimension is zero.
     pub fn from_vec(ny: usize, nx: usize, data: Vec<f64>) -> Result<Self> {
-        if ny == 0 || nx == 0 {
+        if ny == 0 || nx == 0
+        {
             return Err(ItdError::ShapeMismatch(
                 "field dimensions must be non-zero".into(),
             ));
         }
-        if data.len() != ny * nx {
+        if data.len() != ny * nx
+        {
             return Err(ItdError::ShapeMismatch(format!(
                 "expected {} values for {ny}x{nx}, got {}",
                 ny * nx,
@@ -34,8 +36,10 @@ impl Field2 {
     /// Builds a field by evaluating `f(i, j)` at every cell.
     pub fn from_fn<F: FnMut(usize, usize) -> f64>(ny: usize, nx: usize, mut f: F) -> Self {
         let mut data = Vec::with_capacity(ny * nx);
-        for i in 0..ny {
-            for j in 0..nx {
+        for i in 0..ny
+        {
+            for j in 0..nx
+            {
                 data.push(f(i, j));
             }
         }
@@ -104,7 +108,8 @@ impl Field2 {
     /// A new field combining `self` and `other` element-wise with `f`.
     /// Fails if the shapes differ.
     pub fn zip_map<F: FnMut(f64, f64) -> f64>(&self, other: &Field2, mut f: F) -> Result<Field2> {
-        if self.shape() != other.shape() {
+        if self.shape() != other.shape()
+        {
             return Err(ItdError::ShapeMismatch(format!(
                 "{:?} vs {:?}",
                 self.shape(),

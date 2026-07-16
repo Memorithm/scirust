@@ -38,15 +38,18 @@ impl StructuralWeights {
     /// Validates the weights: each must be finite and non-negative, with a
     /// strictly positive sum.
     pub fn new(weights: [f64; 5]) -> Result<Self> {
-        if !weights.iter().all(|w| w.is_finite()) {
+        if !weights.iter().all(|w| w.is_finite())
+        {
             return Err(ItdError::InvalidWeights("weights must be finite".into()));
         }
-        if weights.iter().any(|&w| w < 0.0) {
+        if weights.iter().any(|&w| w < 0.0)
+        {
             return Err(ItdError::InvalidWeights(
                 "weights must be non-negative".into(),
             ));
         }
-        if weights.iter().sum::<f64>() <= 0.0 {
+        if weights.iter().sum::<f64>() <= 0.0
+        {
             return Err(ItdError::InvalidWeights(
                 "at least one weight must be strictly positive".into(),
             ));
@@ -58,7 +61,8 @@ impl StructuralWeights {
     pub fn normalized(&self) -> [f64; 5] {
         let total: f64 = self.0.iter().sum();
         let mut out = self.0;
-        for w in &mut out {
+        for w in &mut out
+        {
             *w /= total;
         }
         out
@@ -111,13 +115,15 @@ pub fn structural_metrics(
     weights: StructuralWeights,
     boundary: BoundaryMode,
 ) -> Result<StructuralMetrics> {
-    if !structural_length.is_finite() || structural_length < 0.0 {
+    if !structural_length.is_finite() || structural_length < 0.0
+    {
         return Err(ItdError::InvalidGeometry(
             "structural length must be finite and non-negative".into(),
         ));
     }
     geometry.validate_field(omega)?;
-    if !omega.all_finite() {
+    if !omega.all_finite()
+    {
         return Err(ItdError::NonFinite("vorticity field".into()));
     }
     let weights = weights.normalized();
@@ -126,7 +132,8 @@ pub fn structural_metrics(
     let omega_sq = omega.map(|w| w * w);
     let mean_square = mean(&omega_sq)?;
     let rms = mean_square.max(0.0).sqrt();
-    if rms < ZERO_THRESHOLD {
+    if rms < ZERO_THRESHOLD
+    {
         return Ok(StructuralMetrics::ZERO);
     }
 
@@ -154,9 +161,12 @@ pub fn structural_metrics(
     let sign_mixing = (1.0 - mean_omega.abs() / mean_absolute.max(ZERO_THRESHOLD)).clamp(0.0, 1.0);
 
     let mut temporal_deformation = 0.0;
-    if let (Some(prev), Some(dt)) = (previous_omega, delta_time) {
-        if dt > 0.0 {
-            if prev.shape() != omega.shape() {
+    if let (Some(prev), Some(dt)) = (previous_omega, delta_time)
+    {
+        if dt > 0.0
+        {
+            if prev.shape() != omega.shape()
+            {
                 return Err(ItdError::ShapeMismatch(
                     "successive vorticity fields must share a shape".into(),
                 ));
@@ -164,7 +174,8 @@ pub fn structural_metrics(
             let prev_sq = prev.map(|w| w * w);
             let previous_rms = mean(&prev_sq)?.max(0.0).sqrt();
             let reference_rms = 0.5 * (rms + previous_rms);
-            if reference_rms >= ZERO_THRESHOLD {
+            if reference_rms >= ZERO_THRESHOLD
+            {
                 let diff_sq = omega.zip_map(prev, |a, b| {
                     let d = a - b;
                     d * d

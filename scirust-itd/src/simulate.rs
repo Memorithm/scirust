@@ -20,8 +20,8 @@ use crate::error::{ItdError, Result};
 use crate::field::Field2;
 use crate::geometry::{BoundaryMode, Geometry};
 use crate::operators::{bounded, spatial_mean, vorticity};
-use crate::scenarios::{curvature_field, Config, Scenario};
-use crate::signature::{structural_metrics, StructuralWeights, STRUCTURAL_LENGTH};
+use crate::scenarios::{Config, Scenario, curvature_field};
+use crate::signature::{STRUCTURAL_LENGTH, StructuralWeights, structural_metrics};
 
 /// Names of the five structural component indices, in reported order.
 pub const COMPONENT_NAMES: [&str; 5] = [
@@ -116,18 +116,24 @@ where
     CF: Fn(&[f64], &[f64], f64) -> Field2,
 {
     let n = times.len();
-    if n < 2 {
-        return Err(ItdError::TooFewPoints("simulation needs at least two time samples".into()));
+    if n < 2
+    {
+        return Err(ItdError::TooFewPoints(
+            "simulation needs at least two time samples".into(),
+        ));
     }
-    if !times.iter().all(|t| t.is_finite()) {
+    if !times.iter().all(|t| t.is_finite())
+    {
         return Err(ItdError::NonFinite("time samples".into()));
     }
-    if !times.windows(2).all(|w| w[1] > w[0]) {
+    if !times.windows(2).all(|w| w[1] > w[0])
+    {
         return Err(ItdError::InvalidGeometry(
             "time samples must be strictly increasing".into(),
         ));
     }
-    if !characteristic_length.is_finite() {
+    if !characteristic_length.is_finite()
+    {
         return Err(ItdError::NonFinite("characteristic length".into()));
     }
 
@@ -145,7 +151,8 @@ where
     let mut previous_omega: Option<Field2> = None;
     let mut previous_time = f64::NAN;
 
-    for i in 0..n {
+    for i in 0..n
+    {
         let t = times[i];
         let (vx, vy) = velocity(xc, yc, t);
         let omega = vorticity(&vx, &vy, geometry, config.boundary)?;
@@ -194,7 +201,8 @@ where
         vec![0.0; m],
         vec![0.0; m],
     ];
-    for j in 0..m {
+    for j in 0..m
+    {
         component_intervals[0][j] = midpoint(&bounded_het, j);
         component_intervals[1][j] = midpoint(&bounded_loc, j);
         component_intervals[2][j] = midpoint(&bounded_rough, j);
@@ -203,7 +211,8 @@ where
     }
 
     let mut interval_structure = vec![0.0; m];
-    for j in 0..m {
+    for j in 0..m
+    {
         interval_structure[j] = weights[0] * component_intervals[0][j]
             + weights[1] * component_intervals[1][j]
             + weights[2] * component_intervals[2][j]
@@ -220,7 +229,8 @@ where
 
     let integrate = |values: &[f64]| -> f64 {
         let mut acc = 0.0;
-        for j in 0..m {
+        for j in 0..m
+        {
             acc += values[j] * interval_dt[j];
         }
         acc / duration

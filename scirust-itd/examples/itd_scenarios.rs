@@ -5,7 +5,7 @@
 //!
 //! Run with: `cargo run -p scirust-itd --example itd_scenarios`
 
-use scirust_itd::{simulate_canonical, Config, Scenario, SimConfig};
+use scirust_itd::{Config, Scenario, SimConfig, simulate_canonical};
 
 fn main() {
     let config = Config::default();
@@ -18,7 +18,8 @@ fn main() {
 
     println!("=== ITD SIMULATOR (SciRust port) ===");
     println!("structural length : {:.6}", sim.structural_length);
-    for r in &results {
+    for r in &results
+    {
         println!();
         println!("scenario          : {}", r.name);
         println!("intensity index   : {:.12}", r.intensity_index);
@@ -30,8 +31,14 @@ fn main() {
     let coherent = &results[1];
     let multi = &results[2];
 
-    assert!(calm.intensity_index < 1.0e-20, "calm field must be quasi-irrotational");
-    assert!(calm.structure_index < 1.0e-20, "calm field must be structureless");
+    assert!(
+        calm.intensity_index < 1.0e-20,
+        "calm field must be quasi-irrotational"
+    );
+    assert!(
+        calm.structure_index < 1.0e-20,
+        "calm field must be structureless"
+    );
     assert!(
         coherent.intensity_index > multi.intensity_index,
         "the coherent vortex must be the most intense"

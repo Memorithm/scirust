@@ -29,21 +29,26 @@ pub fn bounded(x: f64) -> f64 {
 fn grad1d_uniform(v: &[f64], h: f64, boundary: BoundaryMode) -> Vec<f64> {
     let n = v.len();
     let mut out = vec![0.0; n];
-    match boundary {
-        BoundaryMode::Periodic => {
-            for k in 0..n {
+    match boundary
+    {
+        BoundaryMode::Periodic =>
+        {
+            for k in 0..n
+            {
                 let fwd = v[(k + 1) % n];
                 let bwd = v[(k + n - 1) % n];
                 out[k] = (fwd - bwd) / (2.0 * h);
             }
-        }
-        BoundaryMode::Finite => {
+        },
+        BoundaryMode::Finite =>
+        {
             out[0] = (-1.5 * v[0] + 2.0 * v[1] - 0.5 * v[2]) / h;
-            for k in 1..n - 1 {
+            for k in 1..n - 1
+            {
                 out[k] = (v[k + 1] - v[k - 1]) / (2.0 * h);
             }
             out[n - 1] = (1.5 * v[n - 1] - 2.0 * v[n - 2] + 0.5 * v[n - 3]) / h;
-        }
+        },
     }
     out
 }
@@ -66,7 +71,8 @@ fn grad1d_coords(v: &[f64], coords: &[f64]) -> Vec<f64> {
     }
 
     // Interior.
-    for k in 1..n - 1 {
+    for k in 1..n - 1
+    {
         let dx1 = coords[k] - coords[k - 1];
         let dx2 = coords[k + 1] - coords[k];
         let a = -dx2 / (dx1 * (dx1 + dx2));
@@ -92,7 +98,8 @@ fn grad1d_coords(v: &[f64], coords: &[f64]) -> Vec<f64> {
 /// right, matching NumPy's `trapezoid`).
 fn trapz_uniform(a: &[f64], h: f64) -> f64 {
     let mut acc = 0.0;
-    for k in 0..a.len() - 1 {
+    for k in 0..a.len() - 1
+    {
         acc += 0.5 * (a[k] + a[k + 1]);
     }
     acc * h
@@ -101,7 +108,8 @@ fn trapz_uniform(a: &[f64], h: f64) -> f64 {
 /// Trapezoidal integral of `a` sampled at the coordinates `coords`.
 fn trapz_coords(a: &[f64], coords: &[f64]) -> f64 {
     let mut acc = 0.0;
-    for k in 0..a.len() - 1 {
+    for k in 0..a.len() - 1
+    {
         acc += (coords[k + 1] - coords[k]) * 0.5 * (a[k] + a[k + 1]);
     }
     acc
@@ -112,13 +120,17 @@ fn trapz_coords(a: &[f64], coords: &[f64]) -> f64 {
 fn require_grid_for_derivative(field: &Field2, geometry: &Geometry) -> Result<()> {
     geometry.validate_field(field)?;
     let (ny, nx) = field.shape();
-    if ny.min(nx) < 3 {
+    if ny.min(nx) < 3
+    {
         return Err(ItdError::TooFewPoints(
             "gradient/vorticity need at least three points per direction".into(),
         ));
     }
-    if !field.all_finite() {
-        return Err(ItdError::NonFinite("field contains a non-finite value".into()));
+    if !field.all_finite()
+    {
+        return Err(ItdError::NonFinite(
+            "field contains a non-finite value".into(),
+        ));
     }
     Ok(())
 }
@@ -133,7 +145,8 @@ pub fn gradient(
     require_grid_for_derivative(field, geometry)?;
     let (ny, nx) = field.shape();
 
-    if let (BoundaryMode::Periodic, Geometry::Rectilinear { .. }) = (boundary, geometry) {
+    if let (BoundaryMode::Periodic, Geometry::Rectilinear { .. }) = (boundary, geometry)
+    {
         return Err(ItdError::UnsupportedBoundary(
             "periodic gradient requires a uniform grid".into(),
         ));
@@ -144,30 +157,38 @@ pub fn gradient(
 
     // Gradient along x (axis 1): one 1-D pass per row.
     let mut row = vec![0.0; nx];
-    for i in 0..ny {
-        for j in 0..nx {
+    for i in 0..ny
+    {
+        for j in 0..nx
+        {
             row[j] = field.get(i, j);
         }
-        let gx = match geometry {
+        let gx = match geometry
+        {
             Geometry::Uniform { dx, .. } => grad1d_uniform(&row, *dx, boundary),
             Geometry::Rectilinear { x, .. } => grad1d_coords(&row, x),
         };
-        for j in 0..nx {
+        for j in 0..nx
+        {
             *grad_x.get_mut(i, j) = gx[j];
         }
     }
 
     // Gradient along y (axis 0): one 1-D pass per column.
     let mut col = vec![0.0; ny];
-    for j in 0..nx {
-        for i in 0..ny {
+    for j in 0..nx
+    {
+        for i in 0..ny
+        {
             col[i] = field.get(i, j);
         }
-        let gy = match geometry {
+        let gy = match geometry
+        {
             Geometry::Uniform { dy, .. } => grad1d_uniform(&col, *dy, boundary),
             Geometry::Rectilinear { y, .. } => grad1d_coords(&col, y),
         };
-        for i in 0..ny {
+        for i in 0..ny
+        {
             *grad_y.get_mut(i, j) = gy[i];
         }
     }
@@ -182,7 +203,8 @@ pub fn vorticity(
     geometry: &Geometry,
     boundary: BoundaryMode,
 ) -> Result<Field2> {
-    if vx.shape() != vy.shape() {
+    if vx.shape() != vy.shape()
+    {
         return Err(ItdError::ShapeMismatch(format!(
             "velocity components differ: {:?} vs {:?}",
             vx.shape(),
@@ -200,48 +222,60 @@ pub fn vorticity(
 pub fn spatial_mean(field: &Field2, geometry: &Geometry, boundary: BoundaryMode) -> Result<f64> {
     geometry.validate_field(field)?;
     let (ny, nx) = field.shape();
-    if ny.min(nx) < 2 {
+    if ny.min(nx) < 2
+    {
         return Err(ItdError::TooFewPoints(
             "spatial mean needs at least two points per direction".into(),
         ));
     }
-    if !field.all_finite() {
-        return Err(ItdError::NonFinite("field contains a non-finite value".into()));
+    if !field.all_finite()
+    {
+        return Err(ItdError::NonFinite(
+            "field contains a non-finite value".into(),
+        ));
     }
 
-    if boundary == BoundaryMode::Periodic {
+    if boundary == BoundaryMode::Periodic
+    {
         let sum: f64 = field.as_slice().iter().sum();
         return Ok(sum / (ny * nx) as f64);
     }
 
-    match geometry {
-        Geometry::Uniform { dx, dy } => {
+    match geometry
+    {
+        Geometry::Uniform { dx, dy } =>
+        {
             let height = (ny - 1) as f64 * dy;
             let width = (nx - 1) as f64 * dx;
             let area = height * width;
             let mut row = vec![0.0; nx];
             let mut integral_x = vec![0.0; ny];
-            for i in 0..ny {
-                for j in 0..nx {
+            for i in 0..ny
+            {
+                for j in 0..nx
+                {
                     row[j] = field.get(i, j);
                 }
                 integral_x[i] = trapz_uniform(&row, *dx);
             }
             Ok(trapz_uniform(&integral_x, *dy) / area)
-        }
-        Geometry::Rectilinear { x, y } => {
+        },
+        Geometry::Rectilinear { x, y } =>
+        {
             let width = x[x.len() - 1] - x[0];
             let height = y[y.len() - 1] - y[0];
             let area = width * height;
             let mut row = vec![0.0; nx];
             let mut integral_x = vec![0.0; ny];
-            for i in 0..ny {
-                for j in 0..nx {
+            for i in 0..ny
+            {
+                for j in 0..nx
+                {
                     row[j] = field.get(i, j);
                 }
                 integral_x[i] = trapz_coords(&row, x);
             }
             Ok(trapz_coords(&integral_x, y) / area)
-        }
+        },
     }
 }

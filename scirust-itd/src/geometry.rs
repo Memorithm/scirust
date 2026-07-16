@@ -62,9 +62,11 @@ impl Geometry {
     /// Checks that a field's shape is compatible with this geometry. Uniform
     /// grids accept any shape; rectilinear grids must match `(ny, nx)`.
     pub fn validate_field(&self, field: &Field2) -> Result<()> {
-        if let Geometry::Rectilinear { x, y } = self {
+        if let Geometry::Rectilinear { x, y } = self
+        {
             let expected = (y.len(), x.len());
-            if field.shape() != expected {
+            if field.shape() != expected
+            {
                 return Err(ItdError::ShapeMismatch(format!(
                     "field {:?} does not match rectilinear geometry {:?}",
                     field.shape(),
@@ -77,7 +79,8 @@ impl Geometry {
 }
 
 fn check_spacing(value: f64, name: &str) -> Result<()> {
-    if !value.is_finite() || value <= 0.0 {
+    if !value.is_finite() || value <= 0.0
+    {
         return Err(ItdError::InvalidGeometry(format!(
             "{name} must be finite and strictly positive (got {value})"
         )));
@@ -86,16 +89,19 @@ fn check_spacing(value: f64, name: &str) -> Result<()> {
 }
 
 fn check_coords(coords: &[f64], name: &str) -> Result<()> {
-    if coords.len() < 3 {
+    if coords.len() < 3
+    {
         return Err(ItdError::TooFewPoints(format!(
             "axis {name} needs at least three coordinates (got {})",
             coords.len()
         )));
     }
-    if !coords.iter().all(|v| v.is_finite()) {
+    if !coords.iter().all(|v| v.is_finite())
+    {
         return Err(ItdError::NonFinite(format!("axis {name} coordinates")));
     }
-    if !coords.windows(2).all(|w| w[1] > w[0]) {
+    if !coords.windows(2).all(|w| w[1] > w[0])
+    {
         return Err(ItdError::InvalidGeometry(format!(
             "axis {name} coordinates must be strictly increasing"
         )));

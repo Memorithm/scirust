@@ -62,10 +62,12 @@ impl Config {
 /// `num` evenly spaced samples over `[start, stop]`, reproducing NumPy's
 /// `linspace` (the final sample is set exactly to `stop`).
 pub fn linspace(start: f64, stop: f64, num: usize) -> Vec<f64> {
-    if num == 0 {
+    if num == 0
+    {
         return Vec::new();
     }
-    if num == 1 {
+    if num == 1
+    {
         return vec![start];
     }
     let delta = (stop - start) / (num - 1) as f64;
@@ -89,7 +91,8 @@ pub enum Scenario {
 impl Scenario {
     /// The reference name of the scenario.
     pub fn name(&self) -> &'static str {
-        match self {
+        match self
+        {
             Scenario::Calm => "calm",
             Scenario::Coherent => "coherent",
             Scenario::Multi => "multi",
@@ -99,7 +102,8 @@ impl Scenario {
     /// Evaluates the velocity field `(vx, vy)` at time `t` on the grid given by
     /// column coordinates `xc` and row coordinates `yc`.
     pub fn velocity(&self, xc: &[f64], yc: &[f64], t: f64) -> (Field2, Field2) {
-        match self {
+        match self
+        {
             Scenario::Calm => calm_field(xc, yc, t),
             Scenario::Coherent => coherent_vortex(xc, yc, t),
             Scenario::Multi => multi_vortex_field(xc, yc, t),
@@ -165,13 +169,16 @@ pub fn multi_vortex_field(xc: &[f64], yc: &[f64], t: f64) -> (Field2, Field2) {
     let mut vx = Field2::zeros(ny, nx);
     let mut vy = Field2::zeros(ny, nx);
 
-    for i in 0..ny {
-        for j in 0..nx {
+    for i in 0..ny
+    {
+        for j in 0..nx
+        {
             let x = xc[j];
             let y = yc[i];
             let mut ux = 0.0;
             let mut uy = 0.0;
-            for &(center_x, center_y, strength, width) in &vortex_data {
+            for &(center_x, center_y, strength, width) in &vortex_data
+            {
                 let dx = x - center_x;
                 let dy = y - center_y;
                 let radius_squared = dx * dx + dy * dy;

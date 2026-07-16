@@ -13,7 +13,7 @@ mod oracle_data {
 
 use oracle_data as od;
 use scirust_itd::operators::{bounded, gradient, spatial_mean, vorticity};
-use scirust_itd::signature::{structural_metrics, StructuralWeights};
+use scirust_itd::signature::{StructuralWeights, structural_metrics};
 use scirust_itd::{BoundaryMode, Config, Field2, Geometry, Scenario, SimConfig};
 
 const REL: f64 = 1e-9;
@@ -35,7 +35,8 @@ fn assert_close(a: f64, b: f64, ctx: &str) {
 #[track_caller]
 fn assert_slice_close(got: &[f64], want: &[f64], ctx: &str) {
     assert_eq!(got.len(), want.len(), "{ctx}: length mismatch");
-    for (k, (&g, &w)) in got.iter().zip(want.iter()).enumerate() {
+    for (k, (&g, &w)) in got.iter().zip(want.iter()).enumerate()
+    {
         assert_close(g, w, &format!("{ctx}[{k}]"));
     }
 }
@@ -130,7 +131,8 @@ fn spatial_mean_matches() {
 
 #[test]
 fn bounded_matches() {
-    for (&x, &want) in od::BOUNDED_IN.iter().zip(od::BOUNDED_OUT.iter()) {
+    for (&x, &want) in od::BOUNDED_IN.iter().zip(od::BOUNDED_OUT.iter())
+    {
         assert_close(bounded(x), want, "bounded");
     }
 }
@@ -173,17 +175,46 @@ struct ScenarioOracle {
 
 fn check_scenarios(config: &Config, cases: &[ScenarioOracle], tag: &str) {
     let sim = SimConfig::default();
-    for case in cases {
+    for case in cases
+    {
         let r = scirust_itd::simulate_canonical(case.scenario, config, &sim).unwrap();
         let ctx = format!("{tag}/{}", case.scenario.name());
-        assert_close(r.intensity_index, case.intensity, &format!("{ctx}/intensity"));
-        assert_close(r.structure_index, case.structure, &format!("{ctx}/structure"));
+        assert_close(
+            r.intensity_index,
+            case.intensity,
+            &format!("{ctx}/intensity"),
+        );
+        assert_close(
+            r.structure_index,
+            case.structure,
+            &format!("{ctx}/structure"),
+        );
         assert_close(r.coupled_index, case.coupled, &format!("{ctx}/coupled"));
-        assert_close(r.component_indices[0], case.components[0], &format!("{ctx}/het"));
-        assert_close(r.component_indices[1], case.components[1], &format!("{ctx}/loc"));
-        assert_close(r.component_indices[2], case.components[2], &format!("{ctx}/rou"));
-        assert_close(r.component_indices[3], case.components[3], &format!("{ctx}/sgn"));
-        assert_close(r.component_indices[4], case.components[4], &format!("{ctx}/tmp"));
+        assert_close(
+            r.component_indices[0],
+            case.components[0],
+            &format!("{ctx}/het"),
+        );
+        assert_close(
+            r.component_indices[1],
+            case.components[1],
+            &format!("{ctx}/loc"),
+        );
+        assert_close(
+            r.component_indices[2],
+            case.components[2],
+            &format!("{ctx}/rou"),
+        );
+        assert_close(
+            r.component_indices[3],
+            case.components[3],
+            &format!("{ctx}/sgn"),
+        );
+        assert_close(
+            r.component_indices[4],
+            case.components[4],
+            &format!("{ctx}/tmp"),
+        );
     }
 }
 
@@ -240,24 +271,42 @@ fn scenarios_small_grid() {
     // Sampled per-step series.
     let sim = SimConfig::default();
     let r = scirust_itd::simulate_canonical(Scenario::Coherent, &config, &sim).unwrap();
-    for (k, &idx) in od::SC_SMALL_COHERENT_SAMPLE_IDX.iter().enumerate() {
+    for (k, &idx) in od::SC_SMALL_COHERENT_SAMPLE_IDX.iter().enumerate()
+    {
         assert_close(
             r.intensity_rate[idx],
             od::SC_SMALL_COHERENT_SAMPLE_INTENSITY_RATE[k],
             "coherent/intensity_rate",
         );
-        assert_close(r.heterogeneity[idx], od::SC_SMALL_COHERENT_SAMPLE_HET[k], "coherent/het");
-        assert_close(r.roughness[idx], od::SC_SMALL_COHERENT_SAMPLE_ROU[k], "coherent/rou");
+        assert_close(
+            r.heterogeneity[idx],
+            od::SC_SMALL_COHERENT_SAMPLE_HET[k],
+            "coherent/het",
+        );
+        assert_close(
+            r.roughness[idx],
+            od::SC_SMALL_COHERENT_SAMPLE_ROU[k],
+            "coherent/rou",
+        );
     }
     let r = scirust_itd::simulate_canonical(Scenario::Multi, &config, &sim).unwrap();
-    for (k, &idx) in od::SC_SMALL_MULTI_SAMPLE_IDX.iter().enumerate() {
+    for (k, &idx) in od::SC_SMALL_MULTI_SAMPLE_IDX.iter().enumerate()
+    {
         assert_close(
             r.intensity_rate[idx],
             od::SC_SMALL_MULTI_SAMPLE_INTENSITY_RATE[k],
             "multi/intensity_rate",
         );
-        assert_close(r.heterogeneity[idx], od::SC_SMALL_MULTI_SAMPLE_HET[k], "multi/het");
-        assert_close(r.roughness[idx], od::SC_SMALL_MULTI_SAMPLE_ROU[k], "multi/rou");
+        assert_close(
+            r.heterogeneity[idx],
+            od::SC_SMALL_MULTI_SAMPLE_HET[k],
+            "multi/het",
+        );
+        assert_close(
+            r.roughness[idx],
+            od::SC_SMALL_MULTI_SAMPLE_ROU[k],
+            "multi/rou",
+        );
     }
 }
 

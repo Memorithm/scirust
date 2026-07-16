@@ -33,7 +33,8 @@ pub enum ItdError {
 
 impl fmt::Display for ItdError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
+        match self
+        {
             ItdError::InvalidGeometry(m) => write!(f, "invalid geometry: {m}"),
             ItdError::ShapeMismatch(m) => write!(f, "shape mismatch: {m}"),
             ItdError::TooFewPoints(m) => write!(f, "too few grid points: {m}"),

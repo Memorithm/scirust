@@ -67,5 +67,5 @@ pub use error::{ItdError, Result};
 pub use field::Field2;
 pub use geometry::{BoundaryMode, Geometry};
 pub use scenarios::{Config, Scenario};
-pub use signature::{structural_metrics, StructuralMetrics, StructuralWeights};
-pub use simulate::{simulate, simulate_canonical, SimConfig, SimulationResult, COMPONENT_NAMES};
+pub use signature::{StructuralMetrics, StructuralWeights, structural_metrics};
+pub use simulate::{COMPONENT_NAMES, SimConfig, SimulationResult, simulate, simulate_canonical};
