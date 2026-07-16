@@ -83,7 +83,7 @@
 //!   transforms a NaN is absorbed by the clamp (`f64::max` ignores NaN).
 
 use super::{mad, median, stft_wiener_auto};
-use core::f64::consts::{LN_2, SQRT_2};
+use core::f64::consts::SQRT_2;
 
 /// Domain offset of the Anscombe transform: `2·√(x + 3/8)`.
 const ANSCOMBE_OFFSET: f64 = 0.375;
@@ -105,6 +105,12 @@ const DETECT_MAX_WINDOWS: usize = 512;
 const DETECT_MIN_KEPT: f64 = 0.75;
 /// Minimum absolute Pearson correlation of (log level, log scale) to trust the fit.
 const DETECT_MIN_CORR: f64 = 0.6;
+/// Minimum level dynamic range (`max level / min level`) the detector requires.
+/// Calibrated by measurement, not convention: the `vst_protocol` example (P4b)
+/// locates the +0.5 dB materiality crossover at ≈ ×3 — at ×2 dynamic range and
+/// 30 % multiplicative noise the VST sandwich is a −0.77 dB material *loss*, so
+/// firing there would violate the "never degrade" rule the selector exists for.
+const DETECT_MIN_RANGE: f64 = 3.0;
 
 /// The variance-stabilizing transform families supported by this module.
 ///
@@ -453,8 +459,10 @@ fn pearson_r(xs: &[f64], ys: &[f64]) -> Option<f64> {
 ///    — first differences cancel the local trend, and the MAD is immune to a minority
 ///    of outliers; the √2 undoes the variance doubling of differencing.
 /// 3. Keep windows with finite `m > 0` and `s > 0`; require ≥ 75 % kept **and** a
-///    level dynamic range `max(m)/min(m) ≥ 2` (without level variation no law is
-///    identifiable).
+///    level dynamic range `max(m)/min(m) ≥ 3` — without level variation no law is
+///    identifiable, and the threshold is *measured*, not conventional: the
+///    `vst_protocol` sweep (P4b) puts the +0.5 dB materiality crossover at ≈ ×3,
+///    with ×2 being a material −0.77 dB loss at 30 % multiplicative noise.
 /// 4. Fit `log s = α + β·log m` with the robust Theil-Sen slope (median of pairwise
 ///    slopes, sorted with `total_cmp`); require Pearson `|r| ≥ 0.6` on the log-log
 ///    points.
@@ -505,7 +513,7 @@ pub fn detect_noise_model(signal: &[f64]) -> VstKind {
         lo = lo.min(l);
         hi = hi.max(l);
     }
-    if hi - lo < LN_2
+    if hi - lo < DETECT_MIN_RANGE.ln()
     {
         return VstKind::Identity;
     }
@@ -692,9 +700,9 @@ mod tests {
         (clean, noisy)
     }
 
-    /// `(clean, noisy)` multiplicative *selector* fixture: levels in `[2, 4.5]`
-    /// (a ×2.25 soft regime — enough for the selector, too soft for a ≥ 1 dB gate),
-    /// `x = s·(1 + 0.3·g)`.
+    /// `(clean, noisy)` multiplicative *soft-regime* fixture: levels in `[2, 4.5]`
+    /// (×2.25 — beneath the selector's measured ×3 materiality gate, where the
+    /// VST is a small loss; the selector must stay Identity here), `x = s·(1 + 0.3·g)`.
     fn multiplicative_fixture(n: usize, seed: u64) -> (Vec<f64>, Vec<f64>) {
         let clean: Vec<f64> = (0..n)
             .map(|i| 3.0 + (2.0 * PI * 3.0 * i as f64 / n as f64).sin() + 0.5 * i as f64 / n as f64)
@@ -911,9 +919,13 @@ mod tests {
         let (_, noisy_poisson) = poisson_fixture(4096, 7);
         assert_eq!(detect_noise_model(&noisy_poisson), VstKind::Anscombe);
 
-        // (c) The multiplicative fixtures (soft and strong) → SignedLog.
+        // (c) The strong multiplicative fixture (×10 levels) → SignedLog; the SOFT
+        // one (×2.25) must now stay Identity: the vst_protocol P4b sweep measured
+        // the +0.5 dB materiality crossover at ≈ ×3 dynamic range (×2 is a
+        // −0.77 dB material loss), so the DETECT_MIN_RANGE gate deliberately
+        // excludes it — firing there would violate "never degrade".
         let (_, noisy_mult) = multiplicative_fixture(4096, 9);
-        assert_eq!(detect_noise_model(&noisy_mult), VstKind::SignedLog);
+        assert_eq!(detect_noise_model(&noisy_mult), VstKind::Identity);
         let (_, noisy_strong) = strong_multiplicative_fixture(4096, 9);
         assert_eq!(detect_noise_model(&noisy_strong), VstKind::SignedLog);
 
