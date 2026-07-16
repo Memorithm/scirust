@@ -139,7 +139,7 @@ pub use stft::{
 };
 pub use streaming::{
     StreamingDenoiser, StreamingEma, StreamingHampel, StreamingKalman, StreamingMedian,
-    StreamingMovingAverage,
+    StreamingMovingAverage, StreamingVst,
 };
 pub use transform::{
     ThresholdMode, Wavelet, cycle_spin, fft_highpass, fft_lowpass, notch_filter, remove_mains_hum,
