@@ -10,7 +10,7 @@
 //     cargo bench -p scirust-simd --features portable-simd --bench dsp_bench
 
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
-use scirust_simd::dsp::{Biquad, Complex, Fir, fft};
+use scirust_simd::dsp::{Biquad, Complex, Fir, Plan, fft};
 use scirust_simd::fixed::Q16_16;
 
 const N: usize = 1 << 14;
@@ -125,5 +125,36 @@ fn bench_fft(c: &mut Criterion) {
     g.finish();
 }
 
-criterion_group!(benches, bench_biquad, bench_fir, bench_fft);
+/// FFT-1024 virgule fixe : fonction libre (twiddles recalculés) vs plan
+/// (twiddles précalculés). Quantifie le gain du plan sur le chemin fixe.
+fn bench_fft_plan(c: &mut Criterion) {
+    const M: usize = 1 << 10;
+    let sf = signal_f32();
+    let base_x: Vec<Complex<Q16_16>> = (0..M)
+        .map(|i| Complex::from_real(Q16_16::try_from(sf[i] as f64).unwrap()))
+        .collect();
+    let plan = Plan::<Q16_16>::new(M);
+
+    let mut g = c.benchmark_group("fft1024_plan_vs_free");
+    g.throughput(Throughput::Elements(M as u64));
+    g.bench_function(BenchmarkId::new("free", "Q16_16"), |b| {
+        let mut buf = base_x.clone();
+        b.iter(|| {
+            buf.copy_from_slice(&base_x);
+            fft(black_box(&mut buf));
+            buf[0]
+        })
+    });
+    g.bench_function(BenchmarkId::new("plan", "Q16_16"), |b| {
+        let mut buf = base_x.clone();
+        b.iter(|| {
+            buf.copy_from_slice(&base_x);
+            plan.fft(black_box(&mut buf));
+            buf[0]
+        })
+    });
+    g.finish();
+}
+
+criterion_group!(benches, bench_biquad, bench_fir, bench_fft, bench_fft_plan);
 criterion_main!(benches);

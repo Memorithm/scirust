@@ -182,3 +182,122 @@ pub fn ifft<T: RealScalar>(data: &mut [Complex<T>]) {
         *c = c.conj().scale(inv_n);
     }
 }
+
+/// Plan de FFT de longueur fixe : **précalcule** les facteurs de rotation et la
+/// permutation par inversion de bits, une seule fois. Chaque transformation
+/// réutilise ces tables (aucun `sin`/`cos` recalculé, **aucune allocation par
+/// transformation**) — nettement plus rapide sur le chemin virgule fixe.
+///
+/// Les twiddles sont calculés avec **exactement** la même expression d'angle que
+/// [`fft`], donc [`Plan::fft`] produit un résultat **bit-à-bit identique** à la
+/// fonction libre (vérifié par test en virgule fixe).
+#[derive(Debug, Clone)]
+pub struct Plan<T> {
+    n: usize,
+    /// `stages[s]` = les `len/2` twiddles de l'étage `len = 2^{s+1}`.
+    stages: Vec<Vec<Complex<T>>>,
+    /// Permutation par inversion de bits.
+    rev: Vec<usize>,
+    /// `1/n` (normalisation de l'inverse).
+    inv_n: T,
+}
+
+impl<T: RealScalar> Plan<T> {
+    /// Prépare un plan pour une longueur `n` (puissance de 2).
+    #[must_use]
+    pub fn new(n: usize) -> Self {
+        assert!(
+            n.is_power_of_two(),
+            "Plan: la longueur doit être une puissance de 2"
+        );
+        let bits = n.trailing_zeros();
+        let rev = (0..n).map(|i| reverse_bits(i, bits)).collect();
+
+        let neg_two_pi = T::from_i32(-2) * T::pi();
+        let mut stages = Vec::new();
+        let mut len = 2usize;
+        while len <= n
+        {
+            let half = len / 2;
+            let inv_len = T::from_i32(len as i32).recip();
+            let twiddles = (0..half)
+                .map(|k| {
+                    let angle = neg_two_pi * T::from_i32(k as i32) * inv_len;
+                    Complex::new(angle.cos(), angle.sin())
+                })
+                .collect();
+            stages.push(twiddles);
+            len <<= 1;
+        }
+        Self {
+            n,
+            stages,
+            rev,
+            inv_n: T::from_i32(n.max(1) as i32).recip(),
+        }
+    }
+
+    /// Longueur du plan.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.n
+    }
+
+    /// `true` si le plan est de longueur nulle.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.n == 0
+    }
+
+    /// FFT directe **en place** via les tables précalculées. Panique si
+    /// `data.len() != self.len()`.
+    pub fn fft(&self, data: &mut [Complex<T>]) {
+        assert_eq!(data.len(), self.n, "Plan::fft: longueur incompatible");
+        if self.n <= 1
+        {
+            return;
+        }
+        for i in 0..self.n
+        {
+            let j = self.rev[i];
+            if j > i
+            {
+                data.swap(i, j);
+            }
+        }
+        let mut len = 2usize;
+        for twiddles in &self.stages
+        {
+            let half = len / 2;
+            for start in (0..self.n).step_by(len)
+            {
+                for (k, &w) in twiddles.iter().enumerate()
+                {
+                    let t = w * data[start + k + half];
+                    let u = data[start + k];
+                    data[start + k] = u + t;
+                    data[start + k + half] = u - t;
+                }
+            }
+            len <<= 1;
+        }
+    }
+
+    /// FFT inverse **en place**, normalisée `1/N`, via les tables précalculées.
+    pub fn ifft(&self, data: &mut [Complex<T>]) {
+        assert_eq!(data.len(), self.n, "Plan::ifft: longueur incompatible");
+        if self.n == 0
+        {
+            return;
+        }
+        for c in data.iter_mut()
+        {
+            *c = c.conj();
+        }
+        self.fft(data);
+        for c in data.iter_mut()
+        {
+            *c = c.conj().scale(self.inv_n);
+        }
+    }
+}

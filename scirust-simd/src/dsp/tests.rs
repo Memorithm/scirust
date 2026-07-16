@@ -6,7 +6,7 @@
 // vérifie les propriétés spectrales (gains au continu / à Nyquist), la réponse
 // impulsionnelle, l'accord virgule fixe ↔ flottant, et le déterminisme bit-à-bit.
 
-use super::fft::{Complex, fft, ifft};
+use super::fft::{Complex, Plan, fft, ifft};
 use super::{Biquad, Fir};
 use crate::fixed::{Q8_24, Q16_16, RealScalar};
 
@@ -443,5 +443,70 @@ fn fft_fixed_matches_float_and_deterministic() {
     {
         assert_eq!(a.re.to_raw(), b.re.to_raw());
         assert_eq!(a.im.to_raw(), b.im.to_raw());
+    }
+}
+
+// ------------------------------------------------------------------ //
+//  FFT : plan à twiddles précalculés                                  //
+// ------------------------------------------------------------------ //
+
+#[test]
+fn fft_plan_matches_free_bit_for_bit_fixed() {
+    // Le plan calcule les twiddles avec la MÊME expression que la fonction
+    // libre ⇒ résultat identique au bit près en virgule fixe.
+    let sig: Vec<f64> = (0..32)
+        .map(|i| ((i * 5 % 13) as f64) * 0.05 - 0.3)
+        .collect();
+    let plan = Plan::<Q16_16>::new(32);
+    let mut planned = cvec::<Q16_16>(&sig);
+    let mut freed = cvec::<Q16_16>(&sig);
+    plan.fft(&mut planned);
+    fft(&mut freed);
+    for (a, b) in planned.iter().zip(freed.iter())
+    {
+        assert_eq!(a.re.to_raw(), b.re.to_raw(), "twiddle plan ≠ libre (re)");
+        assert_eq!(a.im.to_raw(), b.im.to_raw(), "twiddle plan ≠ libre (im)");
+    }
+}
+
+#[test]
+fn fft_plan_reuse_and_roundtrip() {
+    let plan = Plan::<f64>::new(16);
+    assert_eq!(plan.len(), 16);
+    assert!(!plan.is_empty());
+    let sig: Vec<f64> = (0..16).map(|i| (i as f64 * 0.4).sin() * 0.5).collect();
+
+    // Réutilisation : deux transformations successives donnent le même résultat.
+    let mut a = cvec::<f64>(&sig);
+    let mut b = cvec::<f64>(&sig);
+    plan.fft(&mut a);
+    plan.fft(&mut b);
+    for (x, y) in a.iter().zip(b.iter())
+    {
+        assert_eq!(x, y);
+    }
+    // Round-trip plan.ifft(plan.fft(x)) ≈ x.
+    let orig = cvec::<f64>(&sig);
+    let mut data = orig.clone();
+    plan.fft(&mut data);
+    plan.ifft(&mut data);
+    for (r, o) in data.iter().zip(orig.iter())
+    {
+        assert!((r.re - o.re).abs() < 1e-9 && (r.im - o.im).abs() < 1e-9);
+    }
+}
+
+#[test]
+fn fft_plan_matches_dft() {
+    let sig: Vec<f64> = (0..16)
+        .map(|i| ((i * 7 % 11) as f64) * 0.06 - 0.3)
+        .collect();
+    let plan = Plan::<f64>::new(16);
+    let mut data = cvec::<f64>(&sig);
+    plan.fft(&mut data);
+    let reference = naive_dft(&sig);
+    for (got, (re, im)) in data.iter().zip(reference.iter())
+    {
+        assert!((got.re - re).abs() < 1e-9 && (got.im - im).abs() < 1e-9);
     }
 }
