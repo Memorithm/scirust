@@ -301,3 +301,103 @@ impl<T: RealScalar> Plan<T> {
         }
     }
 }
+
+// ------------------------------------------------------------------ //
+//  FFT à entrée réelle (rfft / irfft)                                 //
+// ------------------------------------------------------------------ //
+
+/// FFT d'un signal **réel** de longueur `n` (puissance de 2), renvoyant les
+/// `n/2 + 1` bins non redondants `X[0..=n/2]` (les autres s'obtiennent par
+/// symétrie hermitienne `X[n−k] = conj(X[k])`).
+///
+/// **Deux fois moins de travail** qu'une FFT complexe : les échantillons pairs
+/// et impairs sont empaquetés dans une FFT complexe de longueur `n/2`, puis
+/// recombinés. Générique et **déterministe bit-à-bit** en virgule fixe.
+#[must_use]
+pub fn rfft<T: RealScalar>(input: &[T]) -> Vec<Complex<T>> {
+    let n = input.len();
+    assert!(
+        n.is_power_of_two() && n >= 2,
+        "rfft: longueur = puissance de 2 ≥ 2"
+    );
+    let m = n / 2;
+
+    // Empaquetage : z[k] = x[2k] + i·x[2k+1], puis FFT complexe de longueur m.
+    let mut z: Vec<Complex<T>> = (0..m)
+        .map(|k| Complex::new(input[2 * k], input[2 * k + 1]))
+        .collect();
+    fft(&mut z);
+
+    let half = T::from_i32(2).recip();
+    let two_pi = T::from_i32(2) * T::pi();
+    let inv_n = T::from_i32(n as i32).recip();
+    let mut out = Vec::with_capacity(m + 1);
+    for k in 0..=m
+    {
+        let k1 = k % m;
+        let kc = (m - k1) % m;
+        let zk = z[k1];
+        let zc = z[kc].conj();
+        // Xe = (Zk + conj(Z_{m−k}))/2 ; Xo = (Zk − conj(Z_{m−k}))/(2i).
+        let xe = (zk + zc).scale(half);
+        let d = zk - zc;
+        let xo = Complex::new(d.im * half, -(d.re * half)); // (1/2i)·d
+        // Wₙᵏ = e^{−2iπk/n}.
+        let angle = two_pi * T::from_i32(k as i32) * inv_n;
+        let w = Complex::new(angle.cos(), -(angle.sin()));
+        out.push(xe + w * xo);
+    }
+    out
+}
+
+/// FFT inverse réelle : reconstruit le signal réel de longueur `n` depuis ses
+/// `n/2 + 1` bins (réciproque de [`rfft`], `irfft(rfft(x), x.len()) ≈ x`).
+///
+/// Panique si `spectrum.len() != n/2 + 1` ou si `n` n'est pas une puissance de 2.
+#[must_use]
+pub fn irfft<T: RealScalar>(spectrum: &[Complex<T>], n: usize) -> Vec<T> {
+    assert!(
+        n.is_power_of_two() && n >= 2,
+        "irfft: longueur = puissance de 2 ≥ 2"
+    );
+    let m = n / 2;
+    assert_eq!(spectrum.len(), m + 1, "irfft: {} bins attendus", m + 1);
+
+    let half = T::from_i32(2).recip();
+    let two_pi = T::from_i32(2) * T::pi();
+    let inv_n = T::from_i32(n as i32).recip();
+
+    // Reconstruit Z[k] = Xe[k] + i·Xo[k] à partir de X[k] et X[k+m].
+    let mut z = vec![Complex::zero(); m];
+    for (k, zk) in z.iter_mut().enumerate()
+    {
+        let xk = spectrum[k];
+        // X[k+m] = X[m] (k=0) sinon conj(X[m−k]) (symétrie hermitienne).
+        let xkm = if k == 0
+        {
+            spectrum[m]
+        }
+        else
+        {
+            spectrum[m - k].conj()
+        };
+        let xe = (xk + xkm).scale(half);
+        let d = (xk - xkm).scale(half);
+        // W⁻ᵏ = e^{+2iπk/n}.
+        let angle = two_pi * T::from_i32(k as i32) * inv_n;
+        let winv = Complex::new(angle.cos(), angle.sin());
+        let xo = winv * d;
+        // Z[k] = Xe + i·Xo.
+        *zk = xe + Complex::new(-xo.im, xo.re);
+    }
+    ifft(&mut z); // normalisée 1/m
+
+    // Désentrelacement : x[2k] = Re(z[k]), x[2k+1] = Im(z[k]).
+    let mut out = vec![T::zero(); n];
+    for (k, zk) in z.iter().enumerate()
+    {
+        out[2 * k] = zk.re;
+        out[2 * k + 1] = zk.im;
+    }
+    out
+}

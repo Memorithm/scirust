@@ -10,7 +10,7 @@
 //     cargo bench -p scirust-simd --features portable-simd --bench dsp_bench
 
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
-use scirust_simd::dsp::{Biquad, Complex, Fir, Plan, fft};
+use scirust_simd::dsp::{Biquad, Complex, Fir, Plan, fft, rfft};
 use scirust_simd::fixed::Q16_16;
 
 const N: usize = 1 << 14;
@@ -156,5 +156,38 @@ fn bench_fft_plan(c: &mut Criterion) {
     g.finish();
 }
 
-criterion_group!(benches, bench_biquad, bench_fir, bench_fft, bench_fft_plan);
+/// FFT réelle vs FFT complexe (longueur 1024, Q16.16) : la rfft empaquette le
+/// signal réel dans une FFT complexe de moitié → ~2× moins de travail.
+fn bench_rfft(c: &mut Criterion) {
+    const M: usize = 1 << 10;
+    let sf = signal_f32();
+    let real_x: Vec<Q16_16> = (0..M)
+        .map(|i| Q16_16::try_from(sf[i] as f64).unwrap())
+        .collect();
+    let cplx_x: Vec<Complex<Q16_16>> = real_x.iter().map(|&r| Complex::from_real(r)).collect();
+
+    let mut g = c.benchmark_group("rfft1024_vs_complex");
+    g.throughput(Throughput::Elements(M as u64));
+    g.bench_function(BenchmarkId::new("rfft", "Q16_16"), |b| {
+        b.iter(|| rfft(black_box(&real_x)))
+    });
+    g.bench_function(BenchmarkId::new("complex_fft", "Q16_16"), |b| {
+        let mut buf = cplx_x.clone();
+        b.iter(|| {
+            buf.copy_from_slice(&cplx_x);
+            fft(black_box(&mut buf));
+            buf[0]
+        })
+    });
+    g.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_biquad,
+    bench_fir,
+    bench_fft,
+    bench_fft_plan,
+    bench_rfft
+);
 criterion_main!(benches);

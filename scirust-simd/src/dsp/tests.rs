@@ -6,7 +6,7 @@
 // vérifie les propriétés spectrales (gains au continu / à Nyquist), la réponse
 // impulsionnelle, l'accord virgule fixe ↔ flottant, et le déterminisme bit-à-bit.
 
-use super::fft::{Complex, Plan, fft, ifft};
+use super::fft::{Complex, Plan, fft, ifft, irfft, rfft};
 use super::{Biquad, Fir};
 use crate::fixed::{Q8_24, Q16_16, RealScalar};
 
@@ -508,5 +508,79 @@ fn fft_plan_matches_dft() {
     for (got, (re, im)) in data.iter().zip(reference.iter())
     {
         assert!((got.re - re).abs() < 1e-9 && (got.im - im).abs() < 1e-9);
+    }
+}
+
+// ------------------------------------------------------------------ //
+//  FFT à entrée réelle (rfft / irfft)                                 //
+// ------------------------------------------------------------------ //
+
+fn check_rfft<T: Scalar>() {
+    let n = 16;
+    let sig: Vec<f64> = (0..n).map(|i| ((i * 5 % 9) as f64) * 0.07 - 0.3).collect();
+    let real: Vec<T> = sig.iter().map(|&r| T::of(r)).collect();
+    let spec = rfft(&real);
+    assert_eq!(spec.len(), n / 2 + 1);
+    // rfft = premiers n/2+1 bins de la DFT du signal réel.
+    let full = naive_dft(&sig);
+    let tol = T::TOL * (n as f64) * 6.0 + 1e-6;
+    for (k, c) in spec.iter().enumerate()
+    {
+        assert!(
+            (c.re.to_f64() - full[k].0).abs() <= tol && (c.im.to_f64() - full[k].1).abs() <= tol,
+            "rfft bin {k}"
+        );
+    }
+    // Bins 0 et n/2 réels (partie imaginaire nulle).
+    assert!(spec[0].im.to_f64().abs() <= tol && spec[n / 2].im.to_f64().abs() <= tol);
+}
+
+#[test]
+fn rfft_matches_dft_all_scalars() {
+    check_rfft::<f32>();
+    check_rfft::<f64>();
+    check_rfft::<Q16_16>();
+}
+
+fn check_rfft_roundtrip<T: Scalar>() {
+    let n = 32;
+    let sig: Vec<f64> = (0..n).map(|i| (i as f64 * 0.3).sin() * 0.4 - 0.1).collect();
+    let real: Vec<T> = sig.iter().map(|&r| T::of(r)).collect();
+    let spec = rfft(&real);
+    let recon = irfft(&spec, n);
+    assert_eq!(recon.len(), n);
+    let tol = T::TOL * (n as f64) + 1e-6;
+    for (r, o) in recon.iter().zip(real.iter())
+    {
+        assert!((r.to_f64() - o.to_f64()).abs() <= tol, "irfft(rfft) ≠ id");
+    }
+}
+
+#[test]
+fn rfft_roundtrip_all_scalars() {
+    check_rfft_roundtrip::<f32>();
+    check_rfft_roundtrip::<f64>();
+    check_rfft_roundtrip::<Q16_16>();
+}
+
+#[test]
+fn rfft_dc_and_determinism() {
+    // DC réel : x = [1;8] → bin 0 = 8, reste ≈ 0.
+    let spec = rfft(&[1.0f64; 8]);
+    assert!((spec[0].re - 8.0).abs() < 1e-9 && spec[0].im.abs() < 1e-9);
+    for c in &spec[1..]
+    {
+        assert!(c.re.abs() < 1e-9 && c.im.abs() < 1e-9);
+    }
+    // Déterminisme bit-à-bit du chemin virgule fixe.
+    let real: Vec<Q16_16> = (0..16)
+        .map(|i| Q16_16::try_from(((i * 3 % 7) as f64) * 0.1 - 0.3).unwrap())
+        .collect();
+    let a = rfft(&real);
+    let b = rfft(&real);
+    for (x, y) in a.iter().zip(b.iter())
+    {
+        assert_eq!(x.re.to_raw(), y.re.to_raw());
+        assert_eq!(x.im.to_raw(), y.im.to_raw());
     }
 }
