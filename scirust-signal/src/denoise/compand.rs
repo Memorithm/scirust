@@ -19,7 +19,8 @@
 //! bias-corrected inverses instead.
 //!
 //! Every map here is scaled so that `soft_clip(x) ≈ x` for `|x| ≪ limit` and
-//! `|soft_clip(x)| < limit` for all finite `x`:
+//! `|soft_clip(x)| < limit` for all finite `x` (mathematically — f64 rounding can
+//! land exactly on the bound for extreme arguments):
 //!
 //! | kind | formula | approach to the bound |
 //! |------|---------|----------------------|
@@ -147,9 +148,11 @@ mod tests {
                 (y - small).abs() < 1.0e-4 * limit,
                 "{kind:?} distorts small signals: {small} → {y}"
             );
-            // Huge signals approach (but never reach) the bound.
+            // Huge signals approach the bound without escaping it. (`<=` rather
+            // than `<`: mathematically tanh never reaches 1, but tanh(100) rounds
+            // to exactly 1.0 in f64.)
             let y = soft_clip(&[100.0 * limit], kind, limit)[0];
-            assert!(y > 0.95 * limit && y < limit, "{kind:?} saturation: {y}");
+            assert!(y > 0.95 * limit && y <= limit, "{kind:?} saturation: {y}");
             // Odd symmetry.
             let yn = soft_clip(&[-100.0 * limit], kind, limit)[0];
             assert!((yn + y).abs() < 1.0e-12);
