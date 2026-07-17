@@ -335,6 +335,22 @@ train/fine-tune/generate/speculative stack rides on top unchanged.
   path-traversal-safe); dedup is the missing quality piece before scaling the corpus
   10–100×.
 
+- **v3 corpus — the scale-up (×16.5).** The crates.io pull + the deduped ingest built
+  the real corpus: **1673 crates + the 3 repos → 34,722 files (6,976 skipped: 3,461
+  duplicates, 3,340 generated, rest data-tables) → 87.7 M tokens** (was 5.3 M). At
+  60k steps × 512 that's only ~0.35 epochs — so for the first time the model trains on
+  diverse data **without** the memorization pressure of the v2 run (~4 epochs on
+  5.3 M). Retrain in progress (`checkpoints/bpe350m_v3`, v2 tokenizer, shuffle + dedup
+  + retention all on); resume-to-target makes extending past 60k a one-liner.
+
+- **B20 — `fetch-crates` rate-limit retry.** The first pull lost ~half its crates to
+  crates.io **429**s (1673 of 3000 requested). `get_with_retry` now retries 429/503 —
+  honoring a `Retry-After` header, else exponential backoff capped at 60 s, up to
+  `--max-retries` (default 5) — across all four request sites (top-N pagination, the
+  version detail, the tarball download). Lets the next, larger polite pull actually
+  complete instead of skipping most crates, so the corpus can grow further toward the
+  100 M+ a 304M model wants.
+
 ## Risks / honesty
 
 - **Toolchain gate (highest risk):** if the Thor's installed CUDA can't emit sm_110,
