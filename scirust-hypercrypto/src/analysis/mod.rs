@@ -4,6 +4,7 @@
 
 pub mod battery;
 pub mod degree;
+pub mod differential;
 pub mod invariants;
 pub mod linearity;
 pub mod matrix_lifting;

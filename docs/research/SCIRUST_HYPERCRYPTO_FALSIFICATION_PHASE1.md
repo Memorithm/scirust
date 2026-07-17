@@ -411,6 +411,57 @@ cryptanalysis and no production use.
 
 ---
 
+## 18. Phase-2 increment — weak-key class and differential probing
+
+Two Phase-2 experiments have been implemented and are exposed as the CLI
+subcommands `weak-keys` and `differential` (module `analysis::differential`).
+Neither changes the Phase-1 verdict; both sharpen the Phase-1 leads.
+
+### 18.1 The GF(2)-linearizing weak-key class is fully characterized
+
+Phase 1 observed that *some* keys linearize the round over `GF(2)`. This is now
+pinned down. Let `C = { octonions whose every coefficient is in {0, 2^{k-1}} }`
+(the "high-bit-only" multipliers), `|C| = 2^8 = 256`.
+
+- **Every** member of `C` yields a `GF(2)`-linear left-multiplication
+  `x ↦ a ⊗ x` (measured exhaustively/sampled at MINI-8: `256/256` linear;
+  `all-2^{k-1}` multiplier linear = true).
+- **`0` of `512`** random multipliers are `GF(2)`-linear — the class is a
+  vanishing-density structured set.
+- **Algebraic reason:** `2^{k-1}·b ≡ 2^{k-1}·(b mod 2)` keeps only the low bit,
+  and `2^{k-1} + 2^{k-1} ≡ 0 (mod 2^k)`, so every octonion output slot collapses
+  to a `GF(2)` **parity** of the routed input bits — a linear map, independent of
+  the `±1` structure constants.
+- **Consequence (key-schedule constraint, not a break):** the eventual key
+  schedule must exclude multipliers with all coefficients in `{0, 2^{k-1}}` (and,
+  more conservatively, avoid low-Hamming-weight/degenerate multipliers). Because
+  the class has density `≈ 2^{-56}` at `k = 8` (and far lower at `k = 64`), a
+  well-distributed HKDF schedule (§next) essentially never hits it, but it must
+  be excluded explicitly.
+
+### 18.2 Differential probing shows no high-probability full-round differential
+
+- **Best single-round differential** (MINI-8, sampled input differences, exact
+  per-difference output distribution at NANO-2): the most probable output
+  difference occurs with probability on the order of `10^-4` (e.g. ~244 ppm for
+  the best sampled difference) — a *single-round, tiny-width* figure, expected.
+- **Multi-round decay** (empirical, fixed input difference through the Feistel):
+  the best output-difference probability drops to the sampling floor by the first
+  measured round count and stays there through 12 rounds — i.e. no
+  differential of usable probability survives even a few rounds at these widths,
+  let alone the full 24. **No full-round differential kill criterion is
+  triggered.** This is a bounded empirical probe, not a proven trail bound; a
+  branch-and-bound trail search over an exact DDT remains future work.
+
+**Reproduce:**
+
+```bash
+cargo run -p scirust-hypercrypto --bin hypercrypto-falsify -- weak-keys --width mini8
+cargo run -p scirust-hypercrypto --bin hypercrypto-falsify -- differential --width mini8 --sample 20000
+```
+
+---
+
 ## References
 
 - Merged spec: `docs/research/SCIRUST_HYPERCRYPTO_SPEC_V0_1.md` (authoritative).
