@@ -462,6 +462,35 @@ cargo run -p scirust-hypercrypto --bin hypercrypto-falsify -- differential --wid
 
 ---
 
+## 19. Real key schedule and official test vectors
+
+The spec §10 **HKDF-SHA-256** key schedule (RFC 5869; HMAC-SHA-256 counter-mode
+expansion) is implemented in `derivation` and validated against the **RFC 4231
+HMAC** and **RFC 5869 HKDF** known-answer tests. It derives, from a 32-byte
+master key and 16-byte tweak, the per-round subkeys `K0,K1,K2` (`/ROUNDKEY`),
+round constants `RC` (`/CONSTANT`), and Even–Mansour whitening (`/WHITENING`),
+each via a domain-separated `HKDF-Expand`.
+
+Keyed by this schedule, the full v0.1 permutation (1024-bit state, two `W64`
+octonion branches, 24 rounds, whitening) produces the **official test vectors**
+(`test_vectors`, spec §15 categories: all-zero, all-one key, single-bit input,
+single-bit key, incrementing bytes, alternating bits, maximum components). Every
+vector round-trips (`P_K^{-1}(P_K(x)) = x`), and the whole set is pinned by a
+SHA-256 contract:
+
+```text
+vectors_fingerprint = 07db3cbfa4bab6f8cb68ab349075e2a7000c6327fb5ea77dd8caaed2344ceb4b
+```
+
+A committed reference copy lives at
+`scirust-hypercrypto/test_vectors/official_v0_1.json`; regenerate with
+`hypercrypto-falsify vectors`. This makes the construction "finished and
+reproducible" (a second independent implementation can now match bit-for-bit),
+without any change to the security posture — it remains an experimental research
+permutation.
+
+---
+
 ## References
 
 - Merged spec: `docs/research/SCIRUST_HYPERCRYPTO_SPEC_V0_1.md` (authoritative).

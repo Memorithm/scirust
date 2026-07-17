@@ -4,8 +4,8 @@
 //! Its purpose is to *break* SciRust-HyperCrypto v0.1, not to endorse it.
 //!
 //! Subcommands: `controls`, `matrix-lifting`, `affinity`, `degree`,
-//! `invariants`, `zero-divisors`, `reduced-rounds`, `exhaustive-nano2`,
-//! `report`. Run `hypercrypto-falsify help` for options.
+//! `invariants`, `zero-divisors`, `weak-keys`, `differential`, `reduced-rounds`,
+//! `exhaustive-nano2`, `vectors`, `report`. Run `hypercrypto-falsify help`.
 
 use std::path::PathBuf;
 
@@ -142,6 +142,7 @@ fn main() {
         "differential" => cmd_differential(&o),
         "reduced-rounds" => cmd_reduced_rounds(&o),
         "exhaustive-nano2" => cmd_exhaustive_nano2(&o),
+        "vectors" => cmd_vectors(&o),
         "report" => cmd_report(&o),
         _ => print_help(),
     }
@@ -163,6 +164,7 @@ fn print_help() {
          \x20 differential      best single-round differential + decay by round (Phase-2)\n\
          \x20 reduced-rounds    degree/roundtrip/differential by round count\n\
          \x20 exhaustive-nano2  full 2^32 NANO-2 sweep (DISABLED unless invoked; costly)\n\
+         \x20 vectors           official HKDF-keyed test vectors + fingerprint\n\
          \x20 report            full battery + Phase-1 verdict\n\
          \n\
          options: --width nano2|nano4|mini8|mini16|full64  --fixture <id>\n\
@@ -333,6 +335,20 @@ fn cmd_differential(o: &Opts) {
             "sampled deltas; per-delta exact at NANO-2",
         ),
         vec![("differential", json)],
+    );
+}
+
+fn cmd_vectors(o: &Opts) {
+    banner("vectors (official HKDF-keyed test vectors)");
+    let fp = scirust_hypercrypto::test_vectors::vectors_fingerprint();
+    let json = scirust_hypercrypto::test_vectors::vectors_json();
+    println!("  official vectors (24 rounds, HKDF-SHA-256 schedule); all round-trip");
+    println!("  vectors_fingerprint : {fp}");
+    emit(
+        o,
+        "official-vectors",
+        meta("vectors", o, "exact, reproducible"),
+        vec![("vectors", json)],
     );
 }
 
