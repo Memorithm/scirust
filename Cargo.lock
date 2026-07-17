@@ -3203,6 +3203,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "scirust-hypermemory"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "scirust-retrieval",
+ "scirust-simd",
+ "sha2",
+]
+
+[[package]]
 name = "scirust-ids"
 version = "0.1.0"
 dependencies = [
