@@ -2592,6 +2592,8 @@ version = "0.1.0"
 dependencies = [
  "scirust-core",
  "scirust-evo",
+ "scirust-tensor-core",
+ "scirust-tensor-einsum",
  "serde",
  "serde_json",
 ]
