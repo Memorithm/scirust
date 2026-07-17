@@ -7,7 +7,6 @@ pub mod degree;
 pub mod invariants;
 pub mod linearity;
 pub mod matrix_lifting;
-pub mod modmatrix;
 pub mod report;
 pub mod subspace;
 pub mod util;
