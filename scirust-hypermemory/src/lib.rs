@@ -89,7 +89,7 @@ pub use expr::{
     ExprLimits, MAX_SUPPORTED_DEPTH, MAX_SUPPORTED_SIZE, RelationId, S16Expr, S16Relation,
 };
 pub use id::ConceptId;
-pub use index::{S16ExactIndex, SearchHit, SimilarityMetric};
+pub use index::{Denoised, S16ExactIndex, SearchHit, SimilarityMetric};
 pub use ivf::S16IvfIndex;
 pub use metadata::{ConceptMetadata, LinearDecay, NoForgetting, RetentionPolicy};
 pub use record::ConceptRecord;
