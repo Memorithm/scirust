@@ -798,9 +798,9 @@ mod tests {
         // Proposition ANEE-2 says the product kappa_A(x)*kappa_B(A(x)) must
         // equal this EXACTLY (elasticity chain rule), not to first order.
         let c = RepresentationChoice::Composed(Representation::Power(0.5), Representation::Log);
-        for &x in &[1e-9, 0.3, 2.5, 1e4, 1e9]
+        for &x in &[1e-9f64, 0.3, 2.5, 1e4, 1e9]
         {
-            let expected = (x as f64).ln().abs();
+            let expected = x.ln().abs();
             let got = c.kappa_rt(x);
             assert!(
                 (got - expected).abs() <= expected.abs() * 1e-12 + 1e-12,
