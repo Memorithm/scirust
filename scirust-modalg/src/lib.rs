@@ -28,7 +28,9 @@
 //!   against an independent Fano-triple generator, conjugation, the modular norm,
 //!   and (octonion) little-endian serialization.
 //! - [`boolean`] — the fast Möbius transform and exact **algebraic-normal-form
-//!   degree** of a Boolean vector function on up to a few dozen input bits.
+//!   degree**, plus the fast **Walsh–Hadamard transform** and its spectral
+//!   metrics (nonlinearity, balancedness, the bent property, correlation
+//!   immunity) for Boolean functions on up to a few dozen input bits.
 //! - [`numtheory`] — deterministic integer number theory: extended GCD, modular
 //!   inverse and exponentiation, the CRT, a *deterministic* Miller–Rabin
 //!   primality test exact for every `u64`, deterministic Pollard–Brent
@@ -100,6 +102,15 @@
 //!
 //! // The canonical CRC-32 (zlib) check value of "123456789".
 //! assert_eq!(Crc::crc32_iso_hdlc().checksum(b"123456789"), 0xCBF4_3926);
+//! ```
+//!
+//! ```
+//! use scirust_modalg::boolean::{is_bent, nonlinearity};
+//!
+//! // The 2-bit AND function is bent: maximal nonlinearity 2^1 − 2^0 = 1.
+//! let and = [0u8, 0, 0, 1]; // truth table of x0 ∧ x1
+//! assert!(is_bent(&and, 2));
+//! assert_eq!(nonlinearity(&and, 2), 1);
 //! ```
 
 pub mod boolean;
