@@ -388,6 +388,29 @@ are run, they are reported only alongside the exact hardware, compiler version,
 Each phase must beat the Phase 1 oracle/baseline on a stated, falsifiable
 metric, or be rejected.
 
+## 12bis. Cleanup denoising (post-roadmap addition)
+
+The construction gains the standard VSA denoising component, a **cleanup
+memory**: `S16ExactIndex::denoise(noisy, threshold)` recognizes a noisy code by
+nearest-neighbour against the stored prototypes and returns the **exact stored**
+effective vector (`Denoised { id, code, score }`), or `None` when the best match
+is below the acceptance threshold (garbage is rejected, never silently snapped;
+the threshold is expressed in the active metric and compared with the metric's
+own ordering). Cleanup output is a stored prototype, so denoising is
+**idempotent** — a fixed point with a perfect score. `S16BoundedMemory::denoise`
+additionally bumps the recognized concept's recency at the caller's logical
+tick.
+
+Measured (deterministic, `tests/denoise.rs`): recognition accuracy over 64
+concepts degrades gracefully — 1.0 / 1.0 / 0.73 / 0.23 at noise amplitudes
+0.1 / 0.25 / 0.5 / 1.0 (relative to unit-norm prototypes); uncorrelated input
+is rejected 200/200 at cosine threshold 0.8; and the payoff on the structure
+pipeline is large: at amplitude 0.5, sedenion structure retrieval collapses to
+≈ 0.29 without cleanup and recovers to **≈ 0.94** with per-atom cleanup between
+stages. Cleanup cannot reach 1.0 in that regime — a *mis*-recognized atom
+regenerates an exactly-wrong codebook entry — and it never hurts at low noise
+(1.0 → 1.0 at amplitude 0.1).
+
 ## 13. Limitations
 
 * The effective representation is `f32`; cross-target bit-for-bit reproducibility
