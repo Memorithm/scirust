@@ -68,6 +68,8 @@ mod id;
 mod index;
 mod ivf;
 mod metadata;
+#[cfg(feature = "signal-denoise")]
+mod observe;
 mod record;
 mod representation;
 mod store;
@@ -92,6 +94,8 @@ pub use id::ConceptId;
 pub use index::{Denoised, S16ExactIndex, SearchHit, SimilarityMetric};
 pub use ivf::S16IvfIndex;
 pub use metadata::{ConceptMetadata, LinearDecay, NoForgetting, RetentionPolicy};
+#[cfg(feature = "signal-denoise")]
+pub use observe::{FusionStrategy, fuse_observations};
 pub use record::ConceptRecord;
 pub use representation::{effective_representation, is_finite, norm_sqr_ordered};
 pub use store::{ConceptSpec, DEFAULT_RESIDUAL_BOUND, LearnOutcome, S16Store};
