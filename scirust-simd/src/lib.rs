@@ -59,6 +59,7 @@ macro_rules! is_x86_feature_detected {
 }
 
 pub mod portable;
+pub mod reductions;
 pub use portable::simd_ops;
 
 pub use scirust_simd_macros::simd;
