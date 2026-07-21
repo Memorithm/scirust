@@ -351,6 +351,31 @@ train/fine-tune/generate/speculative stack rides on top unchanged.
   complete instead of skipping most crates, so the corpus can grow further toward the
   100 M+ a 304M model wants.
 
+- **B21 — streaming, buffered shard writer (`collect-data`).** The collector used to
+  accumulate the **entire** token stream in RAM (`Vec<u32>`) before packing shards —
+  4 GB at 1B tokens on a memory-shared Jetson, and a crash late in the pass lost
+  everything. `ShardWriter` now flushes a shard the moment its buffer fills, so peak
+  memory is O(`tokens_per_shard`) regardless of corpus size, and partial progress
+  lands on disk. Writes go through a `BufWriter` (was one `write_all` **per token** —
+  a billion-syscall storm). Shard filenames widen to `shard_{:06}.bin`: the loader
+  sorts shards *lexically*, and the old `:04` silently misordered past 9999 shards
+  (`"10000" < "9999"`); 6 digits keeps concatenation order correct at any scale. This
+  de-risks the ~1B-token reshard the v3-eval verdict demands.
+
+## v3 quality verdict (step_60000, tokenizer_v3) — the 0%-parse wall
+
+Measured on the Thor with `cuda_eval`: **UTF-8 100 %** (reversible tokenizer fix holds,
+zero placeholder leaks), no repetition collapse (trigram-repeat 0.6 %, TTR 0.87), val
+loss improved vs v1 (6.37 vs 6.80 nats/tok) — **but `syn::parse_file` 0 % and balanced
+brackets 0 %**: still token salad, no valid Rust. Root cause is **not** the tokenizer or
+the training mechanics: train loss is still **5.60** (ppl 269), i.e. the model hasn't
+even fit the train set. At **304M params on ~86M tokens** that's **~0.28 token/param —
+~70× under Chinchilla**. The smooth 10.45→5.5 curve was only the initial descent; the
+model is data-starved for its size. Decision: **keep the 304M, grow the corpus toward
+~1B unique tokens** (big `fetch-crates` pull → reshard with the *same* tokenizer_v3 so
+`step_60000` warm-starts → long run via `SCIAGENT_TOTAL_STEPS`). B21 is the enabling
+step. More epochs on 86M would overfit before reaching syntax — the lever is unique data.
+
 ## Risks / honesty
 
 - **Toolchain gate (highest risk):** if the Thor's installed CUDA can't emit sm_110,
