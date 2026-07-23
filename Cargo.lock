@@ -2572,6 +2572,7 @@ dependencies = [
  "scirust-simd",
  "scirust-solvers",
  "scirust-symbolic",
+ "scirust-variational",
  "serde",
  "serde_json",
  "sha2",
@@ -3488,6 +3489,19 @@ version = "0.1.0"
 dependencies = [
  "scirust-core",
  "serde",
+]
+
+[[package]]
+name = "scirust-variational"
+version = "0.1.0"
+dependencies = [
+ "approx",
+ "scirust-autodiff",
+ "scirust-core",
+ "scirust-solvers",
+ "scirust-symbolic",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
