@@ -212,7 +212,10 @@ fn combo_is_valid(combo: &[(String, f32)]) -> bool {
     }
 }
 
-fn sampled_combos(axes: &[ParamAxis], max_combos: usize) -> Option<(usize, bool, Vec<Vec<(String, f32)>>)> {
+fn sampled_combos(
+    axes: &[ParamAxis],
+    max_combos: usize,
+) -> Option<(usize, bool, Vec<Vec<(String, f32)>>)> {
     let active = active_axes(axes);
     let raw_size = raw_grid_size(&active)?;
     let grid_size = valid_grid_size(&active)?;
@@ -225,9 +228,8 @@ fn sampled_combos(axes: &[ParamAxis], max_combos: usize) -> Option<(usize, bool,
     let mut sampled = Vec::with_capacity(budget.min(grid_size));
 
     // Evenly sample raw product indices and filter invalid fast/slow pairs.
-    // No intermediate product vector exists. If a stride lands mostly on invalid
-    // pairs, deterministically probe forward until either a valid combination or
-    // the next stride boundary is reached.
+    // No intermediate product vector exists. If a stride lands on an invalid
+    // pair, deterministically probe forward only inside that stride bucket.
     let mut start = 0usize;
     while start < raw_size && sampled.len() < budget {
         let end = start.saturating_add(stride).min(raw_size);
@@ -433,9 +435,9 @@ mod tests {
             .map(|i| ParamAxis::new(format!("p{i}"), (0..100).map(|x| x as f32).collect()))
             .collect();
         let active = active_axes(&axes);
-        assert_eq!(raw_grid_size(&active), Some(100_000_000_000_000_000));
+        assert_eq!(raw_grid_size(&active), Some(10_000_000_000_000_000));
         let (grid_size, truncated, sampled) = sampled_combos(&axes, 17).unwrap();
-        assert_eq!(grid_size, 100_000_000_000_000_000);
+        assert_eq!(grid_size, 10_000_000_000_000_000);
         assert!(truncated);
         assert!(sampled.len() <= 17);
     }
@@ -458,7 +460,6 @@ mod tests {
             ParamAxis::new("x", vec![1.0, 2.0]),
         ];
         let active = active_axes(&axes);
-        // valid pairs: (5,10), (5,20), (10,20); x contributes ×2.
         assert_eq!(valid_grid_size(&active), Some(6));
     }
 
