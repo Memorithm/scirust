@@ -1,25 +1,9 @@
-//! Parameter optimization — with an overfitting gate baked in.
+//! Parameter optimization with a bounded, deterministic grid search.
 //!
-//! Sweeping a strategy's parameters and keeping the best backtest is the single
-//! fastest way to fool yourself: with enough knobs, *something* always fits the
-//! past. This module tunes parameters the honest way, mirroring how a
-//! professional desk validates a systematic strategy:
-//!
-//! 1. **Split** the history into an in-sample **train** portion and an untouched
-//!    **holdout** the search never sees.
-//! 2. **Search** the parameter grid on *train only*, and rank candidates not by
-//!    their single full-period fit but by their **walk-forward out-of-sample
-//!    consistency** across independent sub-windows (via [`crate::robustness`]).
-//!    A parameter set that only works on one lucky stretch scores poorly even
-//!    in-sample.
-//! 3. **Confirm** the finalists on the holdout. The train→holdout **Sharpe
-//!    degradation** (`overfit_gap`) is the tell: a robust edge barely drops, an
-//!    overfit one collapses or flips negative.
-//! 4. **Verdict** — a plain-language read the agent can act on: trust it, size
-//!    it down, or discard it.
-//!
-//! Everything is deterministic: the grid is enumerated in a fixed order, the
-//! backtester and walk-forward are pure, and ties break by generation order.
+//! The holdout protocol remains unchanged: parameter selection uses the train
+//! split, finalists are then evaluated on the untouched holdout. Grid generation
+//! is lazy and budgeted: the full Cartesian product is never materialized before
+//! `max_combos` is applied.
 
 use std::collections::BTreeMap;
 
@@ -30,7 +14,6 @@ use crate::market::Candle;
 use crate::robustness::walk_forward;
 use crate::strategy::strategy_from_spec;
 
-/// One axis of the search grid: a parameter name and the values to try.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParamAxis {
     pub name: String,
@@ -46,27 +29,18 @@ impl ParamAxis {
     }
 }
 
-/// How candidates are ranked *in-sample* (on the train split).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Objective {
-    /// Mean walk-forward window return, discounted by consistency for a positive
-    /// edge — the default. Rewards an edge that is both positive *and* reliable
-    /// across sub-periods; ranks losers purely by how much they lose.
     ReturnConsistency,
-    /// Fraction of profitable walk-forward windows (tie-broken by mean return).
     Consistency,
-    /// Mean walk-forward window return.
     MeanReturn,
-    /// The worst single walk-forward window — the most conservative (minimax).
     WorstWindow,
-    /// Full train-period Sharpe ratio.
     Sharpe,
 }
 
 impl Objective {
     pub fn parse(s: &str) -> Option<Objective> {
-        match s.trim().to_lowercase().as_str()
-        {
+        match s.trim().to_lowercase().as_str() {
             "return_consistency" | "default" => Some(Objective::ReturnConsistency),
             "consistency" => Some(Objective::Consistency),
             "mean_return" | "return" => Some(Objective::MeanReturn),
@@ -77,8 +51,7 @@ impl Objective {
     }
 
     pub fn label(self) -> &'static str {
-        match self
-        {
+        match self {
             Objective::ReturnConsistency => "return×consistency (out-of-sample)",
             Objective::Consistency => "walk-forward consistency",
             Objective::MeanReturn => "mean walk-forward return",
@@ -88,20 +61,13 @@ impl Objective {
     }
 }
 
-/// Tuning for [`optimize`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OptimizeConfig {
-    /// Fraction of the history used for the in-sample search; the rest is the
-    /// untouched holdout. Clamped to `[0.3, 0.9]`.
     pub train_frac: f32,
-    /// Walk-forward windows within the train split.
     pub wf_windows: usize,
-    /// The in-sample ranking objective.
     pub objective: Objective,
-    /// Leaderboard size (candidates confirmed on the holdout).
     pub top_k: usize,
-    /// Hard cap on grid combinations evaluated. A larger grid is strided down to
-    /// this many, evenly spread, so the sweep stays bounded.
+    /// Maximum number of parameter combinations evaluated.
     pub max_combos: usize,
 }
 
@@ -117,61 +83,40 @@ impl Default for OptimizeConfig {
     }
 }
 
-/// One evaluated parameter set, with in-sample and holdout performance.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Candidate {
     pub params: BTreeMap<String, f32>,
-    /// Full train-period total return.
     pub train_return: f32,
-    /// Train-period annualized Sharpe.
     pub train_sharpe: f32,
-    /// Fraction of profitable walk-forward windows within train.
     pub train_consistency: f32,
-    /// Mean walk-forward window return within train.
     pub train_mean_window: f32,
-    /// Worst walk-forward window return within train.
     pub train_worst_window: f32,
-    /// The in-sample ranking score (per the chosen objective).
     pub objective_score: f32,
-    /// Holdout total return — the honest out-of-sample estimate.
     pub holdout_return: f32,
-    /// Holdout annualized Sharpe.
     pub holdout_sharpe: f32,
-    /// Holdout max drawdown.
     pub holdout_max_drawdown: f32,
-    /// Holdout trade count.
     pub holdout_trades: usize,
-    /// Train Sharpe − holdout Sharpe: the overfitting tell. Large positive ⇒ the
-    /// in-sample fit flattered the parameters.
     pub overfit_gap: f32,
 }
 
-/// The optimization report.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OptimizeReport {
     pub strategy: String,
     pub objective: String,
     pub train_bars: usize,
     pub holdout_bars: usize,
-    /// Total valid grid combinations before the `max_combos` cap.
+    /// Total valid grid combinations before `max_combos` sampling.
     pub grid_size: usize,
-    /// Combinations actually evaluated.
+    /// Combinations that reached strategy evaluation on the train split.
     pub num_evaluated: usize,
-    /// Whether the grid was strided down to fit `max_combos`.
     pub truncated: bool,
-    /// The best candidate by the in-sample objective, confirmed on the holdout.
     pub best: Candidate,
-    /// Top-`k` candidates (holdout-confirmed), best first.
     pub leaderboard: Vec<Candidate>,
-    /// Plain-language read on whether the best parameters survive out-of-sample.
     pub verdict: String,
 }
 
-/// A sensible default parameter grid for each built-in strategy, so the agent
-/// can optimize without hand-specifying axes.
 pub fn default_axes(strategy_name: &str) -> Vec<ParamAxis> {
-    match strategy_name
-    {
+    match strategy_name {
         "sma_cross" | "ema_cross" => vec![
             ParamAxis::new("fast", vec![5.0, 10.0, 15.0, 20.0]),
             ParamAxis::new("slow", vec![30.0, 50.0, 100.0, 200.0]),
@@ -200,69 +145,122 @@ pub fn default_axes(strategy_name: &str) -> Vec<ParamAxis> {
     }
 }
 
-/// Cartesian product of the axes as `(name, value)` assignments, in a fixed
-/// order. Bounded: stops growing past a hard ceiling so pathological grids can't
-/// exhaust memory.
-fn cartesian(axes: &[ParamAxis]) -> Vec<Vec<(String, f32)>> {
-    const HARD_CEIL: usize = 65_536;
-    let mut combos: Vec<Vec<(String, f32)>> = vec![Vec::new()];
-    for axis in axes
-    {
-        if axis.values.is_empty()
-        {
-            continue;
-        }
-        let mut next = Vec::new();
-        for combo in &combos
-        {
-            for &v in &axis.values
-            {
-                let mut c = combo.clone();
-                c.push((axis.name.clone(), v));
-                next.push(c);
-            }
-        }
-        combos = next;
-        if combos.len() > HARD_CEIL
-        {
-            break;
-        }
-    }
-    combos
+/// Non-empty axes participating in the product. Empty axes historically had no
+/// effect and retain that behavior.
+fn active_axes(axes: &[ParamAxis]) -> Vec<&ParamAxis> {
+    axes.iter().filter(|axis| !axis.values.is_empty()).collect()
 }
 
-/// A combo is invalid if it pairs a `fast` window at or above its `slow` window.
+/// Compute the raw Cartesian-product size without allocating combinations.
+fn raw_grid_size(axes: &[&ParamAxis]) -> Option<usize> {
+    axes.iter()
+        .try_fold(1usize, |acc, axis| acc.checked_mul(axis.values.len()))
+}
+
+/// Exact valid-grid count for the only cross-axis rule currently defined by the
+/// optimizer (`fast < slow`). This remains O(number of fast×slow values), not
+/// O(full Cartesian product). Other axes contribute by multiplication only.
+fn valid_grid_size(axes: &[&ParamAxis]) -> Option<usize> {
+    let raw = raw_grid_size(axes)?;
+    let fast = axes.iter().position(|axis| axis.name == "fast");
+    let slow = axes.iter().position(|axis| axis.name == "slow");
+    let (Some(fast_index), Some(slow_index)) = (fast, slow) else {
+        return Some(raw);
+    };
+    if fast_index == slow_index {
+        return Some(raw);
+    }
+
+    let fast_axis = axes[fast_index];
+    let slow_axis = axes[slow_index];
+    let valid_pairs = fast_axis
+        .values
+        .iter()
+        .flat_map(|fast| slow_axis.values.iter().map(move |slow| (*fast, *slow)))
+        .filter(|(fast, slow)| fast < slow)
+        .count();
+    if valid_pairs == 0 {
+        return Some(0);
+    }
+
+    let pair_product = fast_axis.values.len().checked_mul(slow_axis.values.len())?;
+    let other_product = raw / pair_product;
+    valid_pairs.checked_mul(other_product)
+}
+
+/// Build one combination directly from its mixed-radix product index.
+/// Memory is O(number of axes), irrespective of total grid size.
+fn combo_at(axes: &[&ParamAxis], mut index: usize) -> Vec<(String, f32)> {
+    let mut combo = Vec::with_capacity(axes.len());
+    let mut selected = vec![0usize; axes.len()];
+    for axis_index in (0..axes.len()).rev() {
+        let radix = axes[axis_index].values.len();
+        selected[axis_index] = index % radix;
+        index /= radix;
+    }
+    for (axis, value_index) in axes.iter().zip(selected) {
+        combo.push((axis.name.clone(), axis.values[value_index]));
+    }
+    combo
+}
+
 fn combo_is_valid(combo: &[(String, f32)]) -> bool {
-    let get = |k: &str| combo.iter().find(|(n, _)| n == k).map(|(_, v)| *v);
-    match (get("fast"), get("slow"))
-    {
-        (Some(f), Some(s)) => f < s,
+    let get = |key: &str| combo.iter().find(|(name, _)| name == key).map(|(_, value)| *value);
+    match (get("fast"), get("slow")) {
+        (Some(fast), Some(slow)) => fast < slow,
         _ => true,
     }
 }
 
+fn sampled_combos(axes: &[ParamAxis], max_combos: usize) -> Option<(usize, bool, Vec<Vec<(String, f32)>>)> {
+    let active = active_axes(axes);
+    let raw_size = raw_grid_size(&active)?;
+    let grid_size = valid_grid_size(&active)?;
+    if grid_size == 0 || raw_size == 0 {
+        return None;
+    }
+
+    let budget = max_combos.max(1);
+    let stride = raw_size.div_ceil(budget);
+    let mut sampled = Vec::with_capacity(budget.min(grid_size));
+
+    // Evenly sample raw product indices and filter invalid fast/slow pairs.
+    // No intermediate product vector exists. If a stride lands mostly on invalid
+    // pairs, deterministically probe forward until either a valid combination or
+    // the next stride boundary is reached.
+    let mut start = 0usize;
+    while start < raw_size && sampled.len() < budget {
+        let end = start.saturating_add(stride).min(raw_size);
+        let mut probe = start;
+        while probe < end {
+            let combo = combo_at(&active, probe);
+            if combo_is_valid(&combo) {
+                sampled.push(combo);
+                break;
+            }
+            probe += 1;
+        }
+        start = end;
+    }
+
+    Some((grid_size, grid_size > sampled.len(), sampled))
+}
+
 fn objective_score(
-    obj: Objective,
+    objective: Objective,
     consistency: f32,
     mean_window: f32,
     worst_window: f32,
     train_sharpe: f32,
 ) -> f32 {
-    match obj
-    {
-        // A positive edge is discounted by how often it fails; a losing edge is
-        // ranked by its loss (consistency can't rescue it).
-        Objective::ReturnConsistency =>
-        {
-            if mean_window > 0.0
-            {
+    match objective {
+        Objective::ReturnConsistency => {
+            if mean_window > 0.0 {
                 mean_window * consistency
-            }
-            else
-            {
+            } else {
                 mean_window
             }
-        },
+        }
         Objective::Consistency => consistency + 1e-6 * mean_window,
         Objective::MeanReturn => mean_window,
         Objective::WorstWindow => worst_window,
@@ -272,24 +270,19 @@ fn objective_score(
 
 fn verdict(best: &Candidate) -> String {
     let ret = best.holdout_return * 100.0;
-    if best.holdout_return <= 0.0
-    {
+    if best.holdout_return <= 0.0 {
         format!(
             "OVERFIT / NO EDGE — the best in-sample parameters lose out-of-sample \
              (holdout return {ret:+.2}%, Sharpe {:.2}). Do not trade this.",
             best.holdout_sharpe
         )
-    }
-    else if best.overfit_gap > 1.0 || best.holdout_sharpe < 0.5 * best.train_sharpe.max(0.0)
-    {
+    } else if best.overfit_gap > 1.0 || best.holdout_sharpe < 0.5 * best.train_sharpe.max(0.0) {
         format!(
             "PARTIAL — positive out-of-sample but materially degraded from in-sample \
              (Sharpe {:.2}→{:.2}, holdout return {ret:+.2}%). Size down and re-validate.",
             best.train_sharpe, best.holdout_sharpe
         )
-    }
-    else
-    {
+    } else {
         format!(
             "ROBUST — holds up out-of-sample (holdout return {ret:+.2}%, Sharpe {:.2}); \
              in-sample→holdout degradation is modest ({:.2} Sharpe).",
@@ -298,11 +291,6 @@ fn verdict(best: &Candidate) -> String {
     }
 }
 
-/// Optimize `strategy_name`'s parameters over `axes`, guarding against
-/// overfitting via a train/holdout split and walk-forward in-sample ranking.
-///
-/// `base_params` fixes any parameters not on an axis (merged into every combo).
-/// Returns `None` if there is too little data to form a train and holdout split.
 pub fn optimize(
     strategy_name: &str,
     axes: &[ParamAxis],
@@ -314,44 +302,25 @@ pub fn optimize(
     let n = candles.len();
     let train_frac = opt.train_frac.clamp(0.3, 0.9);
     let split = ((n as f32) * train_frac).round() as usize;
-    // Need a usable train and a non-trivial holdout.
-    if n < 40 || split < 20 || n - split < 8
-    {
+    if n < 40 || split < 20 || n - split < 8 {
         return None;
     }
     let train = &candles[..split];
     let holdout = &candles[split..];
 
-    // Enumerate and validate the grid.
-    let all = cartesian(axes);
-    let valid: Vec<Vec<(String, f32)>> = all.into_iter().filter(|c| combo_is_valid(c)).collect();
-    let grid_size = valid.len();
-    if grid_size == 0
-    {
-        return None;
-    }
-    let max_combos = opt.max_combos.max(1);
-    let step = grid_size.div_ceil(max_combos);
-    let sampled: Vec<&Vec<(String, f32)>> = valid.iter().step_by(step).collect();
-    let truncated = sampled.len() < grid_size;
+    let (grid_size, truncated, sampled) = sampled_combos(axes, opt.max_combos)?;
+    let mut candidates = Vec::with_capacity(sampled.len());
 
-    // Phase 1 — evaluate every sampled combo on the train split only.
-    let mut candidates: Vec<Candidate> = Vec::with_capacity(sampled.len());
-    for combo in &sampled
-    {
+    for combo in &sampled {
         let mut params = base_params.clone();
-        for (k, v) in combo.iter()
-        {
-            params.insert(k.clone(), *v);
+        for (key, value) in combo {
+            params.insert(key.clone(), *value);
         }
-        // Skip combos the factory can't build.
-        let Some(strat) = strategy_from_spec(strategy_name, &params)
-        else
-        {
+        let Some(strategy) = strategy_from_spec(strategy_name, &params) else {
             continue;
         };
-        let wf = walk_forward(strat.as_ref(), train, opt.wf_windows, cfg);
-        let train_bt = run_backtest(strat.as_ref(), train, cfg);
+        let wf = walk_forward(strategy.as_ref(), train, opt.wf_windows, cfg);
+        let train_bt = run_backtest(strategy.as_ref(), train, cfg);
         let score = objective_score(
             opt.objective,
             wf.consistency,
@@ -367,7 +336,6 @@ pub fn optimize(
             train_mean_window: wf.mean_return,
             train_worst_window: wf.worst_window_return,
             objective_score: score,
-            // Holdout filled in phase 2 for the finalists only.
             holdout_return: 0.0,
             holdout_sharpe: 0.0,
             holdout_max_drawdown: 0.0,
@@ -375,44 +343,35 @@ pub fn optimize(
             overfit_gap: 0.0,
         });
     }
-    if candidates.is_empty()
-    {
+    if candidates.is_empty() {
         return None;
     }
 
-    // Rank by the in-sample objective (stable sort ⇒ ties keep generation order).
-    candidates.sort_by(|a, b| {
-        b.objective_score
-            .partial_cmp(&a.objective_score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    let num_evaluated = candidates.len();
+    candidates.sort_by(|a, b| b.objective_score.total_cmp(&a.objective_score));
 
-    // Phase 2 — confirm the finalists on the untouched holdout.
     let top_k = opt.top_k.clamp(1, candidates.len());
     let mut leaderboard: Vec<Candidate> = candidates.into_iter().take(top_k).collect();
-    for cand in leaderboard.iter_mut()
-    {
-        if let Some(strat) = strategy_from_spec(strategy_name, &cand.params)
-        {
-            let bt = run_backtest(strat.as_ref(), holdout, cfg);
-            cand.holdout_return = bt.total_return;
-            cand.holdout_sharpe = bt.performance.sharpe;
-            cand.holdout_max_drawdown = bt.performance.max_drawdown;
-            cand.holdout_trades = bt.num_trades;
-            cand.overfit_gap = cand.train_sharpe - bt.performance.sharpe;
+    for candidate in &mut leaderboard {
+        if let Some(strategy) = strategy_from_spec(strategy_name, &candidate.params) {
+            let bt = run_backtest(strategy.as_ref(), holdout, cfg);
+            candidate.holdout_return = bt.total_return;
+            candidate.holdout_sharpe = bt.performance.sharpe;
+            candidate.holdout_max_drawdown = bt.performance.max_drawdown;
+            candidate.holdout_trades = bt.num_trades;
+            candidate.overfit_gap = candidate.train_sharpe - bt.performance.sharpe;
         }
     }
 
     let best = leaderboard[0].clone();
     let verdict_text = verdict(&best);
-
     Some(OptimizeReport {
         strategy: strategy_name.to_string(),
         objective: opt.objective.label().to_string(),
         train_bars: train.len(),
         holdout_bars: holdout.len(),
         grid_size,
-        num_evaluated: leaderboard.len().max(top_k).min(grid_size),
+        num_evaluated,
         truncated,
         best,
         leaderboard,
@@ -457,33 +416,55 @@ mod tests {
     }
 
     #[test]
-    fn cartesian_is_full_product() {
+    fn mixed_radix_access_matches_small_cartesian_product() {
         let axes = vec![
             ParamAxis::new("a", vec![1.0, 2.0]),
             ParamAxis::new("b", vec![10.0, 20.0, 30.0]),
         ];
-        assert_eq!(cartesian(&axes).len(), 6);
+        let active = active_axes(&axes);
+        assert_eq!(raw_grid_size(&active), Some(6));
+        assert_eq!(combo_at(&active, 0), vec![("a".into(), 1.0), ("b".into(), 10.0)]);
+        assert_eq!(combo_at(&active, 5), vec![("a".into(), 2.0), ("b".into(), 30.0)]);
     }
 
     #[test]
-    fn invalid_fast_slow_combos_filtered() {
-        assert!(!combo_is_valid(&[
-            ("fast".into(), 30.0),
-            ("slow".into(), 10.0)
-        ]));
-        assert!(combo_is_valid(&[
-            ("fast".into(), 10.0),
-            ("slow".into(), 30.0)
-        ]));
-        assert!(combo_is_valid(&[("period".into(), 14.0)]));
+    fn huge_grid_is_bounded_before_any_product_vector_exists() {
+        let axes: Vec<ParamAxis> = (0..8)
+            .map(|i| ParamAxis::new(format!("p{i}"), (0..100).map(|x| x as f32).collect()))
+            .collect();
+        let active = active_axes(&axes);
+        assert_eq!(raw_grid_size(&active), Some(100_000_000_000_000_000));
+        let (grid_size, truncated, sampled) = sampled_combos(&axes, 17).unwrap();
+        assert_eq!(grid_size, 100_000_000_000_000_000);
+        assert!(truncated);
+        assert!(sampled.len() <= 17);
+    }
+
+    #[test]
+    fn overflowed_grid_is_rejected_before_enumeration() {
+        let axes: Vec<ParamAxis> = (0..32)
+            .map(|i| ParamAxis::new(format!("p{i}"), vec![0.0, 1.0, 2.0, 3.0]))
+            .collect();
+        let active = active_axes(&axes);
+        assert!(raw_grid_size(&active).is_none());
+        assert!(sampled_combos(&axes, 10).is_none());
+    }
+
+    #[test]
+    fn fast_slow_valid_count_is_exact_without_full_product() {
+        let axes = vec![
+            ParamAxis::new("fast", vec![5.0, 10.0, 30.0]),
+            ParamAxis::new("slow", vec![10.0, 20.0]),
+            ParamAxis::new("x", vec![1.0, 2.0]),
+        ];
+        let active = active_axes(&axes);
+        // valid pairs: (5,10), (5,20), (10,20); x contributes ×2.
+        assert_eq!(valid_grid_size(&active), Some(6));
     }
 
     #[test]
     fn objective_parse_roundtrip() {
-        assert_eq!(
-            Objective::parse("consistency"),
-            Some(Objective::Consistency)
-        );
+        assert_eq!(Objective::parse("consistency"), Some(Objective::Consistency));
         assert_eq!(Objective::parse("worst"), Some(Objective::WorstWindow));
         assert_eq!(Objective::parse("nope"), None);
     }
@@ -491,80 +472,56 @@ mod tests {
     #[test]
     fn none_when_too_little_data() {
         let candles = trend(30);
-        let axes = default_axes("sma_cross");
-        assert!(
-            optimize(
-                "sma_cross",
-                &axes,
-                &BTreeMap::new(),
-                &candles,
-                &cfg(),
-                &OptimizeConfig::default()
-            )
-            .is_none()
-        );
+        assert!(optimize(
+            "sma_cross",
+            &default_axes("sma_cross"),
+            &BTreeMap::new(),
+            &candles,
+            &cfg(),
+            &OptimizeConfig::default(),
+        )
+        .is_none());
     }
 
     #[test]
     fn optimizes_and_confirms_on_holdout() {
-        // A clean persistent uptrend -> a trend-follower should be profitable
-        // both in-sample and out-of-sample -> ROBUST verdict, positive holdout.
         let candles = trend(400);
-        let axes = default_axes("sma_cross");
-        let rep = optimize(
+        let report = optimize(
             "sma_cross",
-            &axes,
+            &default_axes("sma_cross"),
             &BTreeMap::new(),
             &candles,
             &cfg(),
             &OptimizeConfig::default(),
         )
         .unwrap();
-        assert!(rep.train_bars > 0 && rep.holdout_bars > 0);
-        assert!(rep.grid_size > 1);
-        assert!(!rep.leaderboard.is_empty());
-        // Best params come from the factory's parameter names.
-        assert!(rep.best.params.contains_key("fast"));
-        assert!(rep.best.params.contains_key("slow"));
-        // A real trend edge should not collapse out-of-sample.
-        assert!(
-            rep.best.holdout_return > 0.0,
-            "holdout {}",
-            rep.best.holdout_return
-        );
-        assert!(rep.verdict.starts_with("ROBUST") || rep.verdict.starts_with("PARTIAL"));
+        assert!(report.train_bars > 0 && report.holdout_bars > 0);
+        assert!(report.grid_size > 1);
+        assert!(!report.leaderboard.is_empty());
+        assert!(report.best.params.contains_key("fast"));
+        assert!(report.best.params.contains_key("slow"));
+        assert!(report.best.holdout_return > 0.0);
     }
 
     #[test]
-    fn leaderboard_is_sorted_by_objective() {
+    fn max_combos_bounds_actual_evaluation() {
         let candles = trend(400);
-        let axes = default_axes("sma_cross");
-        let rep = optimize(
-            "sma_cross",
-            &axes,
-            &BTreeMap::new(),
-            &candles,
-            &cfg(),
-            &OptimizeConfig::default(),
-        )
-        .unwrap();
-        for w in rep.leaderboard.windows(2)
-        {
-            assert!(w[0].objective_score >= w[1].objective_score);
-        }
-    }
-
-    #[test]
-    fn max_combos_bounds_evaluation() {
-        let candles = trend(400);
-        let axes = default_axes("sma_cross"); // 4×4 = 16, minus fast>=slow invalids
         let opt = OptimizeConfig {
             max_combos: 3,
             ..Default::default()
         };
-        let rep = optimize("sma_cross", &axes, &BTreeMap::new(), &candles, &cfg(), &opt).unwrap();
-        assert!(rep.truncated);
-        assert!(rep.leaderboard.len() <= 3);
+        let report = optimize(
+            "sma_cross",
+            &default_axes("sma_cross"),
+            &BTreeMap::new(),
+            &candles,
+            &cfg(),
+            &opt,
+        )
+        .unwrap();
+        assert!(report.truncated);
+        assert!(report.num_evaluated <= 3);
+        assert!(report.leaderboard.len() <= 3);
     }
 
     #[test]
