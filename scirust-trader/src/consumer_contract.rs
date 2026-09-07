@@ -26,8 +26,7 @@ pub mod operations {
     pub const COST_STRESS: &str = "scirust.trader.research.cost_stress.v1";
     pub const RL_PLAN: &str = "scirust.trader.research.rl_plan.v1";
     pub const COMPARE_CANDIDATES: &str = "scirust.trader.research.compare_candidates.v1";
-    pub const MANIFEST_FINGERPRINT: &str =
-        "scirust.trader.research.manifest_fingerprint.v1";
+    pub const MANIFEST_FINGERPRINT: &str = "scirust.trader.research.manifest_fingerprint.v1";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,7 +105,8 @@ impl EvidenceRef {
         require_text("evidence.evidence_id", &self.evidence_id)?;
         require_text("evidence.uri", &self.uri)?;
         require_text("evidence.fingerprint", &self.fingerprint)?;
-        if let Some(media_type) = &self.media_type {
+        if let Some(media_type) = &self.media_type
+        {
             require_text("evidence.media_type", media_type)?;
         }
         Ok(())
@@ -134,12 +134,14 @@ impl TradingResearchRequest {
     pub fn validate(&self) -> Result<(), ContractValidationError> {
         require_schema(self.schema_version)?;
         require_text("request_id", &self.request_id)?;
-        if let Some(experiment_id) = &self.experiment_id {
+        if let Some(experiment_id) = &self.experiment_id
+        {
             require_text("experiment_id", experiment_id)?;
         }
         self.consumer.validate()?;
         require_text("operation", &self.operation)?;
-        if !self.payload.is_object() {
+        if !self.payload.is_object()
+        {
             return Err(ContractValidationError::new(
                 "payload",
                 "must be a JSON object",
@@ -223,13 +225,16 @@ impl TradingResearchResult {
         require_text("result_id", &self.result_id)?;
         require_text("request_id", &self.request_id)?;
         require_sha256("request_fingerprint", &self.request_fingerprint)?;
-        if let Some(experiment_id) = &self.experiment_id {
+        if let Some(experiment_id) = &self.experiment_id
+        {
             require_text("experiment_id", experiment_id)?;
         }
         self.producer.validate()?;
         require_text("operation", &self.operation)?;
-        if let Some(output) = &self.output {
-            if !output.is_object() {
+        if let Some(output) = &self.output
+        {
+            if !output.is_object()
+            {
                 return Err(ContractValidationError::new(
                     "output",
                     "must be a JSON object when present",
@@ -238,7 +243,8 @@ impl TradingResearchResult {
         }
         validate_evidence(&self.evidence)?;
         validate_provenance(&self.provenance)?;
-        for issue in &self.issues {
+        for issue in &self.issues
+        {
             issue.validate()?;
         }
 
@@ -246,29 +252,35 @@ impl TradingResearchResult {
             .issues
             .iter()
             .any(|issue| issue.severity == ContractIssueSeverity::Error);
-        match self.outcome {
-            ResearchOutcome::Succeeded => {
-                if self.output.is_none() {
+        match self.outcome
+        {
+            ResearchOutcome::Succeeded =>
+            {
+                if self.output.is_none()
+                {
                     return Err(ContractValidationError::new(
                         "output",
                         "successful results require an output object",
                     ));
                 }
-                if has_error {
+                if has_error
+                {
                     return Err(ContractValidationError::new(
                         "issues",
                         "successful results cannot contain error issues",
                     ));
                 }
-            }
-            ResearchOutcome::Rejected | ResearchOutcome::Failed => {
-                if !has_error {
+            },
+            ResearchOutcome::Rejected | ResearchOutcome::Failed =>
+            {
+                if !has_error
+                {
                     return Err(ContractValidationError::new(
                         "issues",
                         "rejected or failed results require an error issue",
                     ));
                 }
-            }
+            },
         }
         Ok(())
     }
@@ -286,25 +298,29 @@ impl TradingResearchResult {
     ) -> Result<(), ContractValidationError> {
         self.validate()?;
         request.validate()?;
-        if self.request_id != request.request_id {
+        if self.request_id != request.request_id
+        {
             return Err(ContractValidationError::new(
                 "request_id",
                 "does not match request",
             ));
         }
-        if self.request_fingerprint != request.fingerprint()? {
+        if self.request_fingerprint != request.fingerprint()?
+        {
             return Err(ContractValidationError::new(
                 "request_fingerprint",
                 "does not match request",
             ));
         }
-        if self.experiment_id != request.experiment_id {
+        if self.experiment_id != request.experiment_id
+        {
             return Err(ContractValidationError::new(
                 "experiment_id",
                 "does not match request",
             ));
         }
-        if self.operation != request.operation {
+        if self.operation != request.operation
+        {
             return Err(ContractValidationError::new(
                 "operation",
                 "does not match request",
@@ -328,14 +344,19 @@ impl ContractValidationError {
 
 impl std::fmt::Display for ContractValidationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "invalid trading research contract {}: {}", self.field, self.reason)
+        write!(
+            f,
+            "invalid trading research contract {}: {}",
+            self.field, self.reason
+        )
     }
 }
 
 impl std::error::Error for ContractValidationError {}
 
 fn require_schema(schema_version: u32) -> Result<(), ContractValidationError> {
-    if schema_version != TRADING_RESEARCH_CONTRACT_SCHEMA_VERSION {
+    if schema_version != TRADING_RESEARCH_CONTRACT_SCHEMA_VERSION
+    {
         return Err(ContractValidationError::new(
             "schema_version",
             "unsupported schema version",
@@ -345,14 +366,16 @@ fn require_schema(schema_version: u32) -> Result<(), ContractValidationError> {
 }
 
 fn require_text(field: &'static str, value: &str) -> Result<(), ContractValidationError> {
-    if value.trim().is_empty() {
+    if value.trim().is_empty()
+    {
         return Err(ContractValidationError::new(field, "must be non-empty"));
     }
     Ok(())
 }
 
 fn require_sha256(field: &'static str, value: &str) -> Result<(), ContractValidationError> {
-    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
         return Err(ContractValidationError::new(
             field,
             "must be a 64-character hexadecimal SHA-256 fingerprint",
@@ -363,9 +386,11 @@ fn require_sha256(field: &'static str, value: &str) -> Result<(), ContractValida
 
 fn validate_provenance(provenance: &[ProvenanceRef]) -> Result<(), ContractValidationError> {
     let mut ids = BTreeSet::new();
-    for item in provenance {
+    for item in provenance
+    {
         item.validate()?;
-        if !ids.insert(item.provenance_id.as_str()) {
+        if !ids.insert(item.provenance_id.as_str())
+        {
             return Err(ContractValidationError::new(
                 "provenance.provenance_id",
                 "must be unique within the envelope",
@@ -377,9 +402,11 @@ fn validate_provenance(provenance: &[ProvenanceRef]) -> Result<(), ContractValid
 
 fn validate_evidence(evidence: &[EvidenceRef]) -> Result<(), ContractValidationError> {
     let mut ids = BTreeSet::new();
-    for item in evidence {
+    for item in evidence
+    {
         item.validate()?;
-        if !ids.insert(item.evidence_id.as_str()) {
+        if !ids.insert(item.evidence_id.as_str())
+        {
             return Err(ContractValidationError::new(
                 "evidence.evidence_id",
                 "must be unique within the result",
@@ -462,7 +489,8 @@ mod tests {
             ParticipantKind::Service,
             ParticipantKind::Library,
             ParticipantKind::Other,
-        ] {
+        ]
+        {
             let mut candidate = request();
             candidate.consumer = participant("consumer", kind);
             assert!(candidate.validate().is_ok());

@@ -4,8 +4,8 @@
 //! links, and fingerprints envelopes. No trading action is executed here.
 
 use crate::registry::McpTool;
-use serde_json::{Value, json};
 use scirust_trader::consumer_contract::{TradingResearchRequest, TradingResearchResult};
+use serde_json::{Value, json};
 
 pub fn trader_contract_tools() -> Vec<McpTool> {
     vec![validate_request_tool(), validate_result_tool()]
@@ -79,8 +79,8 @@ fn parse_required<T: serde::de::DeserializeOwned>(args: &Value, key: &str) -> Re
 mod tests {
     use super::*;
     use scirust_trader::consumer_contract::{
-        ContractParticipant, ParticipantKind, ResearchOutcome, TradingResearchResult,
-        TRADING_RESEARCH_CONTRACT_SCHEMA_VERSION,
+        ContractParticipant, ParticipantKind, ResearchOutcome,
+        TRADING_RESEARCH_CONTRACT_SCHEMA_VERSION, TradingResearchResult,
     };
     use std::collections::BTreeMap;
 
@@ -105,7 +105,12 @@ mod tests {
     #[test]
     fn request_tool_accepts_multiple_consumer_kinds() {
         let tool = validate_request_tool();
-        for kind in [ParticipantKind::Agent, ParticipantKind::Backtester, ParticipantKind::Cli] {
+        for kind in [
+            ParticipantKind::Agent,
+            ParticipantKind::Backtester,
+            ParticipantKind::Cli,
+        ]
+        {
             let value = (tool.handler)(json!({"request": request(kind)})).unwrap();
             assert_eq!(value["schema_version"], 1);
             assert_eq!(value["fingerprint"].as_str().unwrap().len(), 64);
@@ -137,10 +142,12 @@ mod tests {
 
         let mut different_request = request.clone();
         different_request.payload = json!({"sample": 2});
-        assert!((validate_result_tool().handler)(json!({
-            "request": different_request,
-            "result": result
-        }))
-        .is_err());
+        assert!(
+            (validate_result_tool().handler)(json!({
+                "request": different_request,
+                "result": result
+            }))
+            .is_err()
+        );
     }
 }
