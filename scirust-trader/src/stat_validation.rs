@@ -381,8 +381,14 @@ fn sharpe_for_indices(returns: &[f64], indices: &[usize]) -> f64 {
 }
 
 fn normalized_midrank(score: f64, scores: &[f64]) -> f64 {
-    let lower = scores.iter().filter(|candidate| **candidate < score).count() as f64;
-    let equal = scores.iter().filter(|candidate| **candidate == score).count() as f64;
+    let lower = scores
+        .iter()
+        .filter(|candidate| **candidate < score)
+        .count() as f64;
+    let equal = scores
+        .iter()
+        .filter(|candidate| **candidate == score)
+        .count() as f64;
     let midrank = lower + (equal + 1.0) / 2.0;
     midrank / (scores.len() + 1) as f64
 }
