@@ -2,81 +2,277 @@
 //!
 //! The existing `f32` trading primitives remain useful for indicators,
 //! statistics and historical simulation. They are not an exact venue boundary.
-//! This module is the exact contract for prices, quantities, instrument filters
-//! and order normalization used by execution runtimes/adapters.
+//! This module deliberately keeps venue-facing prices, quantities and money in
+//! base-10 integer form and serializes them as JSON strings. No economic amount
+//! in this contract is converted through IEEE-754.
 
-use rust_decimal::Decimal;
-use serde::{Deserialize, Serialize};
-use std::str::FromStr;
+use core::cmp::Ordering;
+use core::fmt;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::orders::{Side, TimeInForce};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct Price(#[serde(with = "rust_decimal::serde::str")] pub Decimal);
+const MAX_DECIMAL_SCALE: u32 = 18;
 
-impl Price {
-    pub fn new(value: Decimal) -> Result<Self, FinancialError> {
-        if value <= Decimal::ZERO
-        {
-            return Err(FinancialError::NonPositivePrice);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct ExactDecimal {
+    mantissa: i128,
+    scale: u32,
+}
+
+impl ExactDecimal {
+    fn parse(input: &str) -> Result<Self, FinancialError> {
+        if input.is_empty() || input.trim() != input {
+            return Err(FinancialError::InvalidDecimal);
         }
-        Ok(Self(value))
+
+        let (negative, body) = match input.as_bytes().first() {
+            Some(b'-') => (true, &input[1..]),
+            Some(b'+') => (false, &input[1..]),
+            _ => (false, input),
+        };
+        if body.is_empty() {
+            return Err(FinancialError::InvalidDecimal);
+        }
+
+        let mut pieces = body.split('.');
+        let integer = pieces.next().ok_or(FinancialError::InvalidDecimal)?;
+        let fraction = pieces.next();
+        if pieces.next().is_some()
+            || integer.is_empty()
+            || !integer.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return Err(FinancialError::InvalidDecimal);
+        }
+
+        let mut fraction = fraction.unwrap_or("");
+        if !fraction.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(FinancialError::InvalidDecimal);
+        }
+        fraction = fraction.trim_end_matches('0');
+        if fraction.len() > MAX_DECIMAL_SCALE as usize {
+            return Err(FinancialError::ExcessPrecision);
+        }
+
+        let digits = if fraction.is_empty() {
+            integer.to_string()
+        } else {
+            format!("{integer}{fraction}")
+        };
+        let digits = digits.trim_start_matches('0');
+        let unsigned_text = if digits.is_empty() { "0" } else { digits };
+        let signed_text = if negative && unsigned_text != "0" {
+            format!("-{unsigned_text}")
+        } else {
+            unsigned_text.to_string()
+        };
+        let mantissa = signed_text
+            .parse::<i128>()
+            .map_err(|_| FinancialError::ArithmeticOverflow)?;
+        Ok(Self::normalized(mantissa, fraction.len() as u32))
     }
 
-    pub fn parse(value: &str) -> Result<Self, FinancialError> {
-        let value = Decimal::from_str_exact(value).map_err(|_| FinancialError::InvalidDecimal)?;
-        Self::new(value)
+    fn normalized(mut mantissa: i128, mut scale: u32) -> Self {
+        while scale > 0 && mantissa % 10 == 0 {
+            mantissa /= 10;
+            scale -= 1;
+        }
+        if mantissa == 0 {
+            scale = 0;
+        }
+        Self { mantissa, scale }
     }
 
-    pub fn value(self) -> Decimal {
-        self.0
+    fn as_string(self) -> String {
+        if self.scale == 0 {
+            return self.mantissa.to_string();
+        }
+        let negative = self.mantissa < 0;
+        let digits = self.mantissa.unsigned_abs().to_string();
+        let scale = self.scale as usize;
+        let rendered = if digits.len() <= scale {
+            format!("0.{}{}", "0".repeat(scale - digits.len()), digits)
+        } else {
+            let split = digits.len() - scale;
+            format!("{}.{}", &digits[..split], &digits[split..])
+        };
+        if negative { format!("-{rendered}") } else { rendered }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct Quantity(#[serde(with = "rust_decimal::serde::str")] pub Decimal);
-
-impl Quantity {
-    pub fn new(value: Decimal) -> Result<Self, FinancialError> {
-        if value <= Decimal::ZERO
-        {
-            return Err(FinancialError::NonPositiveQuantity);
-        }
-        Ok(Self(value))
+fn decimal_cmp_parts(
+    left_mantissa: i128,
+    left_scale: u32,
+    right_mantissa: i128,
+    right_scale: u32,
+) -> Ordering {
+    match (left_mantissa.signum(), right_mantissa.signum()) {
+        (left, right) if left != right => return left.cmp(&right),
+        (0, 0) => return Ordering::Equal,
+        _ => {},
     }
 
-    pub fn parse(value: &str) -> Result<Self, FinancialError> {
-        let value = Decimal::from_str_exact(value).map_err(|_| FinancialError::InvalidDecimal)?;
-        Self::new(value)
-    }
+    let negative = left_mantissa < 0;
+    let left = left_mantissa.unsigned_abs().to_string();
+    let right = right_mantissa.unsigned_abs().to_string();
+    let left_exponent = left.len() as i64 - i64::from(left_scale);
+    let right_exponent = right.len() as i64 - i64::from(right_scale);
 
-    pub fn value(self) -> Decimal {
-        self.0
+    let magnitude = if left_exponent != right_exponent {
+        left_exponent.cmp(&right_exponent)
+    } else {
+        let width = left.len().max(right.len());
+        let left_padded = format!("{left}{}", "0".repeat(width - left.len()));
+        let right_padded = format!("{right}{}", "0".repeat(width - right.len()));
+        left_padded.cmp(&right_padded)
+    };
+    if negative { magnitude.reverse() } else { magnitude }
+}
+
+impl Ord for ExactDecimal {
+    fn cmp(&self, other: &Self) -> Ordering {
+        decimal_cmp_parts(self.mantissa, self.scale, other.mantissa, other.scale)
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct NonNegativeMoney(#[serde(with = "rust_decimal::serde::str")] pub Decimal);
+impl PartialOrd for ExactDecimal {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+fn scale_factor(diff: u32) -> Result<i128, FinancialError> {
+    10_i128
+        .checked_pow(diff)
+        .ok_or(FinancialError::ArithmeticOverflow)
+}
+
+fn common_scale(
+    left: ExactDecimal,
+    right: ExactDecimal,
+) -> Result<(i128, i128, u32), FinancialError> {
+    let scale = left.scale.max(right.scale);
+    let left_factor = scale_factor(scale - left.scale)?;
+    let right_factor = scale_factor(scale - right.scale)?;
+    let left = left
+        .mantissa
+        .checked_mul(left_factor)
+        .ok_or(FinancialError::ArithmeticOverflow)?;
+    let right = right
+        .mantissa
+        .checked_mul(right_factor)
+        .ok_or(FinancialError::ArithmeticOverflow)?;
+    Ok((left, right, scale))
+}
+
+fn aligned(value: ExactDecimal, step: ExactDecimal) -> Result<bool, FinancialError> {
+    let (value, step, _) = common_scale(value, step)?;
+    if step <= 0 {
+        return Err(FinancialError::InvalidStep);
+    }
+    Ok(value % step == 0)
+}
+
+fn round_down(value: ExactDecimal, step: ExactDecimal) -> Result<ExactDecimal, FinancialError> {
+    let (value, step, scale) = common_scale(value, step)?;
+    if value <= 0 || step <= 0 {
+        return Err(FinancialError::InvalidStep);
+    }
+    Ok(ExactDecimal::normalized(value - value % step, scale))
+}
+
+fn round_up(value: ExactDecimal, step: ExactDecimal) -> Result<ExactDecimal, FinancialError> {
+    let (value, step, scale) = common_scale(value, step)?;
+    if value <= 0 || step <= 0 {
+        return Err(FinancialError::InvalidStep);
+    }
+    let remainder = value % step;
+    if remainder == 0 {
+        return Ok(ExactDecimal::normalized(value, scale));
+    }
+    let delta = step - remainder;
+    let effective = value
+        .checked_add(delta)
+        .ok_or(FinancialError::ArithmeticOverflow)?;
+    Ok(ExactDecimal::normalized(effective, scale))
+}
+
+macro_rules! exact_positive_type {
+    ($name:ident, $non_positive:ident) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        pub struct $name(ExactDecimal);
+
+        impl $name {
+            pub fn parse(value: &str) -> Result<Self, FinancialError> {
+                let value = ExactDecimal::parse(value)?;
+                if value.mantissa <= 0 {
+                    return Err(FinancialError::$non_positive);
+                }
+                Ok(Self(value))
+            }
+
+            pub fn as_decimal_string(self) -> String {
+                self.0.as_string()
+            }
+        }
+
+        impl Serialize for $name {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: Serializer,
+            {
+                serializer.serialize_str(&self.0.as_string())
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                let text = String::deserialize(deserializer)?;
+                Self::parse(&text).map_err(serde::de::Error::custom)
+            }
+        }
+    };
+}
+
+exact_positive_type!(Price, NonPositivePrice);
+exact_positive_type!(Quantity, NonPositiveQuantity);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct NonNegativeMoney(ExactDecimal);
 
 impl NonNegativeMoney {
-    pub fn new(value: Decimal) -> Result<Self, FinancialError> {
-        if value < Decimal::ZERO
-        {
+    pub fn parse(value: &str) -> Result<Self, FinancialError> {
+        let value = ExactDecimal::parse(value)?;
+        if value.mantissa < 0 {
             return Err(FinancialError::NegativeMoney);
         }
         Ok(Self(value))
     }
 
-    pub fn parse(value: &str) -> Result<Self, FinancialError> {
-        let value = Decimal::from_str_exact(value).map_err(|_| FinancialError::InvalidDecimal)?;
-        Self::new(value)
+    pub fn as_decimal_string(self) -> String {
+        self.0.as_string()
     }
+}
 
-    pub fn value(self) -> Decimal {
-        self.0
+impl Serialize for NonNegativeMoney {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.0.as_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for NonNegativeMoney {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let text = String::deserialize(deserializer)?;
+        Self::parse(&text).map_err(serde::de::Error::custom)
     }
 }
 
@@ -152,12 +348,10 @@ pub struct ReferencePrice {
 
 impl ReferencePrice {
     pub fn validate_at(self, now_ms: i64) -> Result<(), FinancialError> {
-        if self.valid_until_ms < self.observed_at_ms
-        {
+        if self.valid_until_ms < self.observed_at_ms {
             return Err(FinancialError::InvalidReferenceWindow);
         }
-        if self.observed_at_ms > now_ms || now_ms > self.valid_until_ms
-        {
+        if self.observed_at_ms > now_ms || now_ms > self.valid_until_ms {
             return Err(FinancialError::StaleReferencePrice);
         }
         Ok(())
@@ -180,10 +374,8 @@ pub enum NormalizationDirection {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NormalizationChange {
     pub field: NormalizationField,
-    #[serde(with = "rust_decimal::serde::str")]
-    pub requested: Decimal,
-    #[serde(with = "rust_decimal::serde::str")]
-    pub effective: Decimal,
+    pub requested: String,
+    pub effective: String,
     pub direction: NormalizationDirection,
     pub reason: String,
 }
@@ -194,12 +386,14 @@ pub struct NormalizedOrder {
     pub changes: Vec<NormalizationChange>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FinancialError {
     InvalidDecimal,
+    ExcessPrecision,
     NonPositivePrice,
     NonPositiveQuantity,
     NegativeMoney,
+    InvalidStep,
     InvalidInstrumentIdentity,
     InvalidQuantityBounds,
     InvalidNotionalBounds,
@@ -219,103 +413,59 @@ pub enum FinancialError {
     InvalidOrderCombination,
 }
 
-fn aligned(value: Decimal, step: Decimal) -> Result<bool, FinancialError> {
-    Ok(value
-        .checked_rem(step)
-        .ok_or(FinancialError::ArithmeticOverflow)?
-        == Decimal::ZERO)
-}
-
-fn round_down(value: Decimal, step: Decimal) -> Result<Decimal, FinancialError> {
-    let remainder = value
-        .checked_rem(step)
-        .ok_or(FinancialError::ArithmeticOverflow)?;
-    value
-        .checked_sub(remainder)
-        .ok_or(FinancialError::ArithmeticOverflow)
-}
-
-fn round_up(value: Decimal, step: Decimal) -> Result<Decimal, FinancialError> {
-    let remainder = value
-        .checked_rem(step)
-        .ok_or(FinancialError::ArithmeticOverflow)?;
-    if remainder == Decimal::ZERO
-    {
-        return Ok(value);
+impl fmt::Display for FinancialError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{self:?}")
     }
-    let delta = step
-        .checked_sub(remainder)
-        .ok_or(FinancialError::ArithmeticOverflow)?;
-    value
-        .checked_add(delta)
-        .ok_or(FinancialError::ArithmeticOverflow)
 }
 
-fn normalize_price(
+impl std::error::Error for FinancialError {}
+
+fn normalize_limit_price(
     price: Price,
     tick: Price,
     side: Side,
 ) -> Result<(Price, Option<NormalizationChange>), FinancialError> {
-    let requested = price.value();
-    let effective = match side
-    {
-        Side::Buy => round_down(requested, tick.value())?,
-        Side::Sell => round_up(requested, tick.value())?,
+    let effective = match side {
+        Side::Buy => round_down(price.0, tick.0)?,
+        Side::Sell => round_up(price.0, tick.0)?,
     };
-    let effective = Price::new(effective)?;
-    let change = if effective == price
-    {
-        None
-    }
-    else
-    {
-        Some(NormalizationChange {
-            field: NormalizationField::LimitPrice,
-            requested,
-            effective: effective.value(),
-            direction: match side
-            {
-                Side::Buy => NormalizationDirection::Down,
-                Side::Sell => NormalizationDirection::Up,
-            },
-            reason: "align limit-like price to venue tick without making the order more aggressive"
-                .to_string(),
-        })
-    };
+    let effective = Price(effective);
+    let change = (effective != price).then(|| NormalizationChange {
+        field: NormalizationField::LimitPrice,
+        requested: price.as_decimal_string(),
+        effective: effective.as_decimal_string(),
+        direction: match side {
+            Side::Buy => NormalizationDirection::Down,
+            Side::Sell => NormalizationDirection::Up,
+        },
+        reason: "align limit-like price to venue tick without making the order more aggressive"
+            .to_string(),
+    });
     Ok((effective, change))
 }
 
-fn normalize_stop(
+fn normalize_stop_price(
     stop: Price,
     tick: Price,
     side: Side,
 ) -> Result<(Price, Option<NormalizationChange>), FinancialError> {
-    let requested = stop.value();
-    let effective = match side
-    {
-        Side::Buy => round_up(requested, tick.value())?,
-        Side::Sell => round_down(requested, tick.value())?,
+    let effective = match side {
+        Side::Buy => round_up(stop.0, tick.0)?,
+        Side::Sell => round_down(stop.0, tick.0)?,
     };
-    let effective = Price::new(effective)?;
-    let change = if effective == stop
-    {
-        None
-    }
-    else
-    {
-        Some(NormalizationChange {
-            field: NormalizationField::StopPrice,
-            requested,
-            effective: effective.value(),
-            direction: match side
-            {
-                Side::Buy => NormalizationDirection::Up,
-                Side::Sell => NormalizationDirection::Down,
-            },
-            reason: "align stop trigger to venue tick without triggering earlier than requested"
-                .to_string(),
-        })
-    };
+    let effective = Price(effective);
+    let change = (effective != stop).then(|| NormalizationChange {
+        field: NormalizationField::StopPrice,
+        requested: stop.as_decimal_string(),
+        effective: effective.as_decimal_string(),
+        direction: match side {
+            Side::Buy => NormalizationDirection::Up,
+            Side::Sell => NormalizationDirection::Down,
+        },
+        reason: "align stop trigger to venue tick without triggering earlier than requested"
+            .to_string(),
+    });
     Ok((effective, change))
 }
 
@@ -326,60 +476,43 @@ pub fn normalize_order(
     now_ms: i64,
 ) -> Result<NormalizedOrder, FinancialError> {
     rules.validate()?;
-    if request.instrument_id != rules.instrument_id
-    {
-        return Err(FinancialError::InstrumentMismatch);
-    }
-    if request.rules_version != rules.rules_version
-    {
-        return Err(FinancialError::RulesVersionMismatch);
-    }
-    if request.post_only && !matches!(request.order_type, ExactOrderType::Limit { .. })
-    {
-        return Err(FinancialError::InvalidOrderCombination);
-    }
+    ensure_identity(request, rules)?;
+    ensure_order_combination(request)?;
 
+    let effective_quantity = Quantity(round_down(request.quantity.0, rules.quantity_step.0)?);
     let mut changes = Vec::new();
-    let requested_quantity = request.quantity.value();
-    let effective_quantity = round_down(requested_quantity, rules.quantity_step.value())?;
-    let effective_quantity = Quantity::new(effective_quantity)?;
-    if effective_quantity != request.quantity
-    {
+    if effective_quantity != request.quantity {
         changes.push(NormalizationChange {
             field: NormalizationField::Quantity,
-            requested: requested_quantity,
-            effective: effective_quantity.value(),
+            requested: request.quantity.as_decimal_string(),
+            effective: effective_quantity.as_decimal_string(),
             direction: NormalizationDirection::Down,
             reason: "align quantity to venue lot step".to_string(),
         });
     }
 
-    let order_type = match request.order_type
-    {
+    let order_type = match request.order_type {
         ExactOrderType::Market => ExactOrderType::Market,
-        ExactOrderType::Limit { price } =>
-        {
-            let (price, change) = normalize_price(price, rules.price_tick, request.side)?;
+        ExactOrderType::Limit { price } => {
+            let (price, change) = normalize_limit_price(price, rules.price_tick, request.side)?;
             changes.extend(change);
             ExactOrderType::Limit { price }
         },
-        ExactOrderType::StopMarket { stop } =>
-        {
-            let (stop, change) = normalize_stop(stop, rules.price_tick, request.side)?;
+        ExactOrderType::StopMarket { stop } => {
+            let (stop, change) = normalize_stop_price(stop, rules.price_tick, request.side)?;
             changes.extend(change);
             ExactOrderType::StopMarket { stop }
         },
-        ExactOrderType::StopLimit { stop, limit } =>
-        {
-            let (stop, stop_change) = normalize_stop(stop, rules.price_tick, request.side)?;
-            let (limit, limit_change) = normalize_price(limit, rules.price_tick, request.side)?;
+        ExactOrderType::StopLimit { stop, limit } => {
+            let (stop, stop_change) = normalize_stop_price(stop, rules.price_tick, request.side)?;
+            let (limit, limit_change) =
+                normalize_limit_price(limit, rules.price_tick, request.side)?;
             changes.extend(stop_change);
             changes.extend(limit_change);
             ExactOrderType::StopLimit { stop, limit }
         },
-        ExactOrderType::TakeProfit { price } =>
-        {
-            let (price, change) = normalize_price(price, rules.price_tick, request.side)?;
+        ExactOrderType::TakeProfit { price } => {
+            let (price, change) = normalize_limit_price(price, rules.price_tick, request.side)?;
             changes.extend(change);
             ExactOrderType::TakeProfit { price }
         },
@@ -409,21 +542,10 @@ pub fn validate_order(
     now_ms: i64,
 ) -> Result<(), FinancialError> {
     rules.validate()?;
-    if request.instrument_id != rules.instrument_id
-    {
-        return Err(FinancialError::InstrumentMismatch);
-    }
-    if request.rules_version != rules.rules_version
-    {
-        return Err(FinancialError::RulesVersionMismatch);
-    }
-    if request.post_only && !matches!(request.order_type, ExactOrderType::Limit { .. })
-    {
-        return Err(FinancialError::InvalidOrderCombination);
-    }
+    ensure_identity(request, rules)?;
+    ensure_order_combination(request)?;
 
-    if request.quantity < rules.min_quantity
-    {
+    if request.quantity < rules.min_quantity {
         return Err(FinancialError::QuantityBelowMinimum);
     }
     if rules
@@ -432,69 +554,103 @@ pub fn validate_order(
     {
         return Err(FinancialError::QuantityAboveMaximum);
     }
-    if !aligned(request.quantity.value(), rules.quantity_step.value())?
-    {
+    if !aligned(request.quantity.0, rules.quantity_step.0)? {
         return Err(FinancialError::QuantityNotAligned);
     }
 
-    match request.order_type
-    {
-        ExactOrderType::Limit { price } | ExactOrderType::TakeProfit { price } =>
-        {
+    match request.order_type {
+        ExactOrderType::Limit { price } | ExactOrderType::TakeProfit { price } => {
             validate_price_alignment(price, rules.price_tick)?;
         },
-        ExactOrderType::StopMarket { stop } =>
-        {
-            if !aligned(stop.value(), rules.price_tick.value())?
-            {
-                return Err(FinancialError::StopPriceNotAligned);
-            }
+        ExactOrderType::StopMarket { stop } => {
+            validate_stop_alignment(stop, rules.price_tick)?;
         },
-        ExactOrderType::StopLimit { stop, limit } =>
-        {
-            if !aligned(stop.value(), rules.price_tick.value())?
-            {
-                return Err(FinancialError::StopPriceNotAligned);
-            }
+        ExactOrderType::StopLimit { stop, limit } => {
+            validate_stop_alignment(stop, rules.price_tick)?;
             validate_price_alignment(limit, rules.price_tick)?;
         },
-        ExactOrderType::Market =>
-        {},
+        ExactOrderType::Market => {},
     }
 
-    let notional_price = match request.order_type
-    {
+    let notional_price = match request.order_type {
         ExactOrderType::Limit { price }
         | ExactOrderType::TakeProfit { price }
         | ExactOrderType::StopLimit { limit: price, .. } => price,
-        ExactOrderType::Market | ExactOrderType::StopMarket { .. } =>
-        {
+        ExactOrderType::Market | ExactOrderType::StopMarket { .. } => {
             let reference = reference.ok_or(FinancialError::MissingReferencePrice)?;
             reference.validate_at(now_ms)?;
             reference.price
         },
     };
-    let notional = notional_price
-        .value()
-        .checked_mul(request.quantity.value())
-        .ok_or(FinancialError::ArithmeticOverflow)?;
-    if notional < rules.min_notional.value()
-    {
-        return Err(FinancialError::NotionalBelowMinimum);
+    validate_notional(notional_price, request.quantity, rules)?;
+    Ok(())
+}
+
+fn ensure_identity(
+    request: &ExactOrderRequest,
+    rules: &ExactInstrumentRules,
+) -> Result<(), FinancialError> {
+    if request.instrument_id != rules.instrument_id {
+        return Err(FinancialError::InstrumentMismatch);
     }
-    if rules
-        .max_notional
-        .is_some_and(|maximum| notional > maximum.value())
-    {
-        return Err(FinancialError::NotionalAboveMaximum);
+    if request.rules_version != rules.rules_version {
+        return Err(FinancialError::RulesVersionMismatch);
+    }
+    Ok(())
+}
+
+fn ensure_order_combination(request: &ExactOrderRequest) -> Result<(), FinancialError> {
+    if request.post_only && !matches!(request.order_type, ExactOrderType::Limit { .. }) {
+        return Err(FinancialError::InvalidOrderCombination);
     }
     Ok(())
 }
 
 fn validate_price_alignment(price: Price, tick: Price) -> Result<(), FinancialError> {
-    if !aligned(price.value(), tick.value())?
-    {
+    if !aligned(price.0, tick.0)? {
         return Err(FinancialError::PriceNotAligned);
+    }
+    Ok(())
+}
+
+fn validate_stop_alignment(stop: Price, tick: Price) -> Result<(), FinancialError> {
+    if !aligned(stop.0, tick.0)? {
+        return Err(FinancialError::StopPriceNotAligned);
+    }
+    Ok(())
+}
+
+fn validate_notional(
+    price: Price,
+    quantity: Quantity,
+    rules: &ExactInstrumentRules,
+) -> Result<(), FinancialError> {
+    let product = price
+        .0
+        .mantissa
+        .checked_mul(quantity.0.mantissa)
+        .ok_or(FinancialError::ArithmeticOverflow)?;
+    let product_scale = price
+        .0
+        .scale
+        .checked_add(quantity.0.scale)
+        .ok_or(FinancialError::ArithmeticOverflow)?;
+
+    if decimal_cmp_parts(
+        product,
+        product_scale,
+        rules.min_notional.0.mantissa,
+        rules.min_notional.0.scale,
+    ) == Ordering::Less
+    {
+        return Err(FinancialError::NotionalBelowMinimum);
+    }
+    if let Some(maximum) = rules.max_notional {
+        if decimal_cmp_parts(product, product_scale, maximum.0.mantissa, maximum.0.scale)
+            == Ordering::Greater
+        {
+            return Err(FinancialError::NotionalAboveMaximum);
+        }
     }
     Ok(())
 }
@@ -517,166 +673,185 @@ mod tests {
 
     fn rules() -> ExactInstrumentRules {
         ExactInstrumentRules {
-            venue: "qualification".into(),
-            instrument_id: "BTC-USDT".into(),
-            base_asset: "BTC".into(),
-            quote_asset: "USDT".into(),
-            rules_version: "rules-1".into(),
+            venue: "test".to_string(),
+            instrument_id: "BTC-USDT".to_string(),
+            base_asset: "BTC".to_string(),
+            quote_asset: "USDT".to_string(),
+            rules_version: "v7".to_string(),
             price_tick: p("0.05"),
-            quantity_step: q("0.003"),
-            min_quantity: q("0.006"),
+            quantity_step: q("0.0001"),
+            min_quantity: q("0.0001"),
             max_quantity: Some(q("100")),
-            min_notional: money("10"),
-            max_notional: Some(money("1000000")),
+            min_notional: money("5"),
+            max_notional: Some(money("10000000")),
         }
     }
 
-    fn limit(side: Side, quantity: &str, price: &str) -> ExactOrderRequest {
+    fn request(side: Side, order_type: ExactOrderType, quantity: &str) -> ExactOrderRequest {
         ExactOrderRequest {
-            instrument_id: "BTC-USDT".into(),
+            instrument_id: "BTC-USDT".to_string(),
             side,
-            order_type: ExactOrderType::Limit { price: p(price) },
+            order_type,
             quantity: q(quantity),
             tif: TimeInForce::Gtc,
             reduce_only: false,
             post_only: false,
-            rules_version: "rules-1".into(),
+            rules_version: "v7".to_string(),
         }
     }
 
     #[test]
-    fn decimal_roundtrip_preserves_non_binary_precision() {
-        let price = p("100000.01");
+    fn economic_values_roundtrip_as_decimal_strings() {
+        let price = p("100000.010000");
+        assert_eq!(price.as_decimal_string(), "100000.01");
         let json = serde_json::to_string(&price).unwrap();
         assert_eq!(json, "\"100000.01\"");
-        let restored: Price = serde_json::from_str(&json).unwrap();
-        assert_eq!(restored, price);
-        assert_eq!(restored.value().to_string(), "100000.01");
+        assert_eq!(serde_json::from_str::<Price>(&json).unwrap(), price);
     }
 
     #[test]
-    fn strict_validation_rejects_unaligned_quantity_and_price() {
-        let request = limit(Side::Buy, "1.004", "100.03");
+    fn parser_rejects_non_decimal_and_excess_precision() {
+        assert_eq!(Price::parse("1e-8"), Err(FinancialError::InvalidDecimal));
+        assert_eq!(
+            Price::parse("0.1234567890123456789"),
+            Err(FinancialError::ExcessPrecision)
+        );
+        assert_eq!(Price::parse(" 1.0"), Err(FinancialError::InvalidDecimal));
+    }
+
+    #[test]
+    fn exact_order_rejects_unaligned_values_instead_of_rounding_silently() {
+        let request = request(
+            Side::Buy,
+            ExactOrderType::Limit {
+                price: p("100.03"),
+            },
+            "0.00015",
+        );
         assert_eq!(
             validate_order(&request, &rules(), None, 0),
             Err(FinancialError::QuantityNotAligned)
         );
+    }
 
-        let request = limit(Side::Buy, "1.002", "100.03");
+    #[test]
+    fn normalization_is_side_aware_and_reports_every_change() {
+        let buy = request(
+            Side::Buy,
+            ExactOrderType::Limit {
+                price: p("100.03"),
+            },
+            "0.05009",
+        );
+        let buy = normalize_order(&buy, &rules(), None, 0).unwrap();
+        assert_eq!(buy.order.quantity.as_decimal_string(), "0.05");
         assert_eq!(
-            validate_order(&request, &rules(), None, 0),
-            Err(FinancialError::PriceNotAligned)
+            match buy.order.order_type {
+                ExactOrderType::Limit { price } => price.as_decimal_string(),
+                _ => unreachable!(),
+            },
+            "100"
+        );
+        assert_eq!(buy.changes.len(), 2);
+
+        let sell = request(
+            Side::Sell,
+            ExactOrderType::Limit {
+                price: p("100.03"),
+            },
+            "0.05",
+        );
+        let sell = normalize_order(&sell, &rules(), None, 0).unwrap();
+        assert_eq!(
+            match sell.order.order_type {
+                ExactOrderType::Limit { price } => price.as_decimal_string(),
+                _ => unreachable!(),
+            },
+            "100.05"
         );
     }
 
     #[test]
-    fn normalization_reports_every_effective_change() {
-        let buy = normalize_order(&limit(Side::Buy, "1.004", "100.03"), &rules(), None, 0)
-            .unwrap();
-        assert_eq!(buy.order.quantity.value().to_string(), "1.002");
-        let ExactOrderType::Limit { price } = buy.order.order_type
-        else
-        {
-            panic!("limit expected");
-        };
-        assert_eq!(price.value().to_string(), "100.00");
-        assert_eq!(buy.changes.len(), 2);
-
-        let sell = normalize_order(&limit(Side::Sell, "1.004", "100.03"), &rules(), None, 0)
-            .unwrap();
-        let ExactOrderType::Limit { price } = sell.order.order_type
-        else
-        {
-            panic!("limit expected");
-        };
-        assert_eq!(price.value().to_string(), "100.05");
-    }
-
-    #[test]
-    fn stop_trigger_normalization_does_not_trigger_earlier() {
-        let buy_request = ExactOrderRequest {
-            instrument_id: "BTC-USDT".into(),
-            side: Side::Buy,
-            order_type: ExactOrderType::StopMarket { stop: p("100.03") },
-            quantity: q("1.002"),
-            tif: TimeInForce::Gtc,
-            reduce_only: false,
-            post_only: false,
-            rules_version: "rules-1".into(),
-        };
+    fn stop_rounding_never_triggers_earlier_than_requested() {
+        let buy = request(
+            Side::Buy,
+            ExactOrderType::StopMarket { stop: p("100.03") },
+            "0.05",
+        );
         let reference = ReferencePrice {
-            price: p("100"),
-            observed_at_ms: 90,
-            valid_until_ms: 110,
+            price: p("101"),
+            observed_at_ms: 100,
+            valid_until_ms: 200,
         };
-        let normalized = normalize_order(&buy_request, &rules(), Some(reference), 100).unwrap();
-        let ExactOrderType::StopMarket { stop } = normalized.order.order_type
-        else
-        {
-            panic!("stop market expected");
-        };
-        assert_eq!(stop.value().to_string(), "100.05");
+        let normalized = normalize_order(&buy, &rules(), Some(reference), 150).unwrap();
+        assert_eq!(
+            match normalized.order.order_type {
+                ExactOrderType::StopMarket { stop } => stop.as_decimal_string(),
+                _ => unreachable!(),
+            },
+            "100.05"
+        );
     }
 
     #[test]
     fn market_notional_requires_a_fresh_reference_price() {
-        let request = ExactOrderRequest {
-            instrument_id: "BTC-USDT".into(),
-            side: Side::Buy,
-            order_type: ExactOrderType::Market,
-            quantity: q("0.102"),
-            tif: TimeInForce::Ioc,
-            reduce_only: false,
-            post_only: false,
-            rules_version: "rules-1".into(),
-        };
+        let market = request(Side::Buy, ExactOrderType::Market, "0.05");
         assert_eq!(
-            validate_order(&request, &rules(), None, 100),
+            validate_order(&market, &rules(), None, 150),
             Err(FinancialError::MissingReferencePrice)
         );
         let stale = ReferencePrice {
             price: p("100"),
-            observed_at_ms: 0,
-            valid_until_ms: 99,
+            observed_at_ms: 100,
+            valid_until_ms: 120,
         };
         assert_eq!(
-            validate_order(&request, &rules(), Some(stale), 100),
+            validate_order(&market, &rules(), Some(stale), 150),
             Err(FinancialError::StaleReferencePrice)
         );
-        let fresh = ReferencePrice {
-            price: p("100"),
-            observed_at_ms: 90,
-            valid_until_ms: 110,
-        };
-        assert!(validate_order(&request, &rules(), Some(fresh), 100).is_ok());
     }
 
     #[test]
-    fn rules_version_cannot_change_between_plan_and_validation() {
-        let mut request = limit(Side::Buy, "1.002", "100.00");
-        request.rules_version = "old-rules".into();
+    fn rules_version_drift_is_rejected() {
+        let mut order = request(
+            Side::Buy,
+            ExactOrderType::Limit { price: p("100") },
+            "0.05",
+        );
+        order.rules_version = "v6".to_string();
         assert_eq!(
-            validate_order(&request, &rules(), None, 0),
+            validate_order(&order, &rules(), None, 0),
             Err(FinancialError::RulesVersionMismatch)
         );
     }
 
     #[test]
-    fn direct_deserialization_still_hits_domain_validation() {
-        let raw = r#"{
-            "instrument_id":"BTC-USDT",
-            "side":"Buy",
-            "order_type":{"Limit":{"price":"100.03"}},
-            "quantity":"1.004",
-            "tif":"Gtc",
-            "reduce_only":false,
-            "post_only":false,
-            "rules_version":"rules-1"
-        }"#;
-        let request: ExactOrderRequest = serde_json::from_str(raw).unwrap();
+    fn notional_comparison_is_exact_for_decimal_fractions() {
+        let mut exact_rules = rules();
+        exact_rules.price_tick = p("0.1");
+        exact_rules.quantity_step = q("0.1");
+        exact_rules.min_quantity = q("0.1");
+        exact_rules.min_notional = money("0.02");
+        let order = request(
+            Side::Buy,
+            ExactOrderType::Limit { price: p("0.1") },
+            "0.2",
+        );
+        assert!(validate_order(&order, &exact_rules, None, 0).is_ok());
+        exact_rules.min_notional = money("0.020000000000000001");
         assert_eq!(
-            validate_order(&request, &rules(), None, 0),
-            Err(FinancialError::QuantityNotAligned)
+            validate_order(&order, &exact_rules, None, 0),
+            Err(FinancialError::NotionalBelowMinimum)
+        );
+    }
+
+    #[test]
+    fn post_only_market_order_is_rejected() {
+        let mut market = request(Side::Buy, ExactOrderType::Market, "0.05");
+        market.post_only = true;
+        assert_eq!(
+            validate_order(&market, &rules(), None, 0),
+            Err(FinancialError::InvalidOrderCombination)
         );
     }
 }
