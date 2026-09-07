@@ -380,6 +380,19 @@ fn sharpe_for_indices(returns: &[f64], indices: &[usize]) -> f64 {
     if std <= f64::EPSILON { 0.0 } else { mean / std }
 }
 
+fn normalized_midrank(score: f64, scores: &[f64]) -> f64 {
+    let lower = scores
+        .iter()
+        .filter(|candidate| **candidate < score)
+        .count() as f64;
+    let equal = scores
+        .iter()
+        .filter(|candidate| **candidate == score)
+        .count() as f64;
+    let midrank = lower + (equal + 1.0) / 2.0;
+    midrank / (scores.len() + 1) as f64
+}
+
 fn combinations(n: usize, k: usize) -> Vec<Vec<usize>> {
     fn recurse(
         start: usize,
@@ -409,11 +422,16 @@ fn combinations(n: usize, k: usize) -> Vec<Vec<usize>> {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CscvSplitResult {
     pub in_sample_slices: Vec<usize>,
+    /// Representative input index retained for diagnostics and compatibility.
+    /// When the in-sample maximum is tied this is the lowest tied input index;
+    /// it is never used to compute the OOS rank, rank logit, or PBO.
     pub selected_strategy: usize,
     pub selected_in_sample_sharpe: f64,
+    /// OOS Sharpe of the representative `selected_strategy` above.
     pub selected_out_of_sample_sharpe: f64,
-    /// Rank normalized to `(0, 1)`, where values below 0.5 mean the in-sample
-    /// winner lands in the lower half out of sample.
+    /// Open-interval OOS rank. Tied OOS scores receive their mid-rank. When
+    /// multiple strategies tie for the best in-sample Sharpe, this is the mean
+    /// mid-rank across all co-winners, so strategy input order cannot change PBO.
     pub normalized_oos_rank: f64,
     pub rank_logit: f64,
 }
@@ -428,9 +446,9 @@ pub struct PboReport {
 ///
 /// `strategy_returns[strategy][observation]` must be a rectangular matrix. The
 /// observation axis is divided into an even number of contiguous slices. For
-/// each combination of half the slices as in-sample, the best in-sample Sharpe
-/// is located and its out-of-sample rank is recorded. PBO is the fraction whose
-/// rank logit is below zero.
+/// each combination of half the slices as in-sample, all strategies tied for
+/// the best in-sample Sharpe contribute equally to a tie-aware OOS mid-rank.
+/// PBO is the fraction whose resulting rank logit is below zero.
 pub fn cscv_probability_of_backtest_overfitting(
     strategy_returns: &[Vec<f64>],
     slices: usize,
@@ -492,26 +510,30 @@ pub fn cscv_probability_of_backtest_overfitting(
             .iter()
             .map(|returns| sharpe_for_indices(returns, &in_indices))
             .collect();
-        let selected_strategy = in_sharpes
+        let best_in_sample = in_sharpes
+            .iter()
+            .copied()
+            .max_by(f64::total_cmp)
+            .expect("at least two strategies");
+        let in_sample_winners: Vec<usize> = in_sharpes
             .iter()
             .enumerate()
-            .max_by(|a, b| a.1.total_cmp(b.1).then_with(|| b.0.cmp(&a.0)))
-            .map(|(index, _)| index)
-            .expect("at least two strategies");
+            .filter_map(|(index, score)| {
+                (score.total_cmp(&best_in_sample) == std::cmp::Ordering::Equal).then_some(index)
+            })
+            .collect();
+        let selected_strategy = in_sample_winners[0];
+
         let out_sharpes: Vec<f64> = strategy_returns
             .iter()
             .map(|returns| sharpe_for_indices(returns, &out_indices))
             .collect();
         let selected_oos = out_sharpes[selected_strategy];
-        let worse = out_sharpes
+        let normalized_rank = in_sample_winners
             .iter()
-            .enumerate()
-            .filter(|(index, score)| {
-                **score < selected_oos || (**score == selected_oos && *index > selected_strategy)
-            })
-            .count();
-        // Open-interval rank avoids infinite logits at either extreme.
-        let normalized_rank = (worse + 1) as f64 / (out_sharpes.len() + 1) as f64;
+            .map(|index| normalized_midrank(out_sharpes[*index], &out_sharpes))
+            .sum::<f64>()
+            / in_sample_winners.len() as f64;
         let rank_logit = (normalized_rank / (1.0 - normalized_rank)).ln();
         if rank_logit < 0.0
         {
@@ -520,7 +542,7 @@ pub fn cscv_probability_of_backtest_overfitting(
         split_results.push(CscvSplitResult {
             in_sample_slices,
             selected_strategy,
-            selected_in_sample_sharpe: in_sharpes[selected_strategy],
+            selected_in_sample_sharpe: best_in_sample,
             selected_out_of_sample_sharpe: selected_oos,
             normalized_oos_rank: normalized_rank,
             rank_logit,
@@ -588,5 +610,42 @@ mod tests {
                 .iter()
                 .all(|split| split.normalized_oos_rank > 0.0)
         );
+    }
+
+    #[test]
+    fn cscv_oos_ties_use_midrank_instead_of_input_index() {
+        let scores = [-1.0, 0.0, 0.0, 1.0];
+        assert!((normalized_midrank(0.0, &scores) - 0.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn cscv_pbo_is_invariant_to_strategy_permutation_with_in_sample_ties() {
+        let strategies = vec![
+            vec![-0.04, -0.02, -0.02, -0.04, 0.04, 0.04, 0.04, -0.04],
+            vec![-0.04, -0.04, -0.02, 0.04, 0.04, -0.04, 0.02, -0.04],
+            vec![0.0, -0.04, -0.04, 0.04, -0.04, -0.02, -0.02, -0.04],
+        ];
+        let permuted = vec![
+            strategies[2].clone(),
+            strategies[0].clone(),
+            strategies[1].clone(),
+        ];
+        let original = cscv_probability_of_backtest_overfitting(&strategies, 4).unwrap();
+        let reordered = cscv_probability_of_backtest_overfitting(&permuted, 4).unwrap();
+        assert_eq!(
+            original.probability_backtest_overfitting,
+            reordered.probability_backtest_overfitting
+        );
+        let original_ranks: Vec<f64> = original
+            .splits
+            .iter()
+            .map(|split| split.normalized_oos_rank)
+            .collect();
+        let reordered_ranks: Vec<f64> = reordered
+            .splits
+            .iter()
+            .map(|split| split.normalized_oos_rank)
+            .collect();
+        assert_eq!(original_ranks, reordered_ranks);
     }
 }
