@@ -95,6 +95,10 @@ pub fn registry_for_profile(profile: RegistryProfile) -> ToolRegistry {
     {
         registry.register(tool);
     }
+    for tool in tools::trader_contract::trader_contract_tools()
+    {
+        registry.register(tool);
+    }
     for tool in tools::trader_research::trader_research_tools()
     {
         registry.register(tool);
@@ -162,6 +166,8 @@ mod tests {
         assert!(registry.names().contains(&"trader_pair_scan"));
         assert!(registry.names().contains(&"trader_option_price"));
         assert!(registry.names().contains(&"trader_option_book"));
+        assert!(registry.names().contains(&"trader_contract_validate_request"));
+        assert!(registry.names().contains(&"trader_contract_validate_result"));
         assert!(registry.names().contains(&"trader_research_purged_cv"));
         assert!(registry.names().contains(&"trader_research_dsr"));
         assert!(registry.names().contains(&"trader_research_pbo"));
