@@ -6,7 +6,8 @@ fn valid_ohlcv(count: usize) -> Value {
         .map(|i| {
             let open = 100.0 + ((i * 7) % 13) as f64;
             let close = open
-                + match i % 4 {
+                + match i % 4
+                {
                     0 => 2.0,
                     1 => -1.0,
                     2 => 3.0,
@@ -59,10 +60,7 @@ fn indicators_request_is_built_from_discovered_schema_and_invokes_real_handler()
         )
         .unwrap();
     let default_period = registry
-        .call(
-            "trader_indicators",
-            json!({"ohlcv": valid_ohlcv(40)}),
-        )
+        .call("trader_indicators", json!({"ohlcv": valid_ohlcv(40)}))
         .unwrap();
 
     let short_rsi = short_period["indicators"]["rsi"].as_f64().unwrap();
@@ -173,8 +171,14 @@ fn accepted_mock_metadata_matches_its_actual_identity_and_cadence() {
     assert_eq!(first["symbol"], "BTC/USDT");
     assert_eq!(first["interval"], "1m");
     let rows = first["ohlcv"].as_array().unwrap();
-    assert_eq!(rows[1][0].as_i64().unwrap() - rows[0][0].as_i64().unwrap(), 60_000);
-    assert_eq!(rows[2][0].as_i64().unwrap() - rows[1][0].as_i64().unwrap(), 60_000);
+    assert_eq!(
+        rows[1][0].as_i64().unwrap() - rows[0][0].as_i64().unwrap(),
+        60_000
+    );
+    assert_eq!(
+        rows[2][0].as_i64().unwrap() - rows[1][0].as_i64().unwrap(),
+        60_000
+    );
     assert_eq!(first["fingerprint"], replay["fingerprint"]);
     assert_ne!(first["fingerprint"], other_seed["fingerprint"]);
 }
