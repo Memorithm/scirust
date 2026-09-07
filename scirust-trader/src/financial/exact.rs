@@ -391,6 +391,7 @@ pub enum FinancialError {
     PriceNotAligned,
     StopPriceNotAligned,
     MissingReferencePrice,
+    ReferencePriceMismatch,
     InvalidReferenceWindow,
     StaleReferencePrice,
     NotionalBelowMinimum,
@@ -470,15 +471,17 @@ pub struct ExactOrderRequest {
     pub rules_version: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReferencePrice {
+    pub venue: String,
+    pub instrument_id: String,
     pub price: Price,
     pub observed_at_ms: i64,
     pub valid_until_ms: i64,
 }
 
 impl ReferencePrice {
-    pub fn validate_at(self, now_ms: i64) -> Result<(), FinancialError> {
+    pub fn validate_at(&self, now_ms: i64) -> Result<(), FinancialError> {
         if self.valid_until_ms < self.observed_at_ms
         {
             return Err(FinancialError::InvalidReferenceWindow);
@@ -692,6 +695,10 @@ pub fn validate_order(
         ExactOrderType::Market | ExactOrderType::StopMarket { .. } =>
         {
             let reference = reference.ok_or(FinancialError::MissingReferencePrice)?;
+            if reference.venue != rules.venue || reference.instrument_id != request.instrument_id
+            {
+                return Err(FinancialError::ReferencePriceMismatch);
+            }
             reference.validate_at(now_ms)?;
             reference.price
         },
@@ -788,6 +795,16 @@ mod tests {
 
     fn money(value: &str) -> NonNegativeMoney {
         NonNegativeMoney::parse(value).unwrap()
+    }
+
+    fn reference(price: &str, observed_at_ms: i64, valid_until_ms: i64) -> ReferencePrice {
+        ReferencePrice {
+            venue: "test".to_string(),
+            instrument_id: "BTC-USDT".to_string(),
+            price: p(price),
+            observed_at_ms,
+            valid_until_ms,
+        }
     }
 
     fn rules() -> ExactInstrumentRules {
@@ -917,12 +934,8 @@ mod tests {
             ExactOrderType::StopMarket { stop: p("100.03") },
             "0.05",
         );
-        let reference = ReferencePrice {
-            price: p("101"),
-            observed_at_ms: 100,
-            valid_until_ms: 200,
-        };
-        let normalized = normalize_order(&order, &rules(), Some(reference), 150).unwrap();
+        let normalized = normalize_order(&order, &rules(), Some(reference("101", 100, 200)), 150)
+            .unwrap();
         assert_eq!(
             match normalized.order.order_type
             {
@@ -940,14 +953,27 @@ mod tests {
             validate_order(&market, &rules(), None, 150),
             Err(FinancialError::MissingReferencePrice)
         );
-        let stale = ReferencePrice {
-            price: p("100"),
-            observed_at_ms: 100,
-            valid_until_ms: 120,
-        };
         assert_eq!(
-            validate_order(&market, &rules(), Some(stale), 150),
+            validate_order(&market, &rules(), Some(reference("100", 100, 120)), 150),
             Err(FinancialError::StaleReferencePrice)
+        );
+    }
+
+    #[test]
+    fn market_reference_is_bound_to_venue_and_instrument() {
+        let market = request(Side::Buy, ExactOrderType::Market, "0.05");
+        let mut wrong_instrument = reference("100", 100, 200);
+        wrong_instrument.instrument_id = "ETH-USDT".to_string();
+        assert_eq!(
+            validate_order(&market, &rules(), Some(wrong_instrument), 150),
+            Err(FinancialError::ReferencePriceMismatch)
+        );
+
+        let mut wrong_venue = reference("100", 100, 200);
+        wrong_venue.venue = "other".to_string();
+        assert_eq!(
+            validate_order(&market, &rules(), Some(wrong_venue), 150),
+            Err(FinancialError::ReferencePriceMismatch)
         );
     }
 
