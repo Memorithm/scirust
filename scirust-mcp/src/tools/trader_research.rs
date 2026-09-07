@@ -12,6 +12,9 @@ use scirust_trader::comparison::{
     CandidateEvidence, ComparisonMetric, compare_candidates, comparison_csv,
 };
 use scirust_trader::ml_dataset::TimeSeriesMlDataset;
+use scirust_trader::research_budget::{
+    CscvBudgetError, DEFAULT_CSCV_MAX_SPLITS, HARD_CSCV_MAX_SPLITS, enforce_cscv_budget,
+};
 use scirust_trader::research_validation::{ExperimentManifest, cost_stress};
 use scirust_trader::rl_market::RlExperimentPlan;
 use scirust_trader::stat_validation::{
@@ -39,6 +42,13 @@ fn required_usize(args: &Value, key: &str) -> Result<usize, String> {
     usize::try_from(required_u64(args, key)?).map_err(|_| format!("`{key}` exceeds usize"))
 }
 
+fn optional_usize(args: &Value, key: &str, default: usize) -> Result<usize, String> {
+    match args.get(key) {
+        Some(_) => required_usize(args, key),
+        None => Ok(default),
+    }
+}
+
 fn required_vec_f64(args: &Value, key: &str) -> Result<Vec<f64>, String> {
     serde_json::from_value(
         args.get(key)
@@ -55,6 +65,32 @@ fn parse_dataset(args: &Value) -> Result<TimeSeriesMlDataset, String> {
             .ok_or_else(|| "missing `dataset`".to_string())?,
     )
     .map_err(|error| format!("invalid `dataset`: {error}"))
+}
+
+fn format_cscv_budget_error(error: CscvBudgetError) -> String {
+    match error {
+        CscvBudgetError::BudgetExceeded {
+            required_splits,
+            max_splits,
+        } => format!(
+            "work_budget_exceeded: CSCV requires {required_splits} exact splits but max_splits is {max_splits}"
+        ),
+        CscvBudgetError::BudgetLimitTooHigh {
+            requested,
+            hard_max,
+        } => format!(
+            "invalid_work_budget: max_splits={requested} exceeds repository hard limit {hard_max}"
+        ),
+        CscvBudgetError::InvalidBudget => {
+            "invalid_work_budget: max_splits must be at least 1".to_string()
+        },
+        CscvBudgetError::InvalidSlices => {
+            "invalid `slices`: expected an even integer of at least 2".to_string()
+        },
+        CscvBudgetError::CombinationCountOverflow => {
+            "work_budget_exceeded: CSCV split count overflows u128".to_string()
+        },
+    }
 }
 
 pub fn trader_research_tools() -> Vec<McpTool> {
@@ -128,13 +164,14 @@ fn dsr_tool() -> McpTool {
 fn pbo_tool() -> McpTool {
     McpTool {
         name: "trader_research_pbo".to_string(),
-        description: "Estimate Probability of Backtest Overfitting with combinatorially symmetric cross-validation over a rectangular strategy-return matrix.".to_string(),
+        description: "Estimate Probability of Backtest Overfitting with exact combinatorially symmetric cross-validation over a rectangular strategy-return matrix. The exact split count is checked before allocation against an explicit work budget.".to_string(),
         input_schema: json!({
             "type": "object",
             "required": ["strategy_returns", "slices"],
             "properties": {
                 "strategy_returns": {"type": "array", "description": "matrix [strategy][observation] of realized returns"},
-                "slices": {"type": "integer", "minimum": 2, "description": "even number of contiguous time slices"}
+                "slices": {"type": "integer", "minimum": 2, "description": "even number of contiguous time slices"},
+                "max_splits": {"type": "integer", "minimum": 1, "maximum": HARD_CSCV_MAX_SPLITS, "description": "maximum exact CSCV assignments permitted; default 10000 and repository hard limit 100000"}
             }
         }),
         handler: Box::new(|args| {
@@ -144,12 +181,29 @@ fn pbo_tool() -> McpTool {
                     .ok_or_else(|| "missing `strategy_returns`".to_string())?,
             )
             .map_err(|error| format!("invalid `strategy_returns`: {error}"))?;
-            let report = cscv_probability_of_backtest_overfitting(
-                &matrix,
-                required_usize(&args, "slices")?,
-            )
-            .map_err(|error| format!("{error:?}"))?;
-            to_value(&report)
+            let slices = required_usize(&args, "slices")?;
+            let max_splits = optional_usize(&args, "max_splits", DEFAULT_CSCV_MAX_SPLITS)?;
+            let required_splits =
+                enforce_cscv_budget(slices, max_splits).map_err(format_cscv_budget_error)?;
+
+            // The legacy exact CSCV core materializes its assignment vector. It
+            // is called only after the checked combinatorial estimate above has
+            // proven that the request fits the declared repository work budget.
+            let report = cscv_probability_of_backtest_overfitting(&matrix, slices)
+                .map_err(|error| format!("{error:?}"))?;
+            let mut value = to_value(&report)?;
+            if let Value::Object(object) = &mut value {
+                object.insert(
+                    "work_budget".to_string(),
+                    json!({
+                        "mode": "exact",
+                        "required_splits": u64::try_from(required_splits).expect("bounded by usize hard limit"),
+                        "max_splits": max_splits,
+                        "repository_hard_max_splits": HARD_CSCV_MAX_SPLITS
+                    }),
+                );
+            }
+            Ok(value)
         }),
     }
 }
@@ -331,6 +385,38 @@ mod tests {
         .unwrap();
         assert_eq!(result["train"]["start"], 0);
         assert_eq!(result["holdout"]["end"], 12);
+    }
+
+    #[test]
+    fn pbo_reports_exact_work_budget_for_small_request() {
+        let tool = pbo_tool();
+        let result = (tool.handler)(json!({
+            "strategy_returns": [
+                [0.04, 0.03, -0.04, -0.03, 0.04, 0.03, -0.04, -0.03],
+                [-0.04, -0.03, 0.04, 0.03, -0.04, -0.03, 0.04, 0.03]
+            ],
+            "slices": 4,
+            "max_splits": 6
+        }))
+        .unwrap();
+        assert_eq!(result["splits"].as_array().unwrap().len(), 6);
+        assert_eq!(result["work_budget"]["required_splits"], 6);
+        assert_eq!(result["work_budget"]["max_splits"], 6);
+    }
+
+    #[test]
+    fn pbo_rejects_forty_slices_before_exact_enumeration() {
+        let tool = pbo_tool();
+        let row_a = vec![0.01_f64; 40];
+        let row_b = vec![-0.01_f64; 40];
+        let error = (tool.handler)(json!({
+            "strategy_returns": [row_a, row_b],
+            "slices": 40
+        }))
+        .unwrap_err();
+        assert!(error.starts_with("work_budget_exceeded:"));
+        assert!(error.contains("137846528820"));
+        assert!(error.contains("10000"));
     }
 
     #[test]
