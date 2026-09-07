@@ -151,9 +151,7 @@ pub fn default_axes(strategy_name: &str) -> Vec<ParamAxis> {
 /// Non-empty axes participating in the product. Empty axes historically had no
 /// effect and retain that behavior.
 fn active_axes(axes: &[ParamAxis]) -> Vec<&ParamAxis> {
-    axes.iter()
-        .filter(|axis| !axis.values.is_empty())
-        .collect()
+    axes.iter().filter(|axis| !axis.values.is_empty()).collect()
 }
 
 /// Compute the raw Cartesian-product size without allocating combinations.
@@ -192,10 +190,7 @@ fn valid_grid_size(axes: &[&ParamAxis]) -> Option<usize> {
         return Some(0);
     }
 
-    let pair_product = fast_axis
-        .values
-        .len()
-        .checked_mul(slow_axis.values.len())?;
+    let pair_product = fast_axis.values.len().checked_mul(slow_axis.values.len())?;
     let other_product = raw / pair_product;
     valid_pairs.checked_mul(other_product)
 }
@@ -524,7 +519,10 @@ mod tests {
 
     #[test]
     fn objective_parse_roundtrip() {
-        assert_eq!(Objective::parse("consistency"), Some(Objective::Consistency));
+        assert_eq!(
+            Objective::parse("consistency"),
+            Some(Objective::Consistency)
+        );
         assert_eq!(Objective::parse("worst"), Some(Objective::WorstWindow));
         assert_eq!(Objective::parse("nope"), None);
     }
