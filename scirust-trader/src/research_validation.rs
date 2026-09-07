@@ -160,12 +160,33 @@ pub struct CostStressPoint {
     pub net_sharpe: f64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum LegacyAdditiveField {
+    Missing,
+    Present(f64),
+}
+
+impl Default for LegacyAdditiveField {
+    fn default() -> Self {
+        Self::Missing
+    }
+}
+
+impl<'de> Deserialize<'de> for LegacyAdditiveField {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        f64::deserialize(deserializer).map(Self::Present)
+    }
+}
+
 #[derive(Deserialize)]
 struct CostStressPointWire {
     cost_bps_per_unit_turnover: f64,
     cumulative_net_return: f64,
     #[serde(default)]
-    additive_net_return: Option<f64>,
+    additive_net_return: LegacyAdditiveField,
     #[serde(default)]
     compounded_net_return: Option<f64>,
     mean_net_return: f64,
@@ -178,12 +199,15 @@ impl<'de> Deserialize<'de> for CostStressPoint {
         D: serde::Deserializer<'de>,
     {
         let wire = CostStressPointWire::deserialize(deserializer)?;
+        let additive_net_return = match wire.additive_net_return
+        {
+            LegacyAdditiveField::Missing => wire.cumulative_net_return,
+            LegacyAdditiveField::Present(value) => value,
+        };
         Ok(Self {
             cost_bps_per_unit_turnover: wire.cost_bps_per_unit_turnover,
             cumulative_net_return: wire.cumulative_net_return,
-            additive_net_return: wire
-                .additive_net_return
-                .unwrap_or(wire.cumulative_net_return),
+            additive_net_return,
             compounded_net_return: wire.compounded_net_return,
             mean_net_return: wire.mean_net_return,
             net_sharpe: wire.net_sharpe,
@@ -406,6 +430,19 @@ mod tests {
         assert_eq!(point.additive_net_return, point.cumulative_net_return);
         assert_eq!(point.additive_net_return, 0.12);
         assert_eq!(point.compounded_net_return, None);
+    }
+
+    #[test]
+    fn explicit_null_additive_return_is_rejected() {
+        let corrupted = r#"{
+            "cost_bps_per_unit_turnover": 10.0,
+            "cumulative_net_return": 0.12,
+            "additive_net_return": null,
+            "compounded_net_return": null,
+            "mean_net_return": 0.03,
+            "net_sharpe": 1.2
+        }"#;
+        assert!(serde_json::from_str::<CostStressPoint>(corrupted).is_err());
     }
 
     #[test]
