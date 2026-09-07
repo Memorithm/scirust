@@ -90,6 +90,7 @@ pub mod portfolio_opt;
 pub mod proof;
 pub mod reconciliation;
 pub mod regime;
+pub mod research_budget;
 pub mod research_validation;
 pub mod risk;
 pub mod rl_market;
