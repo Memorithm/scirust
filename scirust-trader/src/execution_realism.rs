@@ -340,10 +340,7 @@ mod tests {
     #[test]
     fn limiter_rejects_time_travel() {
         let mut b = RateLimitBucket::new(10, 2, 1_000, 100).unwrap();
-        assert_eq!(
-            b.try_acquire(99, 1),
-            Err(RateLimitError::NonMonotonicClock)
-        );
+        assert_eq!(b.try_acquire(99, 1), Err(RateLimitError::NonMonotonicClock));
     }
 
     #[test]
