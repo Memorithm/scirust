@@ -62,7 +62,7 @@ pub struct GridLevel {
 }
 
 /// Fully validated grid plan.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct GridPlan {
     pub symbol: String,
     pub side: Side,
@@ -78,6 +78,49 @@ pub struct GridPlan {
     pub rounded_quote_total: f32,
     pub max_open_orders: usize,
     pub levels: Vec<GridLevel>,
+}
+
+#[derive(Deserialize)]
+struct GridPlanWire {
+    symbol: String,
+    side: Side,
+    start_price: f32,
+    end_price: f32,
+    #[serde(default)]
+    requested_start_price: Option<f32>,
+    #[serde(default)]
+    requested_end_price: Option<f32>,
+    #[serde(default)]
+    effective_start_price: Option<f32>,
+    #[serde(default)]
+    effective_end_price: Option<f32>,
+    requested_quote_total: f32,
+    rounded_quote_total: f32,
+    max_open_orders: usize,
+    levels: Vec<GridLevel>,
+}
+
+impl<'de> Deserialize<'de> for GridPlan {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = GridPlanWire::deserialize(deserializer)?;
+        Ok(Self {
+            symbol: wire.symbol,
+            side: wire.side,
+            start_price: wire.start_price,
+            end_price: wire.end_price,
+            requested_start_price: wire.requested_start_price.unwrap_or(wire.start_price),
+            requested_end_price: wire.requested_end_price.unwrap_or(wire.end_price),
+            effective_start_price: wire.effective_start_price.unwrap_or(wire.start_price),
+            effective_end_price: wire.effective_end_price.unwrap_or(wire.end_price),
+            requested_quote_total: wire.requested_quote_total,
+            rounded_quote_total: wire.rounded_quote_total,
+            max_open_orders: wire.max_open_orders,
+            levels: wire.levels,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -374,6 +417,23 @@ mod tests {
             assert_eq!(level.state, GridLevelState::Idle);
             assert!(level.take_profit_price > level.price);
         }
+    }
+
+    #[test]
+    fn legacy_grid_plan_deserializes_with_legacy_bounds_as_fallbacks() {
+        let original = plan_grid(&config(Side::Buy), &instrument()).unwrap();
+        let mut legacy = serde_json::to_value(&original).unwrap();
+        let object = legacy.as_object_mut().unwrap();
+        object.remove("requested_start_price");
+        object.remove("requested_end_price");
+        object.remove("effective_start_price");
+        object.remove("effective_end_price");
+
+        let restored: GridPlan = serde_json::from_value(legacy).unwrap();
+        assert_eq!(restored.requested_start_price, restored.start_price);
+        assert_eq!(restored.requested_end_price, restored.end_price);
+        assert_eq!(restored.effective_start_price, restored.start_price);
+        assert_eq!(restored.effective_end_price, restored.end_price);
     }
 
     #[test]
