@@ -330,8 +330,14 @@ pub fn plan_grid(cfg: &GridConfig, instrument: &Instrument) -> Result<GridPlan, 
         previous_price = Some(price);
     }
 
-    let effective_start_price = levels.first().map(|level| level.price).unwrap_or(cfg.start_price);
-    let effective_end_price = levels.last().map(|level| level.price).unwrap_or(cfg.end_price);
+    let effective_start_price = levels
+        .first()
+        .map(|level| level.price)
+        .unwrap_or(cfg.start_price);
+    let effective_end_price = levels
+        .last()
+        .map(|level| level.price)
+        .unwrap_or(cfg.end_price);
     Ok(GridPlan {
         symbol: cfg.symbol.clone(),
         side: cfg.side,

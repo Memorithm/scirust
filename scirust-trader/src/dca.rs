@@ -170,7 +170,9 @@ fn rounded_exit_reference(
     profit: bool,
     instrument: &Instrument,
 ) -> Result<Option<f32>, DcaPlanError> {
-    let Some(requested) = requested else {
+    let Some(requested) = requested
+    else
+    {
         return Ok(None);
     };
     let rounded = instrument.round_price(requested);
@@ -295,18 +297,10 @@ pub fn plan_dca(cfg: &DcaConfig, instrument: &Instrument) -> Result<DcaPlan, Dca
     {
         0.0
     };
-    let requested_take_profit_price = requested_exit_reference(
-        weighted_entry_price,
-        cfg.side,
-        cfg.take_profit_pct,
-        true,
-    );
-    let requested_stop_loss_price = requested_exit_reference(
-        weighted_entry_price,
-        cfg.side,
-        cfg.stop_loss_pct,
-        false,
-    );
+    let requested_take_profit_price =
+        requested_exit_reference(weighted_entry_price, cfg.side, cfg.take_profit_pct, true);
+    let requested_stop_loss_price =
+        requested_exit_reference(weighted_entry_price, cfg.side, cfg.stop_loss_pct, false);
     let take_profit_price = rounded_exit_reference(
         requested_take_profit_price,
         weighted_entry_price,
@@ -391,10 +385,12 @@ mod tests {
             level.as_object_mut().unwrap().remove("requested_price");
         }
         let restored: DcaPlan = serde_json::from_value(legacy).unwrap();
-        assert!(restored
-            .levels
-            .iter()
-            .all(|level| level.requested_price == level.trigger_price));
+        assert!(
+            restored
+                .levels
+                .iter()
+                .all(|level| level.requested_price == level.trigger_price)
+        );
     }
 
     #[test]
