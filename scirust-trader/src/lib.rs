@@ -28,6 +28,7 @@
 //!  validation ─► purged CV / embargo ─► bootstrap / Holm / DSR / CSCV-PBO
 //!                  └─► parameter / regime / cost / perturbation evidence ─► manifest
 //!  evidence ─► explicit metric directions ─► per-metric ranks / Pareto front / CSV
+//!  contract ─► consumer-neutral request/provenance/result envelopes ─► Rust/MCP/CLI/services
 //!  derivatives ─► funding / basis / OI / liquidations ─► strategy / scanner
 //!             ├─► rolling history / price-OI regimes
 //!             └─► divergences / liquidation clusters
@@ -57,6 +58,7 @@ pub mod certify;
 pub mod chart;
 pub mod cli;
 pub mod comparison;
+pub mod consumer_contract;
 pub mod cross_marketmaking;
 pub mod dashboard;
 pub mod dca;
