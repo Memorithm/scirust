@@ -64,6 +64,12 @@ pub enum RlMarketError {
     InvalidTransactionCost,
     PartitionOrderInvalid,
     LabelOverlapAcrossPartitions,
+    InsufficientRowsForOneStepReward,
+    RewardNotAvailableAtNextObservation {
+        row: usize,
+        target_ts_ms: i64,
+        next_observation_ts_ms: i64,
+    },
 }
 
 impl From<MlDatasetError> for RlMarketError {
@@ -108,8 +114,8 @@ impl RlExperimentPlan {
 
         let validation_first_ts = dataset.rows[validation.start].ts_ms;
         let holdout_first_ts = dataset.rows[holdout.start].ts_ms;
-        if dataset.rows[train.end - 1].target_ts_ms >= validation_first_ts
-            || dataset.rows[validation.end - 1].target_ts_ms >= holdout_first_ts
+        if dataset.target_overlaps_boundary(train.clone(), validation_first_ts)
+            || dataset.target_overlaps_boundary(validation.clone(), holdout_first_ts)
         {
             return Err(RlMarketError::LabelOverlapAcrossPartitions);
         }
@@ -138,12 +144,19 @@ impl RlExperimentPlan {
     }
 }
 
-/// Deterministic target-exposure environment.
+/// Deterministic one-step target-exposure environment.
 ///
 /// `MlRow::target` is interpreted as the forward fractional return associated
-/// with the observation.  The target is never exposed in [`MarketRlState`].  It
-/// is consumed only after the action is chosen to calculate the realized step
-/// reward.  Transaction costs are charged on absolute exposure change.
+/// with the observation. The target is never exposed in [`MarketRlState`]. A
+/// row is actionable only when its target is observable no later than the next
+/// observation timestamp. The final row in the selected range is therefore a
+/// terminal observation and its own target is not consumed. This prevents a
+/// multi-step or overlapping target from being credited to the agent before the
+/// simulated information clock reaches that target.
+///
+/// Transaction costs are charged on absolute exposure change. The terminal
+/// transition also charges the cost required to flatten the remaining exposure,
+/// so an episode cannot silently finish with a free open position.
 #[derive(Debug, Clone)]
 pub struct MarketRlEnv {
     rows: Vec<crate::ml_dataset::MlRow>,
@@ -173,6 +186,25 @@ impl MarketRlEnv {
         {
             return Err(RlMarketError::RangeOutOfBounds);
         }
+        if range.len() < 2
+        {
+            return Err(RlMarketError::InsufficientRowsForOneStepReward);
+        }
+
+        for source_index in range.start..range.end - 1
+        {
+            let row = &dataset.rows[source_index];
+            let next = &dataset.rows[source_index + 1];
+            if row.target_ts_ms > next.ts_ms
+            {
+                return Err(RlMarketError::RewardNotAvailableAtNextObservation {
+                    row: source_index,
+                    target_ts_ms: row.target_ts_ms,
+                    next_observation_ts_ms: next.ts_ms,
+                });
+            }
+        }
+
         let source_start = range.start;
         Ok(Self {
             rows: dataset.rows[range].to_vec(),
@@ -195,12 +227,14 @@ impl MarketRlEnv {
         }
     }
 
+    /// Number of actionable one-step transitions. The final row is the terminal
+    /// next observation and is not itself acted upon.
     pub fn len(&self) -> usize {
-        self.rows.len()
+        self.rows.len().saturating_sub(1)
     }
 
     pub fn is_empty(&self) -> bool {
-        self.rows.is_empty()
+        self.len() == 0
     }
 }
 
@@ -215,19 +249,30 @@ impl Env for MarketRlEnv {
     }
 
     fn step(&mut self, action: &Self::Action) -> (Self::State, f64, bool) {
+        if self.cursor + 1 >= self.rows.len()
+        {
+            return (self.state(), 0.0, true);
+        }
+
         let row = &self.rows[self.cursor];
         let next_exposure = action.exposure();
         let turnover = (next_exposure - self.current_exposure).abs();
         let gross_reward = next_exposure * f64::from(row.target);
-        let cost = turnover * self.transaction_cost_rate_per_unit_turnover;
-        let reward = gross_reward - cost;
-        self.current_exposure = next_exposure;
+        let mut cost = turnover * self.transaction_cost_rate_per_unit_turnover;
 
+        self.cursor += 1;
         let done = self.cursor + 1 >= self.rows.len();
-        if !done
+        if done
         {
-            self.cursor += 1;
+            cost += next_exposure.abs() * self.transaction_cost_rate_per_unit_turnover;
+            self.current_exposure = 0.0;
         }
+        else
+        {
+            self.current_exposure = next_exposure;
+        }
+
+        let reward = gross_reward - cost;
         (self.state(), reward, done)
     }
 
@@ -239,6 +284,8 @@ impl Env for MarketRlEnv {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct EpisodeReport {
     pub steps: usize,
+    /// Additive RL objective score across transitions. This is not a compounded
+    /// portfolio return and must not be reported as one.
     pub cumulative_reward: f64,
     pub mean_reward: f64,
 }
@@ -364,6 +411,24 @@ mod tests {
     }
 
     #[test]
+    fn plan_checks_every_label_at_partition_boundaries() {
+        let mut d = dataset();
+        d.rows[0].target_ts_ms = 100;
+        let split = TimeSplit {
+            train_start: 0,
+            train_end: 6,
+            validation_start: 6,
+            validation_end: 9,
+            test_start: 9,
+            test_end: 12,
+        };
+        assert!(matches!(
+            RlExperimentPlan::from_time_split(&d, split, 42, 0.0),
+            Err(RlMarketError::LabelOverlapAcrossPartitions)
+        ));
+    }
+
+    #[test]
     fn target_is_not_part_of_observation_state() {
         let d = dataset();
         let mut env = MarketRlEnv::new(&d, 0..2, 0.0).unwrap();
@@ -373,12 +438,47 @@ mod tests {
     }
 
     #[test]
+    fn future_reward_is_rejected_before_episode_start() {
+        let mut d = dataset();
+        d.rows[0].target_ts_ms = 25;
+        assert!(matches!(
+            MarketRlEnv::new(&d, 0..3, 0.0),
+            Err(RlMarketError::RewardNotAvailableAtNextObservation {
+                row: 0,
+                target_ts_ms: 25,
+                next_observation_ts_ms: 10,
+            })
+        ));
+    }
+
+    #[test]
+    fn reward_available_exactly_at_next_observation_is_allowed() {
+        let mut d = dataset();
+        d.rows[0].target_ts_ms = d.rows[1].ts_ms;
+        assert!(MarketRlEnv::new(&d, 0..3, 0.0).is_ok());
+    }
+
+    #[test]
     fn turnover_cost_is_charged_deterministically() {
+        let d = dataset();
+        let mut env = MarketRlEnv::new(&d, 0..3, 10.0).unwrap();
+        env.reset();
+        let (_, reward, done) = env.step(&MarketAction::Long);
+        let expected = f64::from(d.rows[0].target) - 10.0 / 10_000.0;
+        assert!(!done);
+        assert!((reward - expected).abs() < 1e-12);
+    }
+
+    #[test]
+    fn terminal_transition_charges_close_cost_once() {
         let d = dataset();
         let mut env = MarketRlEnv::new(&d, 0..2, 10.0).unwrap();
         env.reset();
-        let (_, reward, _) = env.step(&MarketAction::Long);
-        let expected = f64::from(d.rows[0].target) - 10.0 / 10_000.0;
+        let (next_state, reward, done) = env.step(&MarketAction::Long);
+        let expected = f64::from(d.rows[0].target) - 2.0 * 10.0 / 10_000.0;
+        assert!(done);
+        assert_eq!(next_state.ts_ms, d.rows[1].ts_ms);
+        assert_eq!(next_state.current_exposure, 0.0);
         assert!((reward - expected).abs() < 1e-12);
     }
 
@@ -391,10 +491,11 @@ mod tests {
         let mut train = plan.env(&d, EpisodeKind::Train).unwrap();
         let train_report = run_training_episode(&mut agent, &mut train);
         assert_eq!(agent.updates, train_report.steps);
+        assert_eq!(train_report.steps, plan.train.len() - 1);
         let before = agent.updates;
         let mut holdout = plan.env(&d, EpisodeKind::Holdout).unwrap();
         let holdout_report = evaluate_frozen_agent(&agent, &mut holdout);
         assert_eq!(agent.updates, before);
-        assert_eq!(holdout_report.steps, plan.holdout.len());
+        assert_eq!(holdout_report.steps, plan.holdout.len() - 1);
     }
 }

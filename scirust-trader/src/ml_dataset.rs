@@ -129,14 +129,30 @@ impl TimeSeriesMlDataset {
         Ok(())
     }
 
+    /// Return whether any target in `range` becomes available at or after the
+    /// supplied later-partition boundary.
+    ///
+    /// Targets exactly on the boundary overlap the later partition because the
+    /// later observation is available at that same timestamp.
+    pub(crate) fn target_overlaps_boundary(
+        &self,
+        range: Range<usize>,
+        boundary_ts_ms: i64,
+    ) -> bool {
+        self.rows[range]
+            .iter()
+            .any(|row| row.target_ts_ms >= boundary_ts_ms)
+    }
+
     /// Build chronological train/validation/test partitions.
     ///
     /// `train_fraction + validation_fraction` must be strictly below 1. The
     /// remainder is the test set. Each partition receives at least one row.
-    /// The boundary check also rejects label overlap: a training target may not
-    /// become known at or after the first validation observation, and a
-    /// validation target may not become known at or after the first test
-    /// observation.
+    /// The boundary check rejects label overlap for every row in an earlier
+    /// partition: no training target may become known at or after the first
+    /// validation observation, and no validation target may become known at or
+    /// after the first test observation. Target horizons may vary and need not
+    /// be monotonic.
     pub fn time_split(
         &self,
         train_fraction: f32,
@@ -173,12 +189,12 @@ impl TimeSeriesMlDataset {
         };
 
         let validation_first_ts = self.rows[split.validation_start].ts_ms;
-        if self.rows[split.train_end - 1].target_ts_ms >= validation_first_ts
+        if self.target_overlaps_boundary(split.train(), validation_first_ts)
         {
             return Err(MlDatasetError::TargetOverlapsLaterPartition);
         }
         let test_first_ts = self.rows[split.test_start].ts_ms;
-        if self.rows[split.validation_end - 1].target_ts_ms >= test_first_ts
+        if self.target_overlaps_boundary(split.validation(), test_first_ts)
         {
             return Err(MlDatasetError::TargetOverlapsLaterPartition);
         }
@@ -293,6 +309,36 @@ mod tests {
             d.time_split(0.5, 0.25),
             Err(MlDatasetError::TargetOverlapsLaterPartition)
         ));
+    }
+
+    #[test]
+    fn non_monotonic_target_horizon_overlap_is_rejected() {
+        let mut d = TimeSeriesMlDataset {
+            feature_provenance: vec![FeatureProvenance {
+                name: "return_1".to_string(),
+                source: "close".to_string(),
+                transformation: "lagged return".to_string(),
+            }],
+            rows: [0_i64, 10, 20, 30, 40, 50]
+                .into_iter()
+                .zip([100_i64, 15, 25, 35, 45, 55])
+                .enumerate()
+                .map(|(i, (ts_ms, target_ts_ms))| MlRow {
+                    ts_ms,
+                    feature_available_ts_ms: ts_ms,
+                    target_ts_ms,
+                    features: vec![i as f32],
+                    target: i as f32 * 0.1,
+                })
+                .collect(),
+        };
+        assert!(matches!(
+            d.time_split(0.5, 1.0 / 6.0),
+            Err(MlDatasetError::TargetOverlapsLaterPartition)
+        ));
+
+        d.rows[0].target_ts_ms = 5;
+        assert!(d.time_split(0.5, 1.0 / 6.0).is_ok());
     }
 
     #[test]
