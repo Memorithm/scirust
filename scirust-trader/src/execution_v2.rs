@@ -251,15 +251,11 @@ impl LifecycleBookV2 {
         }
         if self.idempotency_keys.contains(&idempotency_key)
         {
-            return Err(LifecycleV2Error::DuplicateIdempotencyKey(
-                idempotency_key,
-            ));
+            return Err(LifecycleV2Error::DuplicateIdempotencyKey(idempotency_key));
         }
         if self.orders.contains_key(&client_order_id)
         {
-            return Err(LifecycleV2Error::DuplicateClientOrderId(
-                client_order_id,
-            ));
+            return Err(LifecycleV2Error::DuplicateClientOrderId(client_order_id));
         }
 
         self.intent_ids.insert(intent_id.clone());
@@ -368,8 +364,7 @@ impl LifecycleBookV2 {
             ExecutionEventKindV2::Canceled { effective_at_ms } =>
             {
                 let post_cancel_fill_exists = self.fills.values().any(|fill| {
-                    fill.client_order_id == client_order_id
-                        && fill.occurred_at_ms > effective_at_ms
+                    fill.client_order_id == client_order_id && fill.occurred_at_ms > effective_at_ms
                 });
                 let order = self.order_mut(&client_order_id)?;
                 if !matches!(
@@ -494,7 +489,8 @@ impl LifecycleBookV2 {
             if existing != &exchange_order_id
             {
                 order.status = ExecutionStatusV2::ReconciliationRequired;
-                order.unresolved_reason = Some("conflicting exchange order identifiers".to_string());
+                order.unresolved_reason =
+                    Some("conflicting exchange order identifiers".to_string());
                 order.last_event_ts_ms = received_at_ms;
                 return Ok(ApplyOutcomeV2::ReconciliationRequired);
             }
@@ -533,7 +529,8 @@ impl LifecycleBookV2 {
         if !order.filled_quantity.is_zero() || order.exchange_order_id.is_some()
         {
             order.status = ExecutionStatusV2::ReconciliationRequired;
-            order.unresolved_reason = Some(format!("submit rejected after venue evidence: {reason}"));
+            order.unresolved_reason =
+                Some(format!("submit rejected after venue evidence: {reason}"));
             order.last_event_ts_ms = received_at_ms;
             return Ok(ApplyOutcomeV2::ReconciliationRequired);
         }
@@ -1011,10 +1008,7 @@ mod tests {
             book.orders["client-1"].filled_quantity.as_decimal_string(),
             "0.5"
         );
-        assert_eq!(
-            book.orders["client-1"].status,
-            ExecutionStatusV2::Canceled
-        );
+        assert_eq!(book.orders["client-1"].status, ExecutionStatusV2::Canceled);
     }
 
     #[test]
@@ -1072,13 +1066,15 @@ mod tests {
 
     #[test]
     fn exact_fill_accounting_has_no_epsilon_overfill_rule() {
-        let mut book = book("0.3");
-        book.apply_event(accepted(1)).unwrap();
-        book.apply_event(fill(2, "trade-1", 110, "0.1", "0"))
+        let mut exact = book("0.3");
+        exact.apply_event(accepted(1)).unwrap();
+        exact
+            .apply_event(fill(2, "trade-1", 110, "0.1", "0"))
             .unwrap();
-        book.apply_event(fill(3, "trade-2", 120, "0.2", "0"))
+        exact
+            .apply_event(fill(3, "trade-2", 120, "0.2", "0"))
             .unwrap();
-        assert_eq!(book.orders["client-1"].status, ExecutionStatusV2::Filled);
+        assert_eq!(exact.orders["client-1"].status, ExecutionStatusV2::Filled);
 
         let mut overfill = book("0.3");
         overfill.apply_event(accepted(1)).unwrap();
@@ -1086,13 +1082,7 @@ mod tests {
             .apply_event(fill(2, "trade-1", 110, "0.1", "0"))
             .unwrap();
         assert_eq!(
-            overfill.apply_event(fill(
-                3,
-                "trade-2",
-                120,
-                "0.200000000000000001",
-                "0",
-            )),
+            overfill.apply_event(fill(3, "trade-2", 120, "0.200000000000000001", "0",)),
             Err(LifecycleV2Error::Overfill)
         );
     }
@@ -1140,8 +1130,7 @@ mod tests {
         book.apply_event(accepted(1)).unwrap();
         book.apply_event(event(2, ExecutionEventKindV2::AmendRequested))
             .unwrap();
-        book.apply_event(fill(3, "trade-1", 110, "1", "0"))
-            .unwrap();
+        book.apply_event(fill(3, "trade-1", 110, "1", "0")).unwrap();
         assert_eq!(
             book.orders["client-1"].status,
             ExecutionStatusV2::PendingAmend
@@ -1158,7 +1147,10 @@ mod tests {
             ExecutionStatusV2::PartiallyFilled
         );
         assert_eq!(
-            book.orders["client-1"].remaining_quantity().unwrap().as_decimal_string(),
+            book.orders["client-1"]
+                .remaining_quantity()
+                .unwrap()
+                .as_decimal_string(),
             "1"
         );
     }
