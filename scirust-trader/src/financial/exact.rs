@@ -100,14 +100,7 @@ impl Decimal {
             let split = digits.len() - scale;
             format!("{}.{}", &digits[..split], &digits[split..])
         };
-        if negative
-        {
-            format!("-{text}")
-        }
-        else
-        {
-            text
-        }
+        if negative { format!("-{text}") } else { text }
     }
 
     fn checked_add(self, rhs: Self) -> Result<Self, FinancialError> {
