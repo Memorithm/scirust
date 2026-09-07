@@ -90,14 +90,21 @@ impl ToolRegistry {
 }
 
 fn validate_schema(value: &Value, schema: &Value, path: &str) -> Result<(), String> {
-    if let Some(allowed) = schema.get("enum").and_then(Value::as_array) {
-        if !allowed.iter().any(|candidate| candidate == value) {
-            return Err(schema_error(path, "value is not one of the schema enum choices"));
+    if let Some(allowed) = schema.get("enum").and_then(Value::as_array)
+    {
+        if !allowed.iter().any(|candidate| candidate == value)
+        {
+            return Err(schema_error(
+                path,
+                "value is not one of the schema enum choices",
+            ));
         }
     }
 
-    if let Some(kind) = schema.get("type") {
-        let type_matches = match kind {
+    if let Some(kind) = schema.get("type")
+    {
+        let type_matches = match kind
+        {
             Value::String(expected) => matches_type(value, expected),
             Value::Array(expected) => expected
                 .iter()
@@ -105,15 +112,20 @@ fn validate_schema(value: &Value, schema: &Value, path: &str) -> Result<(), Stri
                 .any(|expected| matches_type(value, expected)),
             _ => true,
         };
-        if !type_matches {
+        if !type_matches
+        {
             return Err(schema_error(path, "value has the wrong JSON type"));
         }
     }
 
-    if let Some(object) = value.as_object() {
-        if let Some(required) = schema.get("required").and_then(Value::as_array) {
-            for key in required.iter().filter_map(Value::as_str) {
-                if !object.contains_key(key) {
+    if let Some(object) = value.as_object()
+    {
+        if let Some(required) = schema.get("required").and_then(Value::as_array)
+        {
+            for key in required.iter().filter_map(Value::as_str)
+            {
+                if !object.contains_key(key)
+                {
                     return Err(schema_error(
                         &format!("{path}.{key}"),
                         "required field is missing",
@@ -121,18 +133,24 @@ fn validate_schema(value: &Value, schema: &Value, path: &str) -> Result<(), Stri
                 }
             }
         }
-        if let Some(properties) = schema.get("properties").and_then(Value::as_object) {
-            for (key, child_schema) in properties {
-                if let Some(child) = object.get(key) {
+        if let Some(properties) = schema.get("properties").and_then(Value::as_object)
+        {
+            for (key, child_schema) in properties
+            {
+                if let Some(child) = object.get(key)
+                {
                     validate_schema(child, child_schema, &format!("{path}.{key}"))?;
                 }
             }
         }
     }
 
-    if let Some(items) = value.as_array() {
-        if let Some(item_schema) = schema.get("items") {
-            for (index, item) in items.iter().enumerate() {
+    if let Some(items) = value.as_array()
+    {
+        if let Some(item_schema) = schema.get("items")
+        {
+            for (index, item) in items.iter().enumerate()
+            {
                 validate_schema(item, item_schema, &format!("{path}[{index}]"))?;
             }
         }
@@ -142,7 +160,8 @@ fn validate_schema(value: &Value, schema: &Value, path: &str) -> Result<(), Stri
 }
 
 fn matches_type(value: &Value, expected: &str) -> bool {
-    match expected {
+    match expected
+    {
         "object" => value.is_object(),
         "array" => value.is_array(),
         "string" => value.is_string(),
