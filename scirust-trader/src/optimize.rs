@@ -40,7 +40,8 @@ pub enum Objective {
 
 impl Objective {
     pub fn parse(s: &str) -> Option<Objective> {
-        match s.trim().to_lowercase().as_str() {
+        match s.trim().to_lowercase().as_str()
+        {
             "return_consistency" | "default" => Some(Objective::ReturnConsistency),
             "consistency" => Some(Objective::Consistency),
             "mean_return" | "return" => Some(Objective::MeanReturn),
@@ -51,7 +52,8 @@ impl Objective {
     }
 
     pub fn label(self) -> &'static str {
-        match self {
+        match self
+        {
             Objective::ReturnConsistency => "return×consistency (out-of-sample)",
             Objective::Consistency => "walk-forward consistency",
             Objective::MeanReturn => "mean walk-forward return",
@@ -116,7 +118,8 @@ pub struct OptimizeReport {
 }
 
 pub fn default_axes(strategy_name: &str) -> Vec<ParamAxis> {
-    match strategy_name {
+    match strategy_name
+    {
         "sma_cross" | "ema_cross" => vec![
             ParamAxis::new("fast", vec![5.0, 10.0, 15.0, 20.0]),
             ParamAxis::new("slow", vec![30.0, 50.0, 100.0, 200.0]),
@@ -148,7 +151,9 @@ pub fn default_axes(strategy_name: &str) -> Vec<ParamAxis> {
 /// Non-empty axes participating in the product. Empty axes historically had no
 /// effect and retain that behavior.
 fn active_axes(axes: &[ParamAxis]) -> Vec<&ParamAxis> {
-    axes.iter().filter(|axis| !axis.values.is_empty()).collect()
+    axes.iter()
+        .filter(|axis| !axis.values.is_empty())
+        .collect()
 }
 
 /// Compute the raw Cartesian-product size without allocating combinations.
@@ -164,10 +169,13 @@ fn valid_grid_size(axes: &[&ParamAxis]) -> Option<usize> {
     let raw = raw_grid_size(axes)?;
     let fast = axes.iter().position(|axis| axis.name == "fast");
     let slow = axes.iter().position(|axis| axis.name == "slow");
-    let (Some(fast_index), Some(slow_index)) = (fast, slow) else {
+    let (Some(fast_index), Some(slow_index)) = (fast, slow)
+    else
+    {
         return Some(raw);
     };
-    if fast_index == slow_index {
+    if fast_index == slow_index
+    {
         return Some(raw);
     }
 
@@ -179,11 +187,15 @@ fn valid_grid_size(axes: &[&ParamAxis]) -> Option<usize> {
         .flat_map(|fast| slow_axis.values.iter().map(move |slow| (*fast, *slow)))
         .filter(|(fast, slow)| fast < slow)
         .count();
-    if valid_pairs == 0 {
+    if valid_pairs == 0
+    {
         return Some(0);
     }
 
-    let pair_product = fast_axis.values.len().checked_mul(slow_axis.values.len())?;
+    let pair_product = fast_axis
+        .values
+        .len()
+        .checked_mul(slow_axis.values.len())?;
     let other_product = raw / pair_product;
     valid_pairs.checked_mul(other_product)
 }
@@ -193,51 +205,69 @@ fn valid_grid_size(axes: &[&ParamAxis]) -> Option<usize> {
 fn combo_at(axes: &[&ParamAxis], mut index: usize) -> Vec<(String, f32)> {
     let mut combo = Vec::with_capacity(axes.len());
     let mut selected = vec![0usize; axes.len()];
-    for axis_index in (0..axes.len()).rev() {
+    for axis_index in (0..axes.len()).rev()
+    {
         let radix = axes[axis_index].values.len();
         selected[axis_index] = index % radix;
         index /= radix;
     }
-    for (axis, value_index) in axes.iter().zip(selected) {
+    for (axis, value_index) in axes.iter().zip(selected)
+    {
         combo.push((axis.name.clone(), axis.values[value_index]));
     }
     combo
 }
 
 fn combo_is_valid(combo: &[(String, f32)]) -> bool {
-    let get = |key: &str| combo.iter().find(|(name, _)| name == key).map(|(_, value)| *value);
-    match (get("fast"), get("slow")) {
+    let get = |key: &str| {
+        combo
+            .iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| *value)
+    };
+    match (get("fast"), get("slow"))
+    {
         (Some(fast), Some(slow)) => fast < slow,
         _ => true,
     }
 }
 
-fn sampled_combos(
-    axes: &[ParamAxis],
-    max_combos: usize,
-) -> Option<(usize, bool, Vec<Vec<(String, f32)>>)> {
+type ParamCombination = Vec<(String, f32)>;
+
+#[derive(Debug)]
+struct SampledGrid {
+    grid_size: usize,
+    truncated: bool,
+    combinations: Vec<ParamCombination>,
+}
+
+fn sampled_combos(axes: &[ParamAxis], max_combos: usize) -> Option<SampledGrid> {
     let active = active_axes(axes);
     let raw_size = raw_grid_size(&active)?;
     let grid_size = valid_grid_size(&active)?;
-    if grid_size == 0 || raw_size == 0 {
+    if grid_size == 0 || raw_size == 0
+    {
         return None;
     }
 
     let budget = max_combos.max(1);
     let stride = raw_size.div_ceil(budget);
-    let mut sampled = Vec::with_capacity(budget.min(grid_size));
+    let mut combinations = Vec::with_capacity(budget.min(grid_size));
 
     // Evenly sample raw product indices and filter invalid fast/slow pairs.
     // No intermediate product vector exists. If a stride lands on an invalid
     // pair, deterministically probe forward only inside that stride bucket.
     let mut start = 0usize;
-    while start < raw_size && sampled.len() < budget {
+    while start < raw_size && combinations.len() < budget
+    {
         let end = start.saturating_add(stride).min(raw_size);
         let mut probe = start;
-        while probe < end {
+        while probe < end
+        {
             let combo = combo_at(&active, probe);
-            if combo_is_valid(&combo) {
-                sampled.push(combo);
+            if combo_is_valid(&combo)
+            {
+                combinations.push(combo);
                 break;
             }
             probe += 1;
@@ -245,7 +275,12 @@ fn sampled_combos(
         start = end;
     }
 
-    Some((grid_size, grid_size > sampled.len(), sampled))
+    Ok::<_, ()>(SampledGrid {
+        grid_size,
+        truncated: grid_size > combinations.len(),
+        combinations,
+    })
+    .ok()
 }
 
 fn objective_score(
@@ -255,14 +290,19 @@ fn objective_score(
     worst_window: f32,
     train_sharpe: f32,
 ) -> f32 {
-    match objective {
-        Objective::ReturnConsistency => {
-            if mean_window > 0.0 {
+    match objective
+    {
+        Objective::ReturnConsistency =>
+        {
+            if mean_window > 0.0
+            {
                 mean_window * consistency
-            } else {
+            }
+            else
+            {
                 mean_window
             }
-        }
+        },
         Objective::Consistency => consistency + 1e-6 * mean_window,
         Objective::MeanReturn => mean_window,
         Objective::WorstWindow => worst_window,
@@ -272,19 +312,24 @@ fn objective_score(
 
 fn verdict(best: &Candidate) -> String {
     let ret = best.holdout_return * 100.0;
-    if best.holdout_return <= 0.0 {
+    if best.holdout_return <= 0.0
+    {
         format!(
             "OVERFIT / NO EDGE — the best in-sample parameters lose out-of-sample \
              (holdout return {ret:+.2}%, Sharpe {:.2}). Do not trade this.",
             best.holdout_sharpe
         )
-    } else if best.overfit_gap > 1.0 || best.holdout_sharpe < 0.5 * best.train_sharpe.max(0.0) {
+    }
+    else if best.overfit_gap > 1.0 || best.holdout_sharpe < 0.5 * best.train_sharpe.max(0.0)
+    {
         format!(
             "PARTIAL — positive out-of-sample but materially degraded from in-sample \
              (Sharpe {:.2}→{:.2}, holdout return {ret:+.2}%). Size down and re-validate.",
             best.train_sharpe, best.holdout_sharpe
         )
-    } else {
+    }
+    else
+    {
         format!(
             "ROBUST — holds up out-of-sample (holdout return {ret:+.2}%, Sharpe {:.2}); \
              in-sample→holdout degradation is modest ({:.2} Sharpe).",
@@ -304,21 +349,26 @@ pub fn optimize(
     let n = candles.len();
     let train_frac = opt.train_frac.clamp(0.3, 0.9);
     let split = ((n as f32) * train_frac).round() as usize;
-    if n < 40 || split < 20 || n - split < 8 {
+    if n < 40 || split < 20 || n - split < 8
+    {
         return None;
     }
     let train = &candles[..split];
     let holdout = &candles[split..];
 
-    let (grid_size, truncated, sampled) = sampled_combos(axes, opt.max_combos)?;
-    let mut candidates = Vec::with_capacity(sampled.len());
+    let sampled = sampled_combos(axes, opt.max_combos)?;
+    let mut candidates = Vec::with_capacity(sampled.combinations.len());
 
-    for combo in &sampled {
+    for combo in &sampled.combinations
+    {
         let mut params = base_params.clone();
-        for (key, value) in combo {
+        for (key, value) in combo
+        {
             params.insert(key.clone(), *value);
         }
-        let Some(strategy) = strategy_from_spec(strategy_name, &params) else {
+        let Some(strategy) = strategy_from_spec(strategy_name, &params)
+        else
+        {
             continue;
         };
         let wf = walk_forward(strategy.as_ref(), train, opt.wf_windows, cfg);
@@ -345,7 +395,8 @@ pub fn optimize(
             overfit_gap: 0.0,
         });
     }
-    if candidates.is_empty() {
+    if candidates.is_empty()
+    {
         return None;
     }
 
@@ -354,8 +405,10 @@ pub fn optimize(
 
     let top_k = opt.top_k.clamp(1, candidates.len());
     let mut leaderboard: Vec<Candidate> = candidates.into_iter().take(top_k).collect();
-    for candidate in &mut leaderboard {
-        if let Some(strategy) = strategy_from_spec(strategy_name, &candidate.params) {
+    for candidate in &mut leaderboard
+    {
+        if let Some(strategy) = strategy_from_spec(strategy_name, &candidate.params)
+        {
             let bt = run_backtest(strategy.as_ref(), holdout, cfg);
             candidate.holdout_return = bt.total_return;
             candidate.holdout_sharpe = bt.performance.sharpe;
@@ -372,9 +425,9 @@ pub fn optimize(
         objective: opt.objective.label().to_string(),
         train_bars: train.len(),
         holdout_bars: holdout.len(),
-        grid_size,
+        grid_size: sampled.grid_size,
         num_evaluated,
-        truncated,
+        truncated: sampled.truncated,
         best,
         leaderboard,
         verdict: verdict_text,
@@ -425,8 +478,14 @@ mod tests {
         ];
         let active = active_axes(&axes);
         assert_eq!(raw_grid_size(&active), Some(6));
-        assert_eq!(combo_at(&active, 0), vec![("a".into(), 1.0), ("b".into(), 10.0)]);
-        assert_eq!(combo_at(&active, 5), vec![("a".into(), 2.0), ("b".into(), 30.0)]);
+        assert_eq!(
+            combo_at(&active, 0),
+            vec![("a".into(), 1.0), ("b".into(), 10.0)]
+        );
+        assert_eq!(
+            combo_at(&active, 5),
+            vec![("a".into(), 2.0), ("b".into(), 30.0)]
+        );
     }
 
     #[test]
@@ -436,10 +495,10 @@ mod tests {
             .collect();
         let active = active_axes(&axes);
         assert_eq!(raw_grid_size(&active), Some(10_000_000_000_000_000));
-        let (grid_size, truncated, sampled) = sampled_combos(&axes, 17).unwrap();
-        assert_eq!(grid_size, 10_000_000_000_000_000);
-        assert!(truncated);
-        assert!(sampled.len() <= 17);
+        let sampled = sampled_combos(&axes, 17).unwrap();
+        assert_eq!(sampled.grid_size, 10_000_000_000_000_000);
+        assert!(sampled.truncated);
+        assert!(sampled.combinations.len() <= 17);
     }
 
     #[test]
@@ -473,15 +532,17 @@ mod tests {
     #[test]
     fn none_when_too_little_data() {
         let candles = trend(30);
-        assert!(optimize(
-            "sma_cross",
-            &default_axes("sma_cross"),
-            &BTreeMap::new(),
-            &candles,
-            &cfg(),
-            &OptimizeConfig::default(),
-        )
-        .is_none());
+        assert!(
+            optimize(
+                "sma_cross",
+                &default_axes("sma_cross"),
+                &BTreeMap::new(),
+                &candles,
+                &cfg(),
+                &OptimizeConfig::default(),
+            )
+            .is_none()
+        );
     }
 
     #[test]
