@@ -17,5 +17,6 @@ pub mod sis;
 pub mod tolerance;
 pub mod trader;
 pub mod trader_contract;
+pub(crate) mod trader_guard;
 pub mod trader_research;
 pub mod wallet;
