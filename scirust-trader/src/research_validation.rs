@@ -121,10 +121,41 @@ pub fn regime_robustness(
     Some(report)
 }
 
+/// Compound a path of simple returns as `prod(1 + r) - 1`.
+///
+/// Returns below -100% are outside the declared simple-return convention and
+/// therefore cannot be interpreted as multiplicative wealth changes. A return
+/// of exactly -100% is valid and produces terminal wealth zero.
+pub fn compound_simple_returns(returns: &[f64]) -> Option<f64> {
+    if returns.iter().any(|value| !value.is_finite() || *value < -1.0)
+    {
+        return None;
+    }
+    let wealth = returns
+        .iter()
+        .try_fold(1.0f64, |wealth, value| {
+            let next = wealth * (1.0 + *value);
+            next.is_finite().then_some(next)
+        })?;
+    Some(wealth - 1.0)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct CostStressPoint {
     pub cost_bps_per_unit_turnover: f64,
+    /// Legacy additive sum retained for API compatibility.
+    ///
+    /// This is not compounded capital growth. New consumers should prefer
+    /// `compounded_net_return` when the path satisfies the simple-return
+    /// convention.
     pub cumulative_net_return: f64,
+    /// Explicit additive sum of the period net simple returns.
+    pub additive_net_return: f64,
+    /// Multiplicative capital growth, `prod(1 + r) - 1`.
+    ///
+    /// `None` means at least one stressed period return was below -100%, so the
+    /// path cannot be interpreted under this simple-return convention.
+    pub compounded_net_return: Option<f64>,
     pub mean_net_return: f64,
     pub net_sharpe: f64,
 }
@@ -155,7 +186,8 @@ pub fn cost_stress(
             .zip(turnover)
             .map(|(gross, turn)| *gross - *turn * rate)
             .collect();
-        let mean = net.iter().sum::<f64>() / n as f64;
+        let additive = net.iter().sum::<f64>();
+        let mean = additive / n as f64;
         let sample_std = if n < 2
         {
             0.0
@@ -167,7 +199,9 @@ pub fn cost_stress(
         };
         output.push(CostStressPoint {
             cost_bps_per_unit_turnover: *cost_bps,
-            cumulative_net_return: net.iter().sum(),
+            cumulative_net_return: additive,
+            additive_net_return: additive,
+            compounded_net_return: compound_simple_returns(&net),
             mean_net_return: mean,
             net_sharpe: if sample_std <= f64::EPSILON
             {
@@ -304,8 +338,26 @@ mod tests {
         let gross = [0.01, 0.01, -0.005, 0.02];
         let turnover = [1.0, 0.5, 2.0, 1.0];
         let report = cost_stress(&gross, &turnover, &[0.0, 10.0, 50.0]).unwrap();
-        assert!(report[0].cumulative_net_return > report[1].cumulative_net_return);
-        assert!(report[1].cumulative_net_return > report[2].cumulative_net_return);
+        assert!(report[0].additive_net_return > report[1].additive_net_return);
+        assert!(report[1].additive_net_return > report[2].additive_net_return);
+        assert_eq!(report[0].cumulative_net_return, report[0].additive_net_return);
+    }
+
+    #[test]
+    fn additive_and_compounded_returns_are_not_conflated() {
+        let report = cost_stress(&[0.10, -0.10], &[0.0, 0.0], &[0.0]).unwrap();
+        let point = report[0];
+        assert!(point.additive_net_return.abs() < 1e-12);
+        assert!((point.compounded_net_return.unwrap() + 0.01).abs() < 1e-12);
+        assert_eq!(point.cumulative_net_return, point.additive_net_return);
+    }
+
+    #[test]
+    fn compounding_rejects_returns_below_minus_one_without_hiding_additive_evidence() {
+        let report = cost_stress(&[-1.2, 0.5], &[0.0, 0.0], &[0.0]).unwrap();
+        assert!((report[0].additive_net_return + 0.7).abs() < 1e-12);
+        assert_eq!(report[0].compounded_net_return, None);
+        assert_eq!(compound_simple_returns(&[-1.0, 0.5]), Some(-1.0));
     }
 
     #[test]
