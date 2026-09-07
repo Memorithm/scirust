@@ -32,12 +32,14 @@ pub enum CscvBudgetError {
 /// Returns an error for an invalid (odd or smaller than two) slice count or if
 /// the exact count cannot be represented in `u128`.
 pub fn cscv_split_count(slices: usize) -> Result<u128, CscvBudgetError> {
-    if slices < 2 || !slices.is_multiple_of(2) {
+    if slices < 2 || !slices.is_multiple_of(2)
+    {
         return Err(CscvBudgetError::InvalidSlices);
     }
     let k = slices / 2;
     let mut result = 1_u128;
-    for i in 1..=k {
+    for i in 1..=k
+    {
         // Recurrence C(n-k+i, i) from C(n-k+i-1, i-1). Each division is exact.
         let numerator = (slices - k + i) as u128;
         result = result
@@ -53,21 +55,21 @@ pub fn cscv_split_count(slices: usize) -> Result<u128, CscvBudgetError> {
 ///
 /// On success, returns the exact split count. The caller can record this as the
 /// declared work size in experiment provenance.
-pub fn enforce_cscv_budget(
-    slices: usize,
-    max_splits: usize,
-) -> Result<u128, CscvBudgetError> {
-    if max_splits == 0 {
+pub fn enforce_cscv_budget(slices: usize, max_splits: usize) -> Result<u128, CscvBudgetError> {
+    if max_splits == 0
+    {
         return Err(CscvBudgetError::InvalidBudget);
     }
-    if max_splits > HARD_CSCV_MAX_SPLITS {
+    if max_splits > HARD_CSCV_MAX_SPLITS
+    {
         return Err(CscvBudgetError::BudgetLimitTooHigh {
             requested: max_splits,
             hard_max: HARD_CSCV_MAX_SPLITS,
         });
     }
     let required_splits = cscv_split_count(slices)?;
-    if required_splits > max_splits as u128 {
+    if required_splits > max_splits as u128
+    {
         return Err(CscvBudgetError::BudgetExceeded {
             required_splits,
             max_splits,
