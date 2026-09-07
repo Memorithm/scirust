@@ -62,16 +62,65 @@ pub struct GridLevel {
 }
 
 /// Fully validated grid plan.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct GridPlan {
     pub symbol: String,
     pub side: Side,
+    /// Legacy aliases for the effective rounded bounds. New consumers should
+    /// use the explicit requested/effective fields below.
     pub start_price: f32,
     pub end_price: f32,
+    pub requested_start_price: f32,
+    pub requested_end_price: f32,
+    pub effective_start_price: f32,
+    pub effective_end_price: f32,
     pub requested_quote_total: f32,
     pub rounded_quote_total: f32,
     pub max_open_orders: usize,
     pub levels: Vec<GridLevel>,
+}
+
+#[derive(Deserialize)]
+struct GridPlanWire {
+    symbol: String,
+    side: Side,
+    start_price: f32,
+    end_price: f32,
+    #[serde(default)]
+    requested_start_price: Option<f32>,
+    #[serde(default)]
+    requested_end_price: Option<f32>,
+    #[serde(default)]
+    effective_start_price: Option<f32>,
+    #[serde(default)]
+    effective_end_price: Option<f32>,
+    requested_quote_total: f32,
+    rounded_quote_total: f32,
+    max_open_orders: usize,
+    levels: Vec<GridLevel>,
+}
+
+impl<'de> Deserialize<'de> for GridPlan {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = GridPlanWire::deserialize(deserializer)?;
+        Ok(Self {
+            symbol: wire.symbol,
+            side: wire.side,
+            start_price: wire.start_price,
+            end_price: wire.end_price,
+            requested_start_price: wire.requested_start_price.unwrap_or(wire.start_price),
+            requested_end_price: wire.requested_end_price.unwrap_or(wire.end_price),
+            effective_start_price: wire.effective_start_price.unwrap_or(wire.start_price),
+            effective_end_price: wire.effective_end_price.unwrap_or(wire.end_price),
+            requested_quote_total: wire.requested_quote_total,
+            rounded_quote_total: wire.rounded_quote_total,
+            max_open_orders: wire.max_open_orders,
+            levels: wire.levels,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -86,6 +135,12 @@ pub enum GridPlanError {
     RoundedPriceDuplicate {
         index: usize,
     },
+    RoundedPriceOutOfBounds {
+        index: usize,
+        rounded_price: f32,
+        requested_start: f32,
+        requested_end: f32,
+    },
     SpreadTooTight {
         index: usize,
     },
@@ -93,6 +148,16 @@ pub enum GridPlanError {
         index: usize,
     },
     BelowMinNotional {
+        index: usize,
+        rounded_notional: f32,
+        min_notional: f32,
+    },
+    TakeProfitCollapsed {
+        index: usize,
+        entry_price: f32,
+        take_profit_price: f32,
+    },
+    ExitBelowMinNotional {
         index: usize,
         rounded_notional: f32,
         min_notional: f32,
@@ -106,6 +171,14 @@ fn exit_price(entry: f32, side: Side, fraction: f32, instrument: &Instrument) ->
         Side::Sell => entry * (1.0 - fraction),
     };
     instrument.round_price(raw)
+}
+
+fn exit_is_strictly_better(entry: f32, exit: f32, side: Side) -> bool {
+    match side
+    {
+        Side::Buy => exit > entry,
+        Side::Sell => exit < entry,
+    }
 }
 
 /// Construct an arithmetic grid between the inclusive bounds.
@@ -166,6 +239,15 @@ pub fn plan_grid(cfg: &GridConfig, instrument: &Instrument) -> Result<GridPlan, 
         {
             return Err(GridPlanError::InvalidBounds);
         }
+        if price < cfg.start_price || price > cfg.end_price
+        {
+            return Err(GridPlanError::RoundedPriceOutOfBounds {
+                index,
+                rounded_price: price,
+                requested_start: cfg.start_price,
+                requested_end: cfg.end_price,
+            });
+        }
 
         if let Some(previous) = previous_price
         {
@@ -200,6 +282,23 @@ pub fn plan_grid(cfg: &GridConfig, instrument: &Instrument) -> Result<GridPlan, 
         {
             return Err(GridPlanError::InvalidTakeProfit);
         }
+        if !exit_is_strictly_better(price, take_profit_price, cfg.side)
+        {
+            return Err(GridPlanError::TakeProfitCollapsed {
+                index,
+                entry_price: price,
+                take_profit_price,
+            });
+        }
+        let exit_notional = take_profit_price * base_qty;
+        if !instrument.meets_min_notional(take_profit_price, base_qty)
+        {
+            return Err(GridPlanError::ExitBelowMinNotional {
+                index,
+                rounded_notional: exit_notional,
+                min_notional: instrument.min_notional,
+            });
+        }
 
         let entry_id = (index as u64) * 2 + 1;
         let exit_id = entry_id + 1;
@@ -231,11 +330,23 @@ pub fn plan_grid(cfg: &GridConfig, instrument: &Instrument) -> Result<GridPlan, 
         previous_price = Some(price);
     }
 
+    let effective_start_price = levels
+        .first()
+        .map(|level| level.price)
+        .unwrap_or(cfg.start_price);
+    let effective_end_price = levels
+        .last()
+        .map(|level| level.price)
+        .unwrap_or(cfg.end_price);
     Ok(GridPlan {
         symbol: cfg.symbol.clone(),
         side: cfg.side,
-        start_price: levels.first().map(|l| l.price).unwrap_or(cfg.start_price),
-        end_price: levels.last().map(|l| l.price).unwrap_or(cfg.end_price),
+        start_price: effective_start_price,
+        end_price: effective_end_price,
+        requested_start_price: cfg.start_price,
+        requested_end_price: cfg.end_price,
+        effective_start_price,
+        effective_end_price,
         requested_quote_total: cfg.total_quote,
         rounded_quote_total,
         max_open_orders: cfg.max_open_orders,
@@ -291,10 +402,16 @@ mod tests {
     }
 
     #[test]
-    fn grid_preserves_bounds_budget_and_order_semantics() {
+    fn grid_preserves_requested_and_effective_bounds_budget_and_order_semantics() {
         let plan = plan_grid(&config(Side::Buy), &instrument()).unwrap();
         assert_eq!(plan.levels.len(), 3);
         assert_eq!(plan.max_open_orders, 2);
+        assert_eq!(plan.requested_start_price, 90.0);
+        assert_eq!(plan.requested_end_price, 110.0);
+        assert_eq!(plan.effective_start_price, 90.0);
+        assert_eq!(plan.effective_end_price, 110.0);
+        assert_eq!(plan.start_price, plan.effective_start_price);
+        assert_eq!(plan.end_price, plan.effective_end_price);
         assert!((plan.levels[0].price - 90.0).abs() < 1e-6);
         assert!((plan.levels[1].price - 100.0).abs() < 1e-6);
         assert!((plan.levels[2].price - 110.0).abs() < 1e-6);
@@ -309,6 +426,23 @@ mod tests {
     }
 
     #[test]
+    fn legacy_grid_plan_deserializes_with_legacy_bounds_as_fallbacks() {
+        let original = plan_grid(&config(Side::Buy), &instrument()).unwrap();
+        let mut legacy = serde_json::to_value(&original).unwrap();
+        let object = legacy.as_object_mut().unwrap();
+        object.remove("requested_start_price");
+        object.remove("requested_end_price");
+        object.remove("effective_start_price");
+        object.remove("effective_end_price");
+
+        let restored: GridPlan = serde_json::from_value(legacy).unwrap();
+        assert_eq!(restored.requested_start_price, restored.start_price);
+        assert_eq!(restored.requested_end_price, restored.end_price);
+        assert_eq!(restored.effective_start_price, restored.start_price);
+        assert_eq!(restored.effective_end_price, restored.end_price);
+    }
+
+    #[test]
     fn sell_grid_take_profit_is_below_entry() {
         let plan = plan_grid(&config(Side::Sell), &instrument()).unwrap();
         assert!(
@@ -316,6 +450,59 @@ mod tests {
                 .iter()
                 .all(|level| level.take_profit_price < level.price)
         );
+    }
+
+    #[test]
+    fn rounded_bounds_cannot_escape_requested_range() {
+        let mut cfg = config(Side::Buy);
+        cfg.start_price = 90.4;
+        cfg.end_price = 110.4;
+        assert!(matches!(
+            plan_grid(&cfg, &instrument()),
+            Err(GridPlanError::RoundedPriceOutOfBounds { index: 0, .. })
+        ));
+    }
+
+    #[test]
+    fn take_profit_must_remain_distinct_after_rounding() {
+        let mut cfg = config(Side::Buy);
+        cfg.start_price = 100.0;
+        cfg.end_price = 120.0;
+        cfg.take_profit_fraction = 0.01;
+        let coarse = Instrument {
+            tick_size: 10.0,
+            step_size: 0.01,
+            min_notional: 5.0,
+        };
+        assert!(matches!(
+            plan_grid(&cfg, &coarse),
+            Err(GridPlanError::TakeProfitCollapsed { .. })
+        ));
+    }
+
+    #[test]
+    fn exit_notional_is_checked_after_rounding() {
+        let cfg = GridConfig {
+            symbol: "BTCUSDT".to_string(),
+            side: Side::Sell,
+            start_price: 100.0,
+            end_price: 120.0,
+            levels: 2,
+            total_quote: 200.0,
+            min_order_quote: 5.0,
+            min_spread_fraction: 0.0,
+            take_profit_fraction: 0.10,
+            max_open_orders: 1,
+        };
+        let venue = Instrument {
+            tick_size: 1.0,
+            step_size: 0.01,
+            min_notional: 95.0,
+        };
+        assert!(matches!(
+            plan_grid(&cfg, &venue),
+            Err(GridPlanError::ExitBelowMinNotional { index: 0, .. })
+        ));
     }
 
     #[test]

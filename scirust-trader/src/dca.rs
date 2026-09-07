@@ -43,9 +43,12 @@ pub struct DcaConfig {
 }
 
 /// One validated DCA level.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct DcaLevel {
     pub index: usize,
+    /// Price supplied by the caller before instrument rounding.
+    pub requested_price: f32,
+    /// Effective rounded trigger/reference price.
     pub trigger_price: f32,
     pub requested_quote: f32,
     /// Quote notional after tick/lot rounding.
@@ -54,6 +57,36 @@ pub struct DcaLevel {
     /// Order template. Timestamps and real fill prices are intentionally left to
     /// the execution layer.
     pub order: Order,
+}
+
+#[derive(Deserialize)]
+struct DcaLevelWire {
+    index: usize,
+    #[serde(default)]
+    requested_price: Option<f32>,
+    trigger_price: f32,
+    requested_quote: f32,
+    rounded_quote: f32,
+    base_qty: f32,
+    order: Order,
+}
+
+impl<'de> Deserialize<'de> for DcaLevel {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = DcaLevelWire::deserialize(deserializer)?;
+        Ok(Self {
+            index: wire.index,
+            requested_price: wire.requested_price.unwrap_or(wire.trigger_price),
+            trigger_price: wire.trigger_price,
+            requested_quote: wire.requested_quote,
+            rounded_quote: wire.rounded_quote,
+            base_qty: wire.base_qty,
+            order: wire.order,
+        })
+    }
 }
 
 /// Deterministic DCA plan.
@@ -68,9 +101,13 @@ pub struct DcaPlan {
     pub total_base_qty: f32,
     /// Quantity-weighted entry reference after instrument rounding.
     pub weighted_entry_price: f32,
-    /// Reference only; no exit order is submitted by this planner.
+    /// Unrounded risk reference requested by the configured percentage.
+    pub requested_take_profit_price: Option<f32>,
+    /// Rounded risk reference. No exit order is submitted by this planner.
     pub take_profit_price: Option<f32>,
-    /// Reference only; no exit order is submitted by this planner.
+    /// Unrounded risk reference requested by the configured percentage.
+    pub requested_stop_loss_price: Option<f32>,
+    /// Rounded risk reference. No exit order is submitted by this planner.
     pub stop_loss_price: Option<f32>,
 }
 
@@ -98,13 +135,20 @@ pub enum DcaPlanError {
         rounded_notional: f32,
         min_notional: f32,
     },
+    ExitReferenceCollapsed {
+        profit: bool,
+        weighted_entry_price: f32,
+        rounded_exit_price: f32,
+    },
 }
 
 fn valid_fraction(value: Option<f32>) -> bool {
-    value.map(|v| v.is_finite() && v >= 0.0).unwrap_or(true)
+    value
+        .map(|fraction| fraction.is_finite() && fraction > 0.0 && fraction < 1.0)
+        .unwrap_or(true)
 }
 
-fn exit_reference(
+fn requested_exit_reference(
     weighted_entry: f32,
     side: Side,
     fraction: Option<f32>,
@@ -117,6 +161,43 @@ fn exit_reference(
         (Side::Buy, false) | (Side::Sell, true) => -1.0,
     };
     Some(weighted_entry * (1.0 + direction * fraction))
+}
+
+fn rounded_exit_reference(
+    requested: Option<f32>,
+    weighted_entry: f32,
+    side: Side,
+    profit: bool,
+    instrument: &Instrument,
+) -> Result<Option<f32>, DcaPlanError> {
+    let Some(requested) = requested
+    else
+    {
+        return Ok(None);
+    };
+    let rounded = instrument.round_price(requested);
+    let expected_above = match (side, profit)
+    {
+        (Side::Buy, true) | (Side::Sell, false) => true,
+        (Side::Buy, false) | (Side::Sell, true) => false,
+    };
+    let valid_direction = if expected_above
+    {
+        rounded > weighted_entry
+    }
+    else
+    {
+        rounded < weighted_entry
+    };
+    if !rounded.is_finite() || rounded <= 0.0 || !valid_direction
+    {
+        return Err(DcaPlanError::ExitReferenceCollapsed {
+            profit,
+            weighted_entry_price: weighted_entry,
+            rounded_exit_price: rounded,
+        });
+    }
+    Ok(Some(rounded))
 }
 
 /// Build a validated DCA plan using the venue-neutral [`Instrument`] rules.
@@ -199,6 +280,7 @@ pub fn plan_dca(cfg: &DcaConfig, instrument: &Instrument) -> Result<DcaPlan, Dca
         weighted_notional += trigger_price * base_qty;
         levels.push(DcaLevel {
             index,
+            requested_price: raw_price,
             trigger_price,
             requested_quote,
             rounded_quote,
@@ -215,6 +297,24 @@ pub fn plan_dca(cfg: &DcaConfig, instrument: &Instrument) -> Result<DcaPlan, Dca
     {
         0.0
     };
+    let requested_take_profit_price =
+        requested_exit_reference(weighted_entry_price, cfg.side, cfg.take_profit_pct, true);
+    let requested_stop_loss_price =
+        requested_exit_reference(weighted_entry_price, cfg.side, cfg.stop_loss_pct, false);
+    let take_profit_price = rounded_exit_reference(
+        requested_take_profit_price,
+        weighted_entry_price,
+        cfg.side,
+        true,
+        instrument,
+    )?;
+    let stop_loss_price = rounded_exit_reference(
+        requested_stop_loss_price,
+        weighted_entry_price,
+        cfg.side,
+        false,
+        instrument,
+    )?;
 
     Ok(DcaPlan {
         symbol: cfg.symbol.clone(),
@@ -225,13 +325,10 @@ pub fn plan_dca(cfg: &DcaConfig, instrument: &Instrument) -> Result<DcaPlan, Dca
         rounded_quote_total,
         total_base_qty,
         weighted_entry_price,
-        take_profit_price: exit_reference(
-            weighted_entry_price,
-            cfg.side,
-            cfg.take_profit_pct,
-            true,
-        ),
-        stop_loss_price: exit_reference(weighted_entry_price, cfg.side, cfg.stop_loss_pct, false),
+        requested_take_profit_price,
+        take_profit_price,
+        requested_stop_loss_price,
+        stop_loss_price,
     })
 }
 
@@ -265,12 +362,14 @@ mod tests {
     }
 
     #[test]
-    fn maker_plan_rounds_and_preserves_explicit_budget_accounting() {
+    fn maker_plan_exposes_requested_and_effective_price_accounting() {
         let plan = plan_dca(&config(Side::Buy, DcaMode::Maker), &instrument()).unwrap();
         assert_eq!(plan.levels.len(), 2);
         assert!(plan.levels.iter().all(is_maker_level));
+        assert!((plan.levels[0].requested_price - 100.2).abs() < 1e-6);
         assert!((plan.levels[0].trigger_price - 100.0).abs() < 1e-6);
         assert!((plan.levels[0].base_qty - 1.0).abs() < 1e-6);
+        assert!((plan.levels[1].requested_price - 90.2).abs() < 1e-6);
         assert!((plan.levels[1].trigger_price - 90.0).abs() < 1e-6);
         assert!((plan.levels[1].base_qty - 2.22).abs() < 1e-6);
         assert!((plan.requested_quote_total - 300.0).abs() < 1e-6);
@@ -278,22 +377,63 @@ mod tests {
     }
 
     #[test]
-    fn buy_exit_references_have_expected_direction() {
+    fn legacy_dca_levels_deserialize_with_trigger_price_fallback() {
+        let original = plan_dca(&config(Side::Buy, DcaMode::Maker), &instrument()).unwrap();
+        let mut legacy = serde_json::to_value(&original).unwrap();
+        for level in legacy["levels"].as_array_mut().unwrap()
+        {
+            level.as_object_mut().unwrap().remove("requested_price");
+        }
+        let restored: DcaPlan = serde_json::from_value(legacy).unwrap();
+        assert!(
+            restored
+                .levels
+                .iter()
+                .all(|level| level.requested_price == level.trigger_price)
+        );
+    }
+
+    #[test]
+    fn buy_exit_references_have_expected_direction_after_rounding() {
         let plan = plan_dca(&config(Side::Buy, DcaMode::Taker), &instrument()).unwrap();
         let tp = plan.take_profit_price.unwrap();
         let sl = plan.stop_loss_price.unwrap();
         assert!(tp > plan.weighted_entry_price);
         assert!(sl < plan.weighted_entry_price);
+        assert!(plan.requested_take_profit_price.unwrap() > plan.weighted_entry_price);
+        assert!(plan.requested_stop_loss_price.unwrap() < plan.weighted_entry_price);
         assert!(matches!(plan.levels[0].order.order_type, OrderType::Market));
     }
 
     #[test]
-    fn sell_exit_references_reverse_direction() {
+    fn sell_exit_references_reverse_direction_after_rounding() {
         let plan = plan_dca(&config(Side::Sell, DcaMode::Maker), &instrument()).unwrap();
         let tp = plan.take_profit_price.unwrap();
         let sl = plan.stop_loss_price.unwrap();
         assert!(tp < plan.weighted_entry_price);
         assert!(sl > plan.weighted_entry_price);
+    }
+
+    #[test]
+    fn zero_or_collapsed_risk_distances_are_rejected() {
+        let mut cfg = config(Side::Buy, DcaMode::Maker);
+        cfg.take_profit_pct = Some(0.0);
+        assert_eq!(
+            plan_dca(&cfg, &instrument()).unwrap_err(),
+            DcaPlanError::InvalidTakeProfit
+        );
+
+        let mut cfg = config(Side::Buy, DcaMode::Maker);
+        cfg.take_profit_pct = Some(0.001);
+        let coarse = Instrument {
+            tick_size: 100.0,
+            step_size: 0.01,
+            min_notional: 5.0,
+        };
+        assert!(matches!(
+            plan_dca(&cfg, &coarse),
+            Err(DcaPlanError::ExitReferenceCollapsed { profit: true, .. })
+        ));
     }
 
     #[test]
@@ -337,6 +477,13 @@ mod tests {
         assert_eq!(
             plan_dca(&cfg, &instrument()).unwrap_err(),
             DcaPlanError::InvalidTakeProfit
+        );
+
+        let mut cfg = config(Side::Buy, DcaMode::Maker);
+        cfg.stop_loss_pct = Some(1.0);
+        assert_eq!(
+            plan_dca(&cfg, &instrument()).unwrap_err(),
+            DcaPlanError::InvalidStopLoss
         );
     }
 }
