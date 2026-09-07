@@ -367,6 +367,10 @@ impl LifecycleBookV2 {
             },
             ExecutionEventKindV2::Canceled { effective_at_ms } =>
             {
+                let post_cancel_fill_exists = self.fills.values().any(|fill| {
+                    fill.client_order_id == client_order_id
+                        && fill.occurred_at_ms > effective_at_ms
+                });
                 let order = self.order_mut(&client_order_id)?;
                 if !matches!(
                     order.status,
@@ -378,11 +382,22 @@ impl LifecycleBookV2 {
                 {
                     return Err(invalid_transition(order));
                 }
-                order.status = ExecutionStatusV2::Canceled;
                 order.cancel_effective_ts_ms = Some(effective_at_ms);
-                order.unresolved_reason = None;
                 order.last_event_ts_ms = received_at_ms;
-                ApplyOutcomeV2::Applied
+                if post_cancel_fill_exists
+                {
+                    order.status = ExecutionStatusV2::ReconciliationRequired;
+                    order.unresolved_reason = Some(
+                        "recorded fill occurred after confirmed cancellation timestamp".to_string(),
+                    );
+                    ApplyOutcomeV2::ReconciliationRequired
+                }
+                else
+                {
+                    order.status = ExecutionStatusV2::Canceled;
+                    order.unresolved_reason = None;
+                    ApplyOutcomeV2::Applied
+                }
             },
             ExecutionEventKindV2::CancelRejected { reason } =>
             {
@@ -580,15 +595,19 @@ impl LifecycleBookV2 {
             return Err(LifecycleV2Error::InvalidFill);
         }
 
-        let remaining = order.remaining_quantity()?;
-        if SignedAmount::from(quantity) > remaining
-        {
-            return Err(LifecycleV2Error::Overfill);
-        }
-        order.filled_quantity = order
+        let status_before = order.status;
+        let requested = SignedAmount::from(order.request.quantity);
+        let new_filled_quantity = order
             .filled_quantity
             .checked_add_quantity(quantity)
             .map_err(|_| LifecycleV2Error::ArithmeticOverflow)?;
+        let new_remaining = requested
+            .checked_sub(new_filled_quantity)
+            .map_err(|_| LifecycleV2Error::ArithmeticOverflow)?;
+        if new_remaining.is_negative()
+        {
+            return Err(LifecycleV2Error::Overfill);
+        }
         let current_fee = order
             .fees_by_asset
             .get(&fee_asset)
@@ -597,38 +616,51 @@ impl LifecycleBookV2 {
         let total_fee = current_fee
             .checked_add(fee_amount)
             .map_err(|_| LifecycleV2Error::ArithmeticOverflow)?;
-        order.fees_by_asset.insert(fee_asset, total_fee);
-        order.last_event_ts_ms = received_at_ms;
-
         let contradictory_after_cancel = order
             .cancel_effective_ts_ms
             .is_some_and(|canceled_at| occurred_at_ms > canceled_at);
+
+        // No economic state is mutated until all fallible arithmetic above has
+        // completed. An error therefore leaves the event safe to retry.
+        order.filled_quantity = new_filled_quantity;
+        order.fees_by_asset.insert(fee_asset, total_fee);
+        order.last_event_ts_ms = received_at_ms;
+
         if contradictory_after_cancel
         {
             order.status = ExecutionStatusV2::ReconciliationRequired;
             order.unresolved_reason =
                 Some("fill occurred after confirmed cancellation timestamp".to_string());
         }
-        else if order.remaining_quantity()?.is_zero()
+        else if status_before == ExecutionStatusV2::ReconciliationRequired
+        {
+            // Contradictory venue evidence remains unresolved until explicit
+            // reconciliation; later economic events must not silently clear it.
+        }
+        else if matches!(
+            status_before,
+            ExecutionStatusV2::PendingAmend | ExecutionStatusV2::AmendUnknown
+        )
+        {
+            // Even a fill of the current quantity cannot resolve an outstanding
+            // amendment: a later confirmed increase can make the order open again.
+        }
+        else if new_remaining.is_zero()
         {
             order.status = ExecutionStatusV2::Filled;
             order.unresolved_reason = None;
         }
-        else if order.status == ExecutionStatusV2::Canceled
+        else if status_before == ExecutionStatusV2::Canceled
         {
             // The fill occurred before cancellation but was delivered later.
             // Preserve Canceled for the remaining quantity.
         }
         else if matches!(
-            order.status,
-            ExecutionStatusV2::PendingCancel
-                | ExecutionStatusV2::CancelUnknown
-                | ExecutionStatusV2::PendingAmend
-                | ExecutionStatusV2::AmendUnknown
+            status_before,
+            ExecutionStatusV2::PendingCancel | ExecutionStatusV2::CancelUnknown
         )
         {
-            // Preserve the pending/unknown control-plane state while accounting
-            // the economically valid fill.
+            // Preserve pending/unknown cancellation while accounting the fill.
         }
         else
         {
@@ -637,7 +669,7 @@ impl LifecycleBookV2 {
         }
 
         self.fills.insert(key, incoming);
-        if contradictory_after_cancel
+        if contradictory_after_cancel || status_before == ExecutionStatusV2::ReconciliationRequired
         {
             Ok(ApplyOutcomeV2::ReconciliationRequired)
         }
@@ -912,6 +944,34 @@ mod tests {
     }
 
     #[test]
+    fn reconciliation_required_is_sticky_across_later_fills() {
+        let mut book = book("2");
+        book.apply_event(fill(1, "trade-1", 100, "0.5", "0.001"))
+            .unwrap();
+        book.apply_event(event(
+            2,
+            ExecutionEventKindV2::SubmitRejected {
+                reason: "venue says rejected".into(),
+            },
+        ))
+        .unwrap();
+        let reason = book.orders["client-1"].unresolved_reason.clone();
+        assert_eq!(
+            book.apply_event(fill(3, "trade-2", 110, "0.5", "0.001")),
+            Ok(ApplyOutcomeV2::ReconciliationRequired)
+        );
+        assert_eq!(
+            book.orders["client-1"].status,
+            ExecutionStatusV2::ReconciliationRequired
+        );
+        assert_eq!(book.orders["client-1"].unresolved_reason, reason);
+        assert_eq!(
+            book.orders["client-1"].filled_quantity.as_decimal_string(),
+            "1"
+        );
+    }
+
+    #[test]
     fn cancel_rejection_returns_to_economic_open_state() {
         let mut book = book("2");
         book.apply_event(accepted(1)).unwrap();
@@ -981,6 +1041,36 @@ mod tests {
     }
 
     #[test]
+    fn later_cancel_confirmation_rechecks_already_recorded_fills() {
+        let mut book = book("2");
+        book.apply_event(accepted(1)).unwrap();
+        book.apply_event(event(2, ExecutionEventKindV2::CancelRequested))
+            .unwrap();
+        book.apply_event(event(
+            3,
+            ExecutionEventKindV2::CancelUnknown {
+                reason: "timeout".into(),
+            },
+        ))
+        .unwrap();
+        book.apply_event(fill(4, "trade-1", 160, "0.5", "0.001"))
+            .unwrap();
+        assert_eq!(
+            book.apply_event(event(
+                5,
+                ExecutionEventKindV2::Canceled {
+                    effective_at_ms: 150,
+                },
+            )),
+            Ok(ApplyOutcomeV2::ReconciliationRequired)
+        );
+        assert_eq!(
+            book.orders["client-1"].status,
+            ExecutionStatusV2::ReconciliationRequired
+        );
+    }
+
+    #[test]
     fn exact_fill_accounting_has_no_epsilon_overfill_rule() {
         let mut book = book("0.3");
         book.apply_event(accepted(1)).unwrap();
@@ -1008,6 +1098,29 @@ mod tests {
     }
 
     #[test]
+    fn fee_overflow_does_not_partially_apply_fill_quantity() {
+        let mut book = book("2");
+        book.apply_event(accepted(1)).unwrap();
+        let max = "170141183460469231731687303715884105727";
+        book.apply_event(fill(2, "trade-1", 110, "0.5", max))
+            .unwrap();
+        assert_eq!(
+            book.apply_event(fill(3, "trade-2", 120, "0.5", "1")),
+            Err(LifecycleV2Error::ArithmeticOverflow)
+        );
+        assert_eq!(book.last_local_sequence, 2);
+        assert_eq!(book.fills.len(), 1);
+        assert_eq!(
+            book.orders["client-1"].filled_quantity.as_decimal_string(),
+            "0.5"
+        );
+        assert_eq!(
+            book.orders["client-1"].fees_by_asset["BNB"].as_decimal_string(),
+            max
+        );
+    }
+
+    #[test]
     fn fees_can_be_third_asset_and_signed_rebates() {
         let mut book = book("1");
         book.apply_event(accepted(1)).unwrap();
@@ -1018,6 +1131,35 @@ mod tests {
         assert_eq!(
             book.orders["client-1"].fees_by_asset["BNB"].as_decimal_string(),
             "0.0008"
+        );
+    }
+
+    #[test]
+    fn full_fill_preserves_pending_amend_until_confirmation() {
+        let mut book = book("1");
+        book.apply_event(accepted(1)).unwrap();
+        book.apply_event(event(2, ExecutionEventKindV2::AmendRequested))
+            .unwrap();
+        book.apply_event(fill(3, "trade-1", 110, "1", "0"))
+            .unwrap();
+        assert_eq!(
+            book.orders["client-1"].status,
+            ExecutionStatusV2::PendingAmend
+        );
+        book.apply_event(event(
+            4,
+            ExecutionEventKindV2::Amended {
+                request: request("2"),
+            },
+        ))
+        .unwrap();
+        assert_eq!(
+            book.orders["client-1"].status,
+            ExecutionStatusV2::PartiallyFilled
+        );
+        assert_eq!(
+            book.orders["client-1"].remaining_quantity().unwrap().as_decimal_string(),
+            "1"
         );
     }
 
