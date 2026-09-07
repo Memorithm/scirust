@@ -8,6 +8,8 @@ The contract is defined in `scirust-trader::consumer_contract` and is transport-
 
 The v1 contract intentionally covers research requests and results only. It does not authorize or execute real-money orders.
 
+The authoritative validation path is the Rust contract itself; transport adapters must not weaken or reinterpret its validation rules.
+
 ## Participants
 
 A request declares a `ContractParticipant` consumer. Supported participant kinds include agent, backtester, paper trader, CLI, human-facing tool, service, library, and other. A result separately declares its producer.
