@@ -43,7 +43,7 @@ pub struct DcaConfig {
 }
 
 /// One validated DCA level.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct DcaLevel {
     pub index: usize,
     /// Price supplied by the caller before instrument rounding.
@@ -57,6 +57,36 @@ pub struct DcaLevel {
     /// Order template. Timestamps and real fill prices are intentionally left to
     /// the execution layer.
     pub order: Order,
+}
+
+#[derive(Deserialize)]
+struct DcaLevelWire {
+    index: usize,
+    #[serde(default)]
+    requested_price: Option<f32>,
+    trigger_price: f32,
+    requested_quote: f32,
+    rounded_quote: f32,
+    base_qty: f32,
+    order: Order,
+}
+
+impl<'de> Deserialize<'de> for DcaLevel {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = DcaLevelWire::deserialize(deserializer)?;
+        Ok(Self {
+            index: wire.index,
+            requested_price: wire.requested_price.unwrap_or(wire.trigger_price),
+            trigger_price: wire.trigger_price,
+            requested_quote: wire.requested_quote,
+            rounded_quote: wire.rounded_quote,
+            base_qty: wire.base_qty,
+            order: wire.order,
+        })
+    }
 }
 
 /// Deterministic DCA plan.
@@ -350,6 +380,21 @@ mod tests {
         assert!((plan.levels[1].base_qty - 2.22).abs() < 1e-6);
         assert!((plan.requested_quote_total - 300.0).abs() < 1e-6);
         assert!(plan.rounded_quote_total <= plan.requested_quote_total);
+    }
+
+    #[test]
+    fn legacy_dca_levels_deserialize_with_trigger_price_fallback() {
+        let original = plan_dca(&config(Side::Buy, DcaMode::Maker), &instrument()).unwrap();
+        let mut legacy = serde_json::to_value(&original).unwrap();
+        for level in legacy["levels"].as_array_mut().unwrap()
+        {
+            level.as_object_mut().unwrap().remove("requested_price");
+        }
+        let restored: DcaPlan = serde_json::from_value(legacy).unwrap();
+        assert!(restored
+            .levels
+            .iter()
+            .all(|level| level.requested_price == level.trigger_price));
     }
 
     #[test]
