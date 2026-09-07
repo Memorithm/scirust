@@ -100,12 +100,17 @@ pub struct BacktestReport {
     pub symbol: String,
     pub interval: String,
     pub starting_cash: f32,
+    /// Equity after the backtester liquidates any residual position and applies
+    /// the corresponding exit fees and slippage.
     pub final_equity: f32,
     pub total_return: f32,
     /// Buy-and-hold return over the same window, for comparison.
     pub buy_hold_return: f32,
     pub num_trades: usize,
     pub fees_paid: f32,
+    /// Per-bar equity. The final sample is replaced with post-liquidation equity
+    /// so it remains aligned with the candle timestamps while matching
+    /// [`Self::final_equity`].
     pub equity_curve: Vec<f32>,
     pub trades: Vec<Trade>,
     pub performance: PerformanceReport,
@@ -209,6 +214,25 @@ pub fn run_backtest(
                 &fill,
                 n - 1,
             );
+        }
+    }
+
+    // The last per-bar mark was sampled before residual liquidation. Replace it
+    // with the post-liquidation account value instead of appending another point,
+    // preserving one equity sample per candle while making the report internally
+    // consistent with its fees and completed trade log.
+    if n > 0
+    {
+        let mut final_marks = BTreeMap::new();
+        final_marks.insert(cfg.symbol.clone(), candles[n - 1].close);
+        let liquidated_equity = account.equity(&final_marks);
+        if let Some(last_equity) = account.equity_curve.last_mut()
+        {
+            *last_equity = liquidated_equity;
+        }
+        else
+        {
+            account.equity_curve.push(liquidated_equity);
         }
     }
 
@@ -443,7 +467,7 @@ fn book_trade(t: &OpenTrade, symbol: &str, exit_fill: &Fill, exit_index: usize) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::strategy::{MaCross, Momentum};
+    use crate::strategy::{MaCross, Momentum, Signal, Strategy};
 
     fn candle(ts: i64, close: f32) -> Candle {
         Candle {
@@ -462,6 +486,22 @@ mod tests {
             .collect()
     }
 
+    struct AlwaysLong;
+
+    impl Strategy for AlwaysLong {
+        fn name(&self) -> String {
+            "always_long_test".to_string()
+        }
+
+        fn warmup(&self) -> usize {
+            2
+        }
+
+        fn evaluate(&self, _candles: &[Candle]) -> Signal {
+            Signal::new(Action::Long, 1.0, "test")
+        }
+    }
+
     #[test]
     fn backtest_runs_and_reports() {
         let candles = uptrend(120);
@@ -470,6 +510,47 @@ mod tests {
         assert!(report.equity_curve.len() >= 100);
         assert!(report.final_equity > 0.0);
         assert!(report.performance.sharpe.is_finite());
+    }
+
+    #[test]
+    fn final_equity_includes_residual_liquidation_costs() {
+        let candles = vec![
+            candle(0, 100.0),
+            candle(1, 100.0),
+            Candle {
+                ts_ms: 2,
+                open: 100.0,
+                high: 110.0,
+                low: 100.0,
+                close: 110.0,
+                volume: 100.0,
+            },
+        ];
+        let cfg = BacktestConfig {
+            starting_cash: 1_000.0,
+            sizing: Sizing::FixedNotional(100.0),
+            fees: FeeSchedule {
+                maker_bps: 100.0,
+                taker_bps: 100.0,
+            },
+            slippage: SlippageModel {
+                base_bps: 0.0,
+                impact_bps: 0.0,
+                ref_liquidity: 1.0,
+            },
+            ..Default::default()
+        };
+
+        let report = run_backtest(&AlwaysLong, &candles, &cfg);
+
+        // Buy 1 @ 100 with a 1.00 fee, then liquidate @ 110 with a 1.10 fee:
+        // 1000 - 100 - 1 + 110 - 1.10 = 1007.90.
+        assert!((report.final_equity - 1_007.90).abs() < 1e-3);
+        assert_eq!(report.equity_curve.len(), candles.len());
+        assert!((report.equity_curve.last().unwrap() - report.final_equity).abs() < 1e-6);
+        assert_eq!(report.trades.len(), 1);
+        assert!((report.trades[0].net_pnl - 7.90).abs() < 1e-3);
+        assert!((report.fees_paid - 2.10).abs() < 1e-3);
     }
 
     #[test]
