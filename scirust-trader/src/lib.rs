@@ -67,6 +67,7 @@ pub mod derivatives_context;
 pub mod derivatives_history;
 pub mod execution;
 pub mod execution_realism;
+pub mod financial;
 pub mod funding_carry;
 pub mod grid;
 pub mod indicators;
