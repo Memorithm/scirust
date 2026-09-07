@@ -934,8 +934,8 @@ mod tests {
             ExactOrderType::StopMarket { stop: p("100.03") },
             "0.05",
         );
-        let normalized = normalize_order(&order, &rules(), Some(reference("101", 100, 200)), 150)
-            .unwrap();
+        let normalized =
+            normalize_order(&order, &rules(), Some(reference("101", 100, 200)), 150).unwrap();
         assert_eq!(
             match normalized.order.order_type
             {
