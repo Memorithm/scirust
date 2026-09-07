@@ -127,16 +127,16 @@ pub fn regime_robustness(
 /// therefore cannot be interpreted as multiplicative wealth changes. A return
 /// of exactly -100% is valid and produces terminal wealth zero.
 pub fn compound_simple_returns(returns: &[f64]) -> Option<f64> {
-    if returns.iter().any(|value| !value.is_finite() || *value < -1.0)
+    if returns
+        .iter()
+        .any(|value| !value.is_finite() || *value < -1.0)
     {
         return None;
     }
-    let wealth = returns
-        .iter()
-        .try_fold(1.0f64, |wealth, value| {
-            let next = wealth * (1.0 + *value);
-            next.is_finite().then_some(next)
-        })?;
+    let wealth = returns.iter().try_fold(1.0f64, |wealth, value| {
+        let next = wealth * (1.0 + *value);
+        next.is_finite().then_some(next)
+    })?;
     Some(wealth - 1.0)
 }
 
@@ -340,7 +340,10 @@ mod tests {
         let report = cost_stress(&gross, &turnover, &[0.0, 10.0, 50.0]).unwrap();
         assert!(report[0].additive_net_return > report[1].additive_net_return);
         assert!(report[1].additive_net_return > report[2].additive_net_return);
-        assert_eq!(report[0].cumulative_net_return, report[0].additive_net_return);
+        assert_eq!(
+            report[0].cumulative_net_return,
+            report[0].additive_net_return
+        );
     }
 
     #[test]
