@@ -160,16 +160,11 @@ pub struct CostStressPoint {
     pub net_sharpe: f64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 enum LegacyAdditiveField {
+    #[default]
     Missing,
     Present(f64),
-}
-
-impl Default for LegacyAdditiveField {
-    fn default() -> Self {
-        Self::Missing
-    }
 }
 
 impl<'de> Deserialize<'de> for LegacyAdditiveField {
