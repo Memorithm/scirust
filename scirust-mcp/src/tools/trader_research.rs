@@ -43,7 +43,8 @@ fn required_usize(args: &Value, key: &str) -> Result<usize, String> {
 }
 
 fn optional_usize(args: &Value, key: &str, default: usize) -> Result<usize, String> {
-    match args.get(key) {
+    match args.get(key)
+    {
         Some(_) => required_usize(args, key),
         None => Ok(default),
     }
@@ -68,7 +69,8 @@ fn parse_dataset(args: &Value) -> Result<TimeSeriesMlDataset, String> {
 }
 
 fn format_cscv_budget_error(error: CscvBudgetError) -> String {
-    match error {
+    match error
+    {
         CscvBudgetError::BudgetExceeded {
             required_splits,
             max_splits,
@@ -81,13 +83,16 @@ fn format_cscv_budget_error(error: CscvBudgetError) -> String {
         } => format!(
             "invalid_work_budget: max_splits={requested} exceeds repository hard limit {hard_max}"
         ),
-        CscvBudgetError::InvalidBudget => {
+        CscvBudgetError::InvalidBudget =>
+        {
             "invalid_work_budget: max_splits must be at least 1".to_string()
         },
-        CscvBudgetError::InvalidSlices => {
+        CscvBudgetError::InvalidSlices =>
+        {
             "invalid `slices`: expected an even integer of at least 2".to_string()
         },
-        CscvBudgetError::CombinationCountOverflow => {
+        CscvBudgetError::CombinationCountOverflow =>
+        {
             "work_budget_exceeded: CSCV split count overflows u128".to_string()
         },
     }
@@ -192,7 +197,8 @@ fn pbo_tool() -> McpTool {
             let report = cscv_probability_of_backtest_overfitting(&matrix, slices)
                 .map_err(|error| format!("{error:?}"))?;
             let mut value = to_value(&report)?;
-            if let Value::Object(object) = &mut value {
+            if let Value::Object(object) = &mut value
+            {
                 object.insert(
                     "work_budget".to_string(),
                     json!({
