@@ -25,11 +25,16 @@ pub struct LatencyTimeline {
 
 impl LatencyProfile {
     /// Deterministically project a local submit timestamp through the configured
-    /// transport and venue-processing path.
+    /// transport and venue-processing path. Returns `None` if any configured
+    /// duration cannot be represented as `i64` milliseconds or if a timestamp
+    /// addition crosses the `i64` range.
     pub fn timeline(&self, local_submit_ts_ms: i64) -> Option<LatencyTimeline> {
-        let arrival = local_submit_ts_ms.checked_add(self.outbound_ms as i64)?;
-        let effective = arrival.checked_add(self.venue_processing_ms as i64)?;
-        let ack = effective.checked_add(self.inbound_ms as i64)?;
+        let outbound_ms = i64::try_from(self.outbound_ms).ok()?;
+        let venue_processing_ms = i64::try_from(self.venue_processing_ms).ok()?;
+        let inbound_ms = i64::try_from(self.inbound_ms).ok()?;
+        let arrival = local_submit_ts_ms.checked_add(outbound_ms)?;
+        let effective = arrival.checked_add(venue_processing_ms)?;
+        let ack = effective.checked_add(inbound_ms)?;
         Some(LatencyTimeline {
             local_submit_ts_ms,
             venue_arrival_ts_ms: arrival,
@@ -144,6 +149,7 @@ pub enum RateLimitError {
     InvalidConfig,
     NonMonotonicClock,
     RequestExceedsCapacity,
+    TimestampOverflow,
 }
 
 impl RateLimitBucket {
@@ -166,23 +172,41 @@ impl RateLimitBucket {
         })
     }
 
-    fn refill(&mut self, now_ts_ms: i64) -> Result<(), RateLimitError> {
+    fn elapsed_since_refill(&self, now_ts_ms: i64) -> Result<u64, RateLimitError> {
         if now_ts_ms < self.last_refill_ts_ms
         {
             return Err(RateLimitError::NonMonotonicClock);
         }
-        let elapsed = (now_ts_ms - self.last_refill_ts_ms) as u64;
+        let elapsed = now_ts_ms
+            .checked_sub(self.last_refill_ts_ms)
+            .ok_or(RateLimitError::TimestampOverflow)?;
+        u64::try_from(elapsed).map_err(|_| RateLimitError::TimestampOverflow)
+    }
+
+    fn refill(&mut self, now_ts_ms: i64) -> Result<(), RateLimitError> {
+        let elapsed = self.elapsed_since_refill(now_ts_ms)?;
         let intervals = elapsed / self.refill_interval_ms;
         if intervals == 0
         {
             return Ok(());
         }
-        let restored = intervals.saturating_mul(self.tokens_per_interval as u64);
-        self.available = (self.available as u64 + restored).min(self.capacity as u64) as u32;
-        let advanced = intervals.saturating_mul(self.refill_interval_ms);
+        let restored = intervals
+            .checked_mul(u64::from(self.tokens_per_interval))
+            .ok_or(RateLimitError::TimestampOverflow)?;
+        let available = u64::from(self.available)
+            .checked_add(restored)
+            .ok_or(RateLimitError::TimestampOverflow)?;
+        self.available = available.min(u64::from(self.capacity)) as u32;
+
+        let advanced = intervals
+            .checked_mul(self.refill_interval_ms)
+            .ok_or(RateLimitError::TimestampOverflow)?;
+        let advanced_i64 =
+            i64::try_from(advanced).map_err(|_| RateLimitError::TimestampOverflow)?;
         self.last_refill_ts_ms = self
             .last_refill_ts_ms
-            .saturating_add(advanced.min(i64::MAX as u64) as i64);
+            .checked_add(advanced_i64)
+            .ok_or(RateLimitError::TimestampOverflow)?;
         Ok(())
     }
 
@@ -214,14 +238,19 @@ impl RateLimitBucket {
         }
 
         let missing = required - self.available;
-        let intervals_needed = (missing as u64).div_ceil(self.tokens_per_interval as u64);
-        let since_refill = (now_ts_ms - self.last_refill_ts_ms) as u64;
-        let until_next = self.refill_interval_ms.saturating_sub(since_refill);
-        let retry_after_ms = until_next.saturating_add(
-            intervals_needed
-                .saturating_sub(1)
-                .saturating_mul(self.refill_interval_ms),
-        );
+        let intervals_needed = u64::from(missing).div_ceil(u64::from(self.tokens_per_interval));
+        let since_refill = self.elapsed_since_refill(now_ts_ms)?;
+        let until_next = self
+            .refill_interval_ms
+            .checked_sub(since_refill)
+            .ok_or(RateLimitError::TimestampOverflow)?;
+        let remaining_intervals = intervals_needed.saturating_sub(1);
+        let additional_wait = remaining_intervals
+            .checked_mul(self.refill_interval_ms)
+            .ok_or(RateLimitError::TimestampOverflow)?;
+        let retry_after_ms = until_next
+            .checked_add(additional_wait)
+            .ok_or(RateLimitError::TimestampOverflow)?;
         Ok(AcquireDecision::Backpressured {
             available: self.available,
             required,
@@ -247,6 +276,23 @@ mod tests {
         assert_eq!(a.venue_arrival_ts_ms, 1_010);
         assert_eq!(a.venue_effective_ts_ms, 1_013);
         assert_eq!(a.local_ack_ts_ms, 1_020);
+    }
+
+    #[test]
+    fn latency_timeline_rejects_unsigned_cast_and_timestamp_overflow() {
+        let too_large_duration = LatencyProfile {
+            outbound_ms: u64::MAX,
+            venue_processing_ms: 0,
+            inbound_ms: 0,
+        };
+        assert!(too_large_duration.timeline(0).is_none());
+
+        let addition_overflow = LatencyProfile {
+            outbound_ms: 1,
+            venue_processing_ms: 0,
+            inbound_ms: 0,
+        };
+        assert!(addition_overflow.timeline(i64::MAX).is_none());
     }
 
     #[test]
@@ -295,5 +341,24 @@ mod tests {
     fn limiter_rejects_time_travel() {
         let mut b = RateLimitBucket::new(10, 2, 1_000, 100).unwrap();
         assert_eq!(b.try_acquire(99, 1), Err(RateLimitError::NonMonotonicClock));
+    }
+
+    #[test]
+    fn limiter_rejects_elapsed_timestamp_overflow() {
+        let mut b = RateLimitBucket::new(10, 2, 1_000, i64::MIN).unwrap();
+        assert_eq!(
+            b.try_acquire(i64::MAX, 1),
+            Err(RateLimitError::TimestampOverflow)
+        );
+    }
+
+    #[test]
+    fn limiter_rejects_refill_arithmetic_overflow() {
+        let mut b = RateLimitBucket::new(u32::MAX, u32::MAX, 1, 0).unwrap();
+        b.available = 0;
+        assert_eq!(
+            b.try_acquire(i64::MAX, 1),
+            Err(RateLimitError::TimestampOverflow)
+        );
     }
 }
