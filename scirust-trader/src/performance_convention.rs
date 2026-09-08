@@ -4,7 +4,7 @@
 //! are passed around as bare `f32` values:
 //!
 //! - the number of observation periods in one 24/7 crypto year;
-//! - the per-period benchmark used by Sharpe;
+//! - the constant per-period reference return used by Sharpe;
 //! - the per-period minimum acceptable return used by Sortino.
 //!
 //! Parsing is deliberately fallible. Unknown or malformed interval strings are
@@ -27,8 +27,8 @@ pub enum PerformanceConventionError {
     UnsupportedIntervalUnit(String),
     /// Periods-per-year must be finite and strictly positive.
     InvalidPeriodsPerYear(f32),
-    /// The Sharpe benchmark must be finite.
-    NonFiniteSharpeBenchmark(f32),
+    /// The constant Sharpe reference return must be finite.
+    NonFiniteSharpeReference(f32),
     /// The Sortino target must be finite.
     NonFiniteSortinoTarget(f32),
 }
@@ -58,9 +58,12 @@ impl fmt::Display for PerformanceConventionError {
             {
                 write!(f, "periods_per_year must be finite and > 0, got {value}")
             },
-            Self::NonFiniteSharpeBenchmark(value) =>
+            Self::NonFiniteSharpeReference(value) =>
             {
-                write!(f, "Sharpe benchmark per period must be finite, got {value}")
+                write!(
+                    f,
+                    "Sharpe reference return per period must be finite, got {value}"
+                )
             },
             Self::NonFiniteSortinoTarget(value) =>
             {
@@ -133,13 +136,15 @@ pub fn try_crypto_periods_per_year(interval: &str) -> Result<f32, PerformanceCon
 
 /// Validated convention used to construct annualised performance metrics.
 ///
-/// Sharpe and Sortino deliberately carry separate per-period reference values:
-/// a risk-free/benchmark return is not necessarily the same quantity as a
-/// minimum acceptable return.
+/// Sharpe and Sortino deliberately carry separate per-period reference values.
+/// `sharpe_reference_return_per_period` is a constant reference return (for
+/// example a one-period risk-free rate); it is not a time-varying benchmark
+/// series. `sortino_target_per_period` is the minimum acceptable return used for
+/// downside risk and may therefore be different.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PerformanceConvention {
     periods_per_year: f32,
-    sharpe_benchmark_per_period: f32,
+    sharpe_reference_return_per_period: f32,
     sortino_target_per_period: f32,
 }
 
@@ -148,7 +153,7 @@ impl PerformanceConvention {
     /// reference rates.
     pub fn new(
         periods_per_year: f32,
-        sharpe_benchmark_per_period: f32,
+        sharpe_reference_return_per_period: f32,
         sortino_target_per_period: f32,
     ) -> Result<Self, PerformanceConventionError> {
         if !periods_per_year.is_finite() || periods_per_year <= 0.0
@@ -157,10 +162,10 @@ impl PerformanceConvention {
                 periods_per_year,
             ));
         }
-        if !sharpe_benchmark_per_period.is_finite()
+        if !sharpe_reference_return_per_period.is_finite()
         {
-            return Err(PerformanceConventionError::NonFiniteSharpeBenchmark(
-                sharpe_benchmark_per_period,
+            return Err(PerformanceConventionError::NonFiniteSharpeReference(
+                sharpe_reference_return_per_period,
             ));
         }
         if !sortino_target_per_period.is_finite()
@@ -171,7 +176,7 @@ impl PerformanceConvention {
         }
         Ok(Self {
             periods_per_year,
-            sharpe_benchmark_per_period,
+            sharpe_reference_return_per_period,
             sortino_target_per_period,
         })
     }
@@ -179,12 +184,12 @@ impl PerformanceConvention {
     /// Resolve a 24/7 crypto interval and build a validated convention.
     pub fn for_crypto_interval(
         interval: &str,
-        sharpe_benchmark_per_period: f32,
+        sharpe_reference_return_per_period: f32,
         sortino_target_per_period: f32,
     ) -> Result<Self, PerformanceConventionError> {
         Self::new(
             try_crypto_periods_per_year(interval)?,
-            sharpe_benchmark_per_period,
+            sharpe_reference_return_per_period,
             sortino_target_per_period,
         )
     }
@@ -194,9 +199,13 @@ impl PerformanceConvention {
         self.periods_per_year
     }
 
-    /// Per-period benchmark subtracted from returns for Sharpe.
-    pub const fn sharpe_benchmark_per_period(self) -> f32 {
-        self.sharpe_benchmark_per_period
+    /// Constant per-period reference return subtracted for Sharpe.
+    ///
+    /// A one-period risk-free rate is the common use. A time-varying benchmark
+    /// requires an explicit differential-return series and is not represented
+    /// by this scalar.
+    pub const fn sharpe_reference_return_per_period(self) -> f32 {
+        self.sharpe_reference_return_per_period
     }
 
     /// Per-period minimum acceptable return used for Sortino downside risk.
@@ -277,7 +286,7 @@ mod tests {
         let convention = PerformanceConvention::for_crypto_interval("1h", 0.0001, 0.001)
             .expect("valid convention");
         assert!(approx(convention.periods_per_year(), 24.0 * 365.0, 1.0));
-        assert_eq!(convention.sharpe_benchmark_per_period(), 0.0001);
+        assert_eq!(convention.sharpe_reference_return_per_period(), 0.0001);
         assert_eq!(convention.sortino_target_per_period(), 0.001);
     }
 
@@ -293,7 +302,7 @@ mod tests {
         ));
         assert!(matches!(
             PerformanceConvention::new(365.0, f32::INFINITY, 0.0),
-            Err(PerformanceConventionError::NonFiniteSharpeBenchmark(_))
+            Err(PerformanceConventionError::NonFiniteSharpeReference(_))
         ));
         assert!(matches!(
             PerformanceConvention::new(365.0, 0.0, f32::NEG_INFINITY),
