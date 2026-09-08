@@ -372,6 +372,29 @@ impl<'de> Deserialize<'de> for SignedAmount {
     }
 }
 
+
+/// Exact quote-asset value of a fill. No floating conversion or implicit rounding.
+/// Products requiring more than 18 fractional places must be rounded by an
+/// explicit venue settlement policy before they can be represented here.
+impl Price {
+    pub fn checked_notional(self, quantity: Quantity) -> Result<NonNegativeMoney, FinancialError> {
+        let mantissa = self.0.mantissa
+            .checked_mul(quantity.0.mantissa)
+            .ok_or(FinancialError::ArithmeticOverflow)?;
+        let value = Decimal::normalized(mantissa, self.0.scale + quantity.0.scale);
+        if value.scale > MAX_DECIMAL_SCALE {
+            return Err(FinancialError::ExcessPrecision);
+        }
+        Ok(NonNegativeMoney(value))
+    }
+}
+
+impl From<NonNegativeMoney> for SignedAmount {
+    fn from(value: NonNegativeMoney) -> Self {
+        Self(value.0)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FinancialError {
     InvalidDecimal,
@@ -783,6 +806,25 @@ fn validate_notional(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn fill_notional_is_exact_and_precision_loss_is_rejected() {
+        use super::*;
+        let value = Price::parse("0.1").unwrap()
+            .checked_notional(Quantity::parse("0.2").unwrap()).unwrap();
+        assert_eq!(value.as_decimal_string(), "0.02");
+        assert_eq!(SignedAmount::from(value).as_decimal_string(), "0.02");
+        assert_eq!(
+            Price::parse("0.0000000001").unwrap()
+                .checked_notional(Quantity::parse("0.0000000001").unwrap()),
+            Err(FinancialError::ExcessPrecision)
+        );
+        assert_eq!(
+            Price::parse("170141183460469231731687303715884105727").unwrap()
+                .checked_notional(Quantity::parse("2").unwrap()),
+            Err(FinancialError::ArithmeticOverflow)
+        );
+    }
+
     use super::*;
 
     fn p(value: &str) -> Price {
