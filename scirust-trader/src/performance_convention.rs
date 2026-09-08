@@ -35,26 +35,35 @@ pub enum PerformanceConventionError {
 
 impl fmt::Display for PerformanceConventionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
+        match self
+        {
             Self::EmptyInterval => f.write_str("interval must not be empty"),
-            Self::MissingIntervalMagnitude => {
+            Self::MissingIntervalMagnitude =>
+            {
                 f.write_str("interval must start with a positive numeric magnitude")
             },
             Self::MissingIntervalUnit => f.write_str("interval must include an explicit unit"),
-            Self::InvalidIntervalMagnitude(value) => {
-                write!(f, "invalid interval magnitude `{value}`; expected a finite value > 0")
+            Self::InvalidIntervalMagnitude(value) =>
+            {
+                write!(
+                    f,
+                    "invalid interval magnitude `{value}`; expected a finite value > 0"
+                )
             },
             Self::UnsupportedIntervalUnit(unit) => write!(
                 f,
                 "unsupported interval unit `{unit}`; expected s/sec, m/min, h/hr, d/day, or w/week"
             ),
-            Self::InvalidPeriodsPerYear(value) => {
+            Self::InvalidPeriodsPerYear(value) =>
+            {
                 write!(f, "periods_per_year must be finite and > 0, got {value}")
             },
-            Self::NonFiniteSharpeBenchmark(value) => {
+            Self::NonFiniteSharpeBenchmark(value) =>
+            {
                 write!(f, "Sharpe benchmark per period must be finite, got {value}")
             },
-            Self::NonFiniteSortinoTarget(value) => {
+            Self::NonFiniteSortinoTarget(value) =>
+            {
                 write!(f, "Sortino target per period must be finite, got {value}")
             },
         }
@@ -72,11 +81,10 @@ impl std::error::Error for PerformanceConventionError {}
 ///
 /// Unlike the historical `metrics::periods_per_year` helper, this function has
 /// no fallback for unknown input.
-pub fn try_crypto_periods_per_year(
-    interval: &str,
-) -> Result<f32, PerformanceConventionError> {
+pub fn try_crypto_periods_per_year(interval: &str) -> Result<f32, PerformanceConventionError> {
     let normalized = interval.trim().to_ascii_lowercase();
-    if normalized.is_empty() {
+    if normalized.is_empty()
+    {
         return Err(PerformanceConventionError::EmptyInterval);
     }
 
@@ -84,29 +92,38 @@ pub fn try_crypto_periods_per_year(
         .find(|c: char| c.is_ascii_alphabetic())
         .ok_or(PerformanceConventionError::MissingIntervalUnit)?;
     let (magnitude_text, unit) = normalized.split_at(unit_start);
-    if magnitude_text.is_empty() {
+    if magnitude_text.is_empty()
+    {
         return Err(PerformanceConventionError::MissingIntervalMagnitude);
     }
 
     let magnitude: f32 = magnitude_text.parse().map_err(|_| {
         PerformanceConventionError::InvalidIntervalMagnitude(magnitude_text.to_string())
     })?;
-    if !magnitude.is_finite() || magnitude <= 0.0 {
+    if !magnitude.is_finite() || magnitude <= 0.0
+    {
         return Err(PerformanceConventionError::InvalidIntervalMagnitude(
             magnitude_text.to_string(),
         ));
     }
 
-    let periods_per_day = match unit {
+    let periods_per_day = match unit
+    {
         "s" | "sec" => 86_400.0 / magnitude,
         "m" | "min" => 1_440.0 / magnitude,
         "h" | "hr" => 24.0 / magnitude,
         "d" | "day" => 1.0 / magnitude,
         "w" | "week" => 1.0 / (7.0 * magnitude),
-        _ => return Err(PerformanceConventionError::UnsupportedIntervalUnit(unit.to_string())),
+        _ =>
+        {
+            return Err(PerformanceConventionError::UnsupportedIntervalUnit(
+                unit.to_string(),
+            ));
+        },
     };
     let periods_per_year = periods_per_day * 365.0;
-    if !periods_per_year.is_finite() || periods_per_year <= 0.0 {
+    if !periods_per_year.is_finite() || periods_per_year <= 0.0
+    {
         return Err(PerformanceConventionError::InvalidPeriodsPerYear(
             periods_per_year,
         ));
@@ -134,17 +151,20 @@ impl PerformanceConvention {
         sharpe_benchmark_per_period: f32,
         sortino_target_per_period: f32,
     ) -> Result<Self, PerformanceConventionError> {
-        if !periods_per_year.is_finite() || periods_per_year <= 0.0 {
+        if !periods_per_year.is_finite() || periods_per_year <= 0.0
+        {
             return Err(PerformanceConventionError::InvalidPeriodsPerYear(
                 periods_per_year,
             ));
         }
-        if !sharpe_benchmark_per_period.is_finite() {
+        if !sharpe_benchmark_per_period.is_finite()
+        {
             return Err(PerformanceConventionError::NonFiniteSharpeBenchmark(
                 sharpe_benchmark_per_period,
             ));
         }
-        if !sortino_target_per_period.is_finite() {
+        if !sortino_target_per_period.is_finite()
+        {
             return Err(PerformanceConventionError::NonFiniteSortinoTarget(
                 sortino_target_per_period,
             ));
@@ -195,7 +215,11 @@ mod tests {
 
     #[test]
     fn strict_crypto_intervals_match_supported_reference_values() {
-        assert!(approx(try_crypto_periods_per_year("1d").unwrap(), 365.0, 1.0));
+        assert!(approx(
+            try_crypto_periods_per_year("1d").unwrap(),
+            365.0,
+            1.0
+        ));
         assert!(approx(
             try_crypto_periods_per_year("1h").unwrap(),
             24.0 * 365.0,
