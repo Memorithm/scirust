@@ -79,6 +79,8 @@ impl HamiltonianNetwork {
     }
 
     pub fn vector_field(&mut self, q: &[f32], p: &[f32], t: f32) -> Result<(Vec<f32>, Vec<f32>)> {
+        self.validate_state_inputs(q, p, t, "HamiltonianNetwork::vector_field")?;
+
         let n = self.ndim;
         let tape = NdTape::new();
         let qv = tape.input(TensorND::new(q.to_vec(), vec![1, n]));
@@ -86,36 +88,85 @@ impl HamiltonianNetwork {
         let tv = tape.input(TensorND::new(vec![t], vec![1, 1]));
         let q_arr = [qv];
         let p_arr = [pv];
-        let H = self.forward(&tape, &q_arr, &p_arr, Some(tv));
-        let grads = tape.backward(H);
-        let dH_dq: Vec<f32> = grads[0].data[..n].to_vec();
-        let dH_dp: Vec<f32> = grads[1].data[..n].to_vec();
+        let hamiltonian = self.forward(&tape, &q_arr, &p_arr, Some(tv));
+        let grads = tape.backward(hamiltonian);
+        let d_h_dq: Vec<f32> = grads[0].data[..n].to_vec();
+        let d_h_dp: Vec<f32> = grads[1].data[..n].to_vec();
 
-        for &v in dH_dq.iter().chain(dH_dp.iter())
+        for &value in d_h_dq.iter().chain(d_h_dp.iter())
         {
-            if !v.is_finite()
+            if !value.is_finite()
             {
                 return Err(VariationalError::NonFiniteValue {
                     component: "HNN gradient",
-                    value: v,
+                    value,
                 });
             }
         }
 
-        let dq: Vec<f32> = dH_dp;
-        let dp: Vec<f32> = dH_dq.iter().map(|&x| -x).collect();
+        let dq = d_h_dp;
+        let dp: Vec<f32> = d_h_dq.iter().map(|&value| -value).collect();
         Ok((dq, dp))
     }
 
     pub fn eval_hamiltonian(&mut self, q: &[f32], p: &[f32], t: f32) -> f32 {
+        self.try_eval_hamiltonian(q, p, t)
+            .unwrap_or_else(|err| panic!("HamiltonianNetwork::eval_hamiltonian: {err}"))
+    }
+
+    /// Evaluate the learned Hamiltonian after validating phase-space inputs.
+    pub fn try_eval_hamiltonian(&mut self, q: &[f32], p: &[f32], t: f32) -> Result<f32> {
+        self.validate_state_inputs(q, p, t, "HamiltonianNetwork::try_eval_hamiltonian")?;
+
         let tape = NdTape::new();
         let qv = tape.input(TensorND::new(q.to_vec(), vec![1, self.ndim]));
         let pv = tape.input(TensorND::new(p.to_vec(), vec![1, self.ndim]));
         let tv = tape.input(TensorND::new(vec![t], vec![1, 1]));
         let q_arr = [qv];
         let p_arr = [pv];
-        let H = self.forward(&tape, &q_arr, &p_arr, Some(tv));
-        tape.value(H).data[0]
+        let hamiltonian = self.forward(&tape, &q_arr, &p_arr, Some(tv));
+        let value = tape.value(hamiltonian).data[0];
+        if !value.is_finite()
+        {
+            return Err(VariationalError::NonFiniteValue {
+                component: "HNN Hamiltonian",
+                value,
+            });
+        }
+        Ok(value)
+    }
+
+    fn validate_state_inputs(&self, q: &[f32], p: &[f32], t: f32, context: &str) -> Result<()> {
+        if q.len() != self.ndim || p.len() != self.ndim
+        {
+            return Err(VariationalError::DimensionMismatch {
+                expected: self.ndim,
+                got: if q.len() != self.ndim {
+                    q.len()
+                } else {
+                    p.len()
+                },
+                context: context.into(),
+            });
+        }
+        if !t.is_finite()
+        {
+            return Err(VariationalError::NonFiniteValue {
+                component: "HNN time",
+                value: t,
+            });
+        }
+        for &value in q.iter().chain(p.iter())
+        {
+            if !value.is_finite()
+            {
+                return Err(VariationalError::NonFiniteValue {
+                    component: "HNN state",
+                    value,
+                });
+            }
+        }
+        Ok(())
     }
 }
 
@@ -140,5 +191,53 @@ mod tests {
         let hnn = HamiltonianNetwork::new(2, 32, &mut rng);
         assert_eq!(hnn.ndim, 2);
         assert_eq!(hnn.layers.len(), 3);
+    }
+
+    #[test]
+    fn vector_field_rejects_phase_dimension_mismatch() {
+        let mut rng = PcgEngine::new(42);
+        let mut hnn = HamiltonianNetwork::new(2, 8, &mut rng);
+
+        let err = hnn.vector_field(&[0.0, 1.0], &[0.0], 0.0).unwrap_err();
+        assert!(matches!(
+            err,
+            VariationalError::DimensionMismatch {
+                expected: 2,
+                got: 1,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn vector_field_rejects_non_finite_state() {
+        let mut rng = PcgEngine::new(42);
+        let mut hnn = HamiltonianNetwork::new(1, 8, &mut rng);
+
+        let err = hnn.vector_field(&[f32::NAN], &[0.0], 0.0).unwrap_err();
+        assert!(matches!(
+            err,
+            VariationalError::NonFiniteValue {
+                component: "HNN state",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn checked_hamiltonian_rejects_non_finite_time() {
+        let mut rng = PcgEngine::new(42);
+        let mut hnn = HamiltonianNetwork::new(1, 8, &mut rng);
+
+        let err = hnn
+            .try_eval_hamiltonian(&[0.0], &[0.0], f32::INFINITY)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            VariationalError::NonFiniteValue {
+                component: "HNN time",
+                ..
+            }
+        ));
     }
 }
