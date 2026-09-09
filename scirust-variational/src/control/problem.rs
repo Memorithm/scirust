@@ -168,8 +168,6 @@ mod tests {
 
     #[test]
     fn control_bounds_allow_infinite_endpoints() {
-        assert!(
-            ControlBounds::new(vec![f32::NEG_INFINITY], vec![f32::INFINITY]).is_ok()
-        );
+        assert!(ControlBounds::new(vec![f32::NEG_INFINITY], vec![f32::INFINITY]).is_ok());
     }
 }
