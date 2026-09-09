@@ -2,7 +2,7 @@
 """Generate a deterministic source-level lexicon of SciRust public callables.
 
 This tool intentionally complements rustdoc instead of replacing it. It scans
-workspace package `src/` trees for directly declared public functions and
+workspace library source trees for directly declared public functions and
 methods (`pub fn`, including async/const/unsafe/extern variants), records the
 first rustdoc sentence when available, and emits a compact Markdown inventory.
 
@@ -31,6 +31,7 @@ PUBLIC_FN_RE = re.compile(
 )
 DOC_LINE_RE = re.compile(r"^\s*///\s?(.*)$")
 ATTRIBUTE_RE = re.compile(r"^\s*#\[")
+LIB_KINDS = {"lib", "rlib", "dylib", "staticlib", "cdylib", "proc-macro"}
 
 
 @dataclass(frozen=True, order=True)
@@ -44,7 +45,7 @@ class Entry:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Generate the SciRust public-function lexicon from workspace sources."
+        description="Generate the SciRust public-function lexicon from workspace libraries."
     )
     parser.add_argument(
         "--root",
@@ -66,7 +67,7 @@ def parse_args() -> argparse.Namespace:
         "--package",
         action="append",
         default=[],
-        help="limit generation to a workspace package; repeatable",
+        help="limit generation to a workspace library package; repeatable",
     )
     return parser.parse_args()
 
@@ -100,22 +101,34 @@ def cargo_metadata(root: Path) -> dict:
 def workspace_packages(metadata: dict, selected: set[str]) -> list[tuple[str, Path]]:
     member_ids = set(metadata.get("workspace_members", []))
     packages: list[tuple[str, Path]] = []
+    selected_found: set[str] = set()
+
     for package in metadata.get("packages", []):
         if package.get("id") not in member_ids:
             continue
         name = str(package["name"])
         if selected and name not in selected:
             continue
-        manifest = Path(package["manifest_path"])
-        packages.append((name, manifest.parent / "src"))
 
-    packages.sort(key=lambda item: item[0])
+        library_targets = []
+        for target in package.get("targets", []):
+            kinds = set(target.get("kind", []))
+            if kinds & LIB_KINDS:
+                library_targets.append(Path(target["src_path"]).parent)
+
+        if not library_targets:
+            continue
+
+        selected_found.add(name)
+        for source_root in sorted(set(library_targets)):
+            packages.append((name, source_root))
+
+    packages.sort(key=lambda item: (item[0], item[1].as_posix()))
     if selected:
-        found = {name for name, _ in packages}
-        missing = sorted(selected - found)
+        missing = sorted(selected - selected_found)
         if missing:
             raise RuntimeError(
-                "unknown workspace package(s): " + ", ".join(missing)
+                "unknown workspace library package(s): " + ", ".join(missing)
             )
     return packages
 
@@ -130,7 +143,17 @@ def first_sentence(lines: Iterable[str]) -> str:
     return text.replace("|", "\\|")
 
 
-def scan_file(package: str, source_root: Path, path: Path, repo_root: Path) -> list[Entry]:
+def is_library_source(source_root: Path, path: Path) -> bool:
+    relative = path.relative_to(source_root)
+    if path.name == "main.rs":
+        return False
+    # Conventional Cargo binary modules are not part of a library's public API.
+    if relative.parts and relative.parts[0] == "bin":
+        return False
+    return True
+
+
+def scan_file(package: str, path: Path, repo_root: Path) -> list[Entry]:
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except UnicodeDecodeError as exc:
@@ -172,12 +195,14 @@ def scan_file(package: str, source_root: Path, path: Path, repo_root: Path) -> l
 
 def collect_entries(root: Path, selected: set[str]) -> list[Entry]:
     metadata = cargo_metadata(root)
-    entries: list[Entry] = []
+    entries: set[Entry] = set()
     for package, source_root in workspace_packages(metadata, selected):
         if not source_root.is_dir():
             continue
         for path in sorted(source_root.rglob("*.rs")):
-            entries.extend(scan_file(package, source_root, path, root))
+            if not is_library_source(source_root, path):
+                continue
+            entries.update(scan_file(package, path, root))
     return sorted(entries)
 
 
@@ -187,11 +212,11 @@ def render_markdown(entries: list[Entry]) -> str:
     lines = [
         "# SciRust public function lexicon",
         "",
-        "> Generated from the current workspace sources by `scripts/api-lexicon.py`.",
+        "> Generated from the current workspace library sources by `scripts/api-lexicon.py`.",
         "> This is a source-level discovery index, not a replacement for rustdoc.",
         "",
         f"- Directly declared public callables indexed: **{len(entries)}**",
-        f"- Workspace packages represented: **{len(packages)}**",
+        f"- Workspace library packages represented: **{len(packages)}**",
         f"- Entries with an adjacent `///` summary: **{documented}**",
         "",
         "The scanner indexes `pub fn` declarations, including async, const, unsafe,",
