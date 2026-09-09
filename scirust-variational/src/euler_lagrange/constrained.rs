@@ -27,6 +27,22 @@ impl ConstrainedEulerLagrange {
         let n = q.len();
         let m = num_constraints;
 
+        if dq.len() != n
+        {
+            return Err(VariationalError::DimensionMismatch {
+                expected: n,
+                got: dq.len(),
+                context: "ConstrainedEulerLagrange::solve_augmented velocities".into(),
+            });
+        }
+        if constraints.len() != m
+        {
+            return Err(VariationalError::DimensionMismatch {
+                expected: m,
+                got: constraints.len(),
+                context: "ConstrainedEulerLagrange::solve_augmented constraints".into(),
+            });
+        }
         if m == 0
         {
             return Err(VariationalError::UnsupportedOperation {
@@ -66,9 +82,10 @@ impl ConstrainedEulerLagrange {
             let qv_plus: Vec<NdVar<'_>> = (0..n)
                 .map(|i| tape_j.input(TensorND::new(vec![q_plus[i]], vec![1, 1])))
                 .collect();
+            let tv_plus = t.map(|tv| tape_j.input(TensorND::new(vec![tv], vec![1, 1])));
             for (k, constraint) in constraints.iter().enumerate()
             {
-                let c_plus = constraint(&tape_j, &qv_plus, tv);
+                let c_plus = constraint(&tape_j, &qv_plus, tv_plus);
                 let c_val_plus = tape_j.value(c_plus).data[0];
 
                 let mut q_minus = q.to_vec();
@@ -77,7 +94,8 @@ impl ConstrainedEulerLagrange {
                 let qv_minus: Vec<NdVar<'_>> = (0..n)
                     .map(|i| tape_j2.input(TensorND::new(vec![q_minus[i]], vec![1, 1])))
                     .collect();
-                let c_minus = constraint(&tape_j2, &qv_minus, tv);
+                let tv_minus = t.map(|tv| tape_j2.input(TensorND::new(vec![tv], vec![1, 1])));
+                let c_minus = constraint(&tape_j2, &qv_minus, tv_minus);
                 let c_val_minus = tape_j2.value(c_minus).data[0];
 
                 jacobian[k][j] = (c_val_plus - c_val_minus) / (2.0 * eps);
@@ -203,6 +221,14 @@ mod tests {
         q[0].mul(q[0]).add(q[1].mul(q[1])).sub(r.mul(r))
     }
 
+    fn time_constraint<'a>(
+        _tape: &'a NdTape,
+        q: &'a [NdVar<'a>],
+        t: Option<NdVar<'a>>,
+    ) -> NdVar<'a> {
+        q[0].sub(t.expect("time variable must be present"))
+    }
+
     #[test]
     fn test_particle_on_circle() {
         let result = ConstrainedEulerLagrange::solve_augmented(
@@ -216,6 +242,48 @@ mod tests {
         assert!(result.is_ok());
         let (acc, mult) = result.unwrap();
         assert_eq!(acc.len(), 2);
+        assert_eq!(mult.len(), 1);
+    }
+
+    #[test]
+    fn rejects_velocity_dimension_mismatch() {
+        let result = ConstrainedEulerLagrange::solve_augmented(
+            &free_particle_lagrangian,
+            &[circle_constraint],
+            &[1.0, 0.0],
+            &[0.0],
+            None,
+            1,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_constraint_count_mismatch_before_jacobian_indexing() {
+        let result = ConstrainedEulerLagrange::solve_augmented(
+            &free_particle_lagrangian,
+            &[circle_constraint, circle_constraint],
+            &[1.0, 0.0],
+            &[0.0, 1.0],
+            None,
+            1,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn time_dependent_constraints_use_the_perturbation_tape() {
+        let result = ConstrainedEulerLagrange::solve_augmented(
+            &free_particle_lagrangian,
+            &[time_constraint],
+            &[1.0],
+            &[0.0],
+            Some(0.25),
+            1,
+        );
+        assert!(result.is_ok());
+        let (acc, mult) = result.unwrap();
+        assert_eq!(acc.len(), 1);
         assert_eq!(mult.len(), 1);
     }
 }
