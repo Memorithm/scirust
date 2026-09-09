@@ -1,22 +1,28 @@
-# SciRust API lexicon
+# SciRust API lexicon and capability index
 
 SciRust is large enough that a hand-maintained function catalogue would drift
 quickly. The documentation stack therefore separates orientation, operational
-reference, source-level discovery, and authoritative API documentation.
+reference, source-level discovery, capability navigation, and authoritative API
+documentation.
 
 ## Documentation layers
 
 1. `README.md` gives the supported entry points and repository map.
 2. `docs/REFERENCE.md` documents commands, quality gates, features, and API
    entry points.
-3. `scripts/api-lexicon.py` generates a compact, searchable lexicon of directly
+3. `scripts/api-lexicon.py` generates and searches a compact lexicon of directly
    declared public functions and methods across Cargo library targets.
-4. Rustdoc remains the authoritative API reference for effective visibility,
+4. `docs/api-domains.json` is the reviewed navigation taxonomy that maps
+   workspace packages to functional domains.
+5. The generated capability index summarizes API volume and adjacent-rustdoc
+   coverage by domain and package.
+6. Rustdoc remains the authoritative API reference for effective visibility,
    signatures, re-exports, cfg expansion, trait-provided methods, generated
    items, and intra-doc links.
 
-This distinction is intentional: the lexicon is optimized for finding a
-capability quickly; rustdoc is optimized for exact API semantics.
+This distinction is intentional: the lexicon and capability taxonomy are
+optimized for discovering where a capability lives; rustdoc is optimized for
+exact API semantics.
 
 ## Generate the current function lexicon
 
@@ -25,10 +31,51 @@ From the repository root:
 ```bash
 python3 scripts/api-lexicon.py \
   --output /tmp/scirust-api-functions.md \
-  --stats-json /tmp/scirust-api-functions.json
+  --stats-json /tmp/scirust-api-functions.json \
+  --index-json /tmp/scirust-api-index.json \
+  --domain-index /tmp/scirust-capabilities.md
 ```
 
-To inspect one or more crates:
+The outputs have separate purposes:
+
+- the Markdown lexicon is a human-readable function inventory;
+- the statistics JSON aggregates public-callable and adjacent-rustdoc counts;
+- the index JSON contains one machine-readable record per indexed callable,
+  including its domain membership;
+- the capability index summarizes the same inventory by functional domain and
+  package.
+
+The generated data is deterministic for a fixed checkout. Each function entry
+contains the workspace package, declared symbol, first adjacent `///` sentence
+when present, source file and line. The machine-readable index also includes
+its domain ids.
+
+## Search by capability
+
+Search is case-insensitive and checks the function symbol, adjacent rustdoc
+summary, package name, and source path. Every whitespace-separated search term
+must match somewhere in that combined record.
+
+```bash
+python3 scripts/api-lexicon.py --query matrix
+python3 scripts/api-lexicon.py --query "kalman filter"
+python3 scripts/api-lexicon.py --query tensor --output /tmp/tensor-api.md
+```
+
+Search can be restricted to one or more reviewed capability domains:
+
+```bash
+python3 scripts/api-lexicon.py --list-domains
+python3 scripts/api-lexicon.py --domain tensor-compute --query tensor
+python3 scripts/api-lexicon.py --domain algebra-symbolic --query simplify
+python3 scripts/api-lexicon.py --domain control-robotics
+python3 scripts/api-lexicon.py --domain trading-finance
+```
+
+Multiple `--domain` arguments form a union of the selected domains. Multiple
+`--query` arguments contribute additional terms that all have to match.
+
+Package filtering remains available when a crate boundary is already known:
 
 ```bash
 python3 scripts/api-lexicon.py --package scirust-core
@@ -37,9 +84,60 @@ python3 scripts/api-lexicon.py \
   --package scirust-symbolic
 ```
 
-The generated Markdown is deterministic for a fixed checkout. Each entry
-contains the workspace package, declared symbol, first adjacent `///` sentence
-when present, and source file/line.
+## Find documentation debt
+
+The lexicon observes whether a directly declared public callable has an
+adjacent `///` summary. It can therefore produce a focused work list:
+
+```bash
+python3 scripts/api-lexicon.py --missing-docs
+python3 scripts/api-lexicon.py \
+  --domain tensor-compute \
+  --missing-docs \
+  --output /tmp/tensor-doc-gaps.md
+```
+
+A missing adjacent `///` summary is an observation, not proof that the API is
+undocumented everywhere. The symbol may be explained by module-level docs,
+traits, generated documentation, or a longer guide. The metric is useful for
+prioritization because it is mechanical and reproducible, but it must not be
+presented as semantic documentation coverage.
+
+## Capability taxonomy
+
+`docs/api-domains.json` is a reviewed navigation layer. Domain assignments are
+explicit rather than inferred from crate names at generation time. The
+generator validates every package named by the taxonomy against current Cargo
+metadata and rejects stale references.
+
+The current taxonomy covers these broad surfaces:
+
+- foundation and tooling;
+- tensor and compute;
+- learning and AI;
+- optimization and algorithm search;
+- algebra and symbolic mathematics;
+- numerics, statistics and estimation;
+- simulation and physics;
+- control, robotics and navigation;
+- industrial and engineering domains;
+- security, provenance and safety evidence;
+- data transport, messaging and events;
+- trading and financial tooling;
+- agent systems and code transformation;
+- Studio application services;
+- deployment and operations;
+- research methods;
+- research benchmarking and evaluation infrastructure.
+
+A package may be moved or assigned to multiple domains when the architecture
+actually warrants it. Such changes are reviewable documentation changes; the
+generator does not silently invent classifications.
+
+CI invokes `--require-domain-coverage`, so a library package represented by at
+least one indexed public callable cannot appear without a domain assignment.
+This converts taxonomy drift into an explicit review failure rather than a
+stale documentation problem.
 
 ## What the lexicon indexes
 
@@ -83,6 +181,23 @@ Optional root surfaces are exposed behind features:
 For a user deciding where to start, this facade is the first API boundary to
 inspect before dropping into specialist crates.
 
+## CI and review artifacts
+
+The `API function lexicon` GitHub Actions workflow runs when Rust sources,
+Cargo manifests, the generator, taxonomy, guide, or workflow itself change. It:
+
+1. validates Python and taxonomy JSON syntax;
+2. regenerates the full lexicon;
+3. requires every represented package to be classified;
+4. generates aggregate statistics, the machine-readable callable index, and the
+   capability index;
+5. smoke-tests domain search and the documentation-debt filter;
+6. publishes the largest adjacent-rustdoc gaps in the Actions summary;
+7. uploads all generated discovery artifacts for review.
+
+The workflow is intentionally non-destructive: it does not commit generated
+output or rewrite source documentation from CI.
+
 ## Documentation maintenance policy
 
 Function documentation should live next to the Rust item as `///` rustdoc.
@@ -90,13 +205,6 @@ Long-form guides should link to APIs rather than duplicate signatures or
 behavioral contracts. The generated lexicon may summarize the first rustdoc
 sentence, but it must never become a second manually maintained API truth.
 
-The `API function lexicon` GitHub Actions workflow regenerates the inventory on
-changes to Rust sources, Cargo manifests, the generator, or this guide. It
-uploads both the Markdown lexicon and JSON statistics as review artifacts. The
-workflow is intentionally non-destructive: it does not commit generated output
-or rewrite documentation from CI.
-
-The JSON statistics make documentation debt measurable without inventing a
-coverage claim. A missing adjacent `///` summary is reported as an observation,
-not as proof that an API is undocumented elsewhere. This metric can later be
-used to prioritize high-value documentation work crate by crate.
+The domain taxonomy should describe discoverability, not redefine architecture.
+When a crate's responsibility changes, update its code/docs first and then
+update the taxonomy to match the reviewed reality.
