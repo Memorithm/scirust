@@ -79,6 +79,32 @@ impl LagrangianNetwork {
 
     pub fn acceleration_from_state(&mut self, q: &[f32], dq: &[f32], t: f32) -> Result<Vec<f32>> {
         let n = self.ndim;
+        if q.len() != n || dq.len() != n
+        {
+            return Err(VariationalError::DimensionMismatch {
+                expected: n,
+                got: if q.len() != n { q.len() } else { dq.len() },
+                context: "LagrangianNetwork::acceleration_from_state".into(),
+            });
+        }
+        if !t.is_finite()
+        {
+            return Err(VariationalError::NonFiniteValue {
+                component: "LNN time",
+                value: t,
+            });
+        }
+        for &value in q.iter().chain(dq.iter())
+        {
+            if !value.is_finite()
+            {
+                return Err(VariationalError::NonFiniteValue {
+                    component: "LNN state",
+                    value,
+                });
+            }
+        }
+
         let tape = NdTape::new();
         let qv = tape.input(TensorND::new(q.to_vec(), vec![1, n]));
         let dqv = tape.input(TensorND::new(dq.to_vec(), vec![1, n]));
@@ -114,7 +140,7 @@ impl LagrangianNetwork {
                 let g2 = tape2.backward(L2);
                 g2[1].data[..n].to_vec()
             };
-            crate::util::finite_difference_hessian(&mut closure, dq, eps, n)
+            crate::util::try_finite_difference_hessian(&mut closure, dq, eps, n)?
         };
 
         for i in 0..n
