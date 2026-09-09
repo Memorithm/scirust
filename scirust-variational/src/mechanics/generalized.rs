@@ -1,13 +1,18 @@
 use crate::error::{Result, VariationalError};
 
+/// Generalized coordinates, velocities, and time for a mechanical state.
 #[derive(Debug, Clone)]
 pub struct GeneralizedState {
+    /// Generalized coordinate values.
     pub positions: Vec<f32>,
+    /// Generalized velocity values in the same coordinate order.
     pub velocities: Vec<f32>,
+    /// Time associated with the state.
     pub time: f32,
 }
 
 impl GeneralizedState {
+    /// Creates a state after validating equal position and velocity dimensions.
     pub fn new(positions: Vec<f32>, velocities: Vec<f32>, time: f32) -> Result<Self> {
         if positions.len() != velocities.len()
         {
@@ -24,10 +29,12 @@ impl GeneralizedState {
         })
     }
 
+    /// Returns the number of generalized coordinates.
     pub fn ndim(&self) -> usize {
         self.positions.len()
     }
 
+    /// Concatenates positions and velocities into `[q, q_dot]` phase-space order.
     pub fn to_phase_space(&self) -> Vec<f32> {
         let mut phase = Vec::with_capacity(2 * self.ndim());
         phase.extend_from_slice(&self.positions);
@@ -35,18 +42,23 @@ impl GeneralizedState {
         phase
     }
 
+    /// Returns the phase-space dimension `2 * ndim`.
     pub fn phase_dim(&self) -> usize {
         2 * self.ndim()
     }
 }
 
+/// Dense square generalized mass matrix.
 #[derive(Debug, Clone)]
 pub struct GeneralizedMassMatrix {
+    /// Matrix entries in row-major nested-vector form.
     pub matrix: Vec<Vec<f32>>,
+    /// Number of generalized coordinates represented by the matrix.
     pub ndim: usize,
 }
 
 impl GeneralizedMassMatrix {
+    /// Creates a non-empty square mass matrix.
     pub fn new(matrix: Vec<Vec<f32>>) -> Result<Self> {
         let n = matrix.len();
         if n == 0
@@ -71,6 +83,7 @@ impl GeneralizedMassMatrix {
         Ok(Self { matrix, ndim: n })
     }
 
+    /// Checks pairwise matrix symmetry using the supplied absolute tolerance.
     pub fn is_symmetric(&self, tolerance: f32) -> bool {
         for i in 0..self.ndim
         {
@@ -85,6 +98,7 @@ impl GeneralizedMassMatrix {
         true
     }
 
+    /// Runs the current leading-principal-minor test for positive definiteness.
     pub fn is_positive_definite(&self) -> bool {
         let n = self.ndim;
         for i in 0..n
