@@ -3,9 +3,15 @@ use scirust_symbolic::{Expr, diff, simplify};
 use super::{ELDerivation, ELEquation, substitute};
 use crate::error::{Result, VariationalError};
 
+/// Symbolic derivation utilities for Euler-Lagrange equations.
 pub struct SymbolicEulerLagrange;
 
 impl SymbolicEulerLagrange {
+    /// Derives one symbolic Euler-Lagrange residual for each coordinate/velocity pair.
+    ///
+    /// The total time derivative of `∂L/∂q̇` is expanded symbolically into explicit
+    /// time, coordinate, velocity, and acceleration contributions. Coordinate and
+    /// velocity lists must have equal non-zero length.
     pub fn derive(
         lagrangian: &Expr,
         coordinates: &[String],
@@ -88,6 +94,11 @@ impl SymbolicEulerLagrange {
         })
     }
 
+    /// Parses a Lagrangian string and derives equations using `<coord>_dot` velocity symbols.
+    ///
+    /// For compatibility with compact input notation, occurrences of `<coord>dot` in the
+    /// parsed expression are substituted with the canonical `<coord>_dot` variable before
+    /// delegating to [`Self::derive`].
     pub fn derive_from_lagrangian_string(
         lagrangian_str: &str,
         coordinates: &[&str],
