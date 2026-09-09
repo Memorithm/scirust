@@ -16,15 +16,15 @@
 //! two matrix factors must contract exactly to the logical matrix shape.
 //!
 //! [`PrimitiveRepresentation::Quantized`] and [`PrimitiveRepresentation::Sparse`]
-//! are retained as declaration skeletons only. Their typed components and
-//! declaration invariants can be explored and interned internally, but they are
-//! not valid logical-tensor representations until their layout and reconstruction
-//! geometry are explicitly defined. In particular, no storage saving is claimed
-//! merely from the sizes of codes/scales or indices/values.
+//! remain declaration skeletons. [`PrimitiveRepresentation::QuantizedPerTensor`]
+//! is the first quantized family with complete reconstruction geometry: integer
+//! codes have exactly the logical tensor shape and one scalar floating scale is
+//! shared by the complete tensor. Reconstruction is `logical = code * scale`, so
+//! the affine zero-point is fixed to zero and occupies no physical storage.
 //!
-//! Codebook layouts, block geometry, packed/sub-bit payloads, sparse formats,
-//! cost models and backend-specific materialization remain intentionally out of
-//! scope.
+//! Codebook layouts, block geometry, non-zero affine zero-points, packed/sub-bit
+//! payloads, sparse formats, cost models and backend-specific materialization remain
+//! intentionally out of scope.
 
 use alloc::vec::Vec;
 use core::fmt;
@@ -158,6 +158,18 @@ pub enum PrimitiveRepresentation {
         /// Continuous dequantization factors with a floating dtype.
         scales: RepresentationComponent,
     },
+    /// Per-tensor scaled quantization with an implicit zero-point of zero.
+    ///
+    /// `codes` must have exactly the logical tensor shape and `scale` must be a
+    /// scalar floating tensor. The reconstruction contract is
+    /// `logical = codes * scale`. This family defines geometry only; it does not
+    /// claim a kernel, packed/sub-bit storage, or an automatic quantization policy.
+    QuantizedPerTensor {
+        /// Integer code payload with the complete logical tensor shape.
+        codes: RepresentationComponent,
+        /// Scalar floating scale shared by every code.
+        scale: RepresentationComponent,
+    },
     /// Sparse storage skeleton: positions of the nonzeros plus their numeric
     /// values.
     ///
@@ -196,6 +208,14 @@ impl PrimitiveRepresentation {
         Self::Quantized { codes, scales }
     }
 
+    /// Construct per-tensor scaled quantization with an implicit zero-point of zero.
+    pub const fn quantized_per_tensor(
+        codes: RepresentationComponent,
+        scale: RepresentationComponent,
+    ) -> Self {
+        Self::QuantizedPerTensor { codes, scale }
+    }
+
     /// Construct a sparse representation from indices and values.
     pub const fn sparse(indices: RepresentationComponent, values: RepresentationComponent) -> Self {
         Self::Sparse { indices, values }
@@ -206,7 +226,10 @@ impl PrimitiveRepresentation {
         match self
         {
             Self::Dense { storage_dtype } => Some(*storage_dtype),
-            Self::Factorized { .. } | Self::Quantized { .. } | Self::Sparse { .. } => None,
+            Self::Factorized { .. }
+            | Self::Quantized { .. }
+            | Self::QuantizedPerTensor { .. }
+            | Self::Sparse { .. } => None,
         }
     }
 
@@ -232,6 +255,11 @@ impl PrimitiveRepresentation {
             {
                 components[0] = Some(codes);
                 components[1] = Some(scales);
+            },
+            Self::QuantizedPerTensor { codes, scale } =>
+            {
+                components[0] = Some(codes);
+                components[1] = Some(scale);
             },
             Self::Sparse { indices, values } =>
             {
@@ -286,6 +314,22 @@ impl PrimitiveRepresentation {
                 }
             },
             Self::Quantized { .. } => Err(RepresentationError::QuantizedLayoutUndefined),
+            Self::QuantizedPerTensor { codes, scale } =>
+            {
+                if codes.tensor_type().shape == logical.shape
+                    && scale.tensor_type().shape.dims().is_empty()
+                {
+                    Ok(())
+                }
+                else
+                {
+                    Err(RepresentationError::QuantizedPerTensorIncompatibleShapes {
+                        codes: codes.tensor_type().shape.clone(),
+                        scale: scale.tensor_type().shape.clone(),
+                        logical: logical.shape.clone(),
+                    })
+                }
+            },
             Self::Sparse { .. } => Err(RepresentationError::SparseLayoutUndefined),
         }
     }
@@ -311,6 +355,23 @@ impl PrimitiveRepresentation {
                     Err(RepresentationError::QuantizedInvalidComponentDTypes {
                         codes: codes_dtype,
                         scales: scales_dtype,
+                    })
+                }
+                else
+                {
+                    Ok(())
+                }
+            },
+            Self::QuantizedPerTensor { codes, scale } =>
+            {
+                let codes_dtype = codes.tensor_type().dtype;
+                let scale_dtype = scale.tensor_type().dtype;
+
+                if !is_integer_dtype(codes_dtype) || !is_float_dtype(scale_dtype)
+                {
+                    Err(RepresentationError::QuantizedInvalidComponentDTypes {
+                        codes: codes_dtype,
+                        scales: scale_dtype,
                     })
                 }
                 else
@@ -485,6 +546,15 @@ pub enum RepresentationError {
         /// Dtype carried by the scales component.
         scales: DType,
     },
+    /// Per-tensor quantized geometry does not reconstruct the logical tensor.
+    QuantizedPerTensorIncompatibleShapes {
+        /// Shape carried by the integer codes.
+        codes: Shape,
+        /// Shape carried by the shared scale; must be scalar.
+        scale: Shape,
+        /// Logical tensor shape being represented.
+        logical: Shape,
+    },
     /// Sparse component dtypes violate the family contract.
     ///
     /// Indices must carry discrete integer positions and values numeric
@@ -617,6 +687,17 @@ impl fmt::Display for RepresentationError {
                 write!(
                     formatter,
                     "quantized codes dtype {codes:?} must be integer-valued and scales dtype {scales:?} floating-point"
+                )
+            },
+            Self::QuantizedPerTensorIncompatibleShapes {
+                codes,
+                scale,
+                logical,
+            } =>
+            {
+                write!(
+                    formatter,
+                    "per-tensor quantized codes shape {codes:?} must equal logical shape {logical:?} and scale shape {scale:?} must be scalar"
                 )
             },
             Self::SparseInvalidComponentDTypes { indices, values } =>
@@ -804,6 +885,25 @@ impl RepresentationPlan {
         self.declare(PrimitiveRepresentation::factorized(left, right))
     }
 
+    /// Declare and intern per-tensor scaled quantization.
+    ///
+    /// The integer `codes` tensor must later match the complete logical tensor
+    /// shape when bound, while `scale` must be a scalar floating tensor. Both
+    /// components are resolved against this plan, preserving declaration-order
+    /// and graph-independent component validation.
+    pub fn declare_quantized_per_tensor(
+        &mut self,
+        codes_type: TensorType,
+        codes_representation: RepresentationId,
+        scale_type: TensorType,
+        scale_representation: RepresentationId,
+    ) -> Result<RepresentationId, RepresentationError> {
+        let codes = self.component(codes_type, codes_representation)?;
+        let scale = self.component(scale_type, scale_representation)?;
+
+        self.declare(PrimitiveRepresentation::quantized_per_tensor(codes, scale))
+    }
+
     /// Declare and intern one representation.
     ///
     /// Every [`RepresentationComponent`] the representation is declared over
@@ -889,10 +989,11 @@ impl RepresentationPlan {
     /// storage of its declared factors recursively (references point strictly
     /// backwards, so recursion terminates).
     ///
-    /// Quantized and sparse declaration skeletons deliberately return a typed
-    /// error here: component byte counts alone do not prove that those
-    /// components reconstruct the requested logical tensor. All successful
-    /// accounting uses checked integer arithmetic and never floating-point.
+    /// The legacy quantized and sparse declaration skeletons deliberately return
+    /// typed errors here because component byte counts alone do not prove logical
+    /// reconstruction. `QuantizedPerTensor` has complete geometry and therefore
+    /// sums the exact recursive storage of its codes and scalar scale. All
+    /// successful accounting uses checked integer arithmetic and never floating-point.
     pub fn storage_bits(
         &self,
         id: RepresentationId,
@@ -930,6 +1031,17 @@ impl RepresentationPlan {
                 codes_bits
                     .get()
                     .checked_add(scales_bits.get())
+                    .map(StorageBits::new)
+                    .ok_or(RepresentationError::StorageSizeOverflow)
+            },
+            PrimitiveRepresentation::QuantizedPerTensor { codes, scale } =>
+            {
+                let codes_bits = self.storage_bits(codes.representation(), codes.tensor_type())?;
+                let scale_bits = self.storage_bits(scale.representation(), scale.tensor_type())?;
+
+                codes_bits
+                    .get()
+                    .checked_add(scale_bits.get())
                     .map(StorageBits::new)
                     .ok_or(RepresentationError::StorageSizeOverflow)
             },
