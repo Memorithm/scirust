@@ -3,15 +3,25 @@ use scirust_core::tensor::tensor_nd::TensorND;
 
 use crate::error::{Result, VariationalError};
 
+/// Metadata describing a named holonomic constraint.
 #[derive(Debug, Clone)]
 pub struct HolonomicConstraint {
+    /// Human-readable constraint name.
     pub name: String,
+    /// Number of generalized coordinates used by the constraint.
     pub num_coordinates: usize,
 }
 
+/// Solver namespace for constrained Euler-Lagrange systems.
 pub struct ConstrainedEulerLagrange;
 
 impl ConstrainedEulerLagrange {
+    /// Solves an augmented Euler-Lagrange system for accelerations and multipliers.
+    ///
+    /// The Lagrangian is differentiated with SciRust autodiff, while constraint
+    /// Jacobians are approximated by centered finite differences. The returned tuple
+    /// contains generalized accelerations followed by one Lagrange multiplier per
+    /// requested constraint.
     pub fn solve_augmented<F, G>(
         lagrangian: &F,
         constraints: &[G],
