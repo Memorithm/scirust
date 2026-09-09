@@ -346,9 +346,7 @@ mod tests {
         let dynamics = |_t: f32, _x: &[f32], _u: &[f32], dx: &mut [f32]| {
             dx[0] = 0.0;
         };
-        let running_cost = |_t: f32, _x: &[f32], u: &[f32]| -> f32 {
-            2000.0 * u[0] * u[0]
-        };
+        let running_cost = |_t: f32, _x: &[f32], u: &[f32]| -> f32 { 2000.0 * u[0] * u[0] };
         let terminal_cost = |_x: &[f32], _t: f32| -> f32 { 0.0 };
 
         let problem = OptimalControlProblem::new(
