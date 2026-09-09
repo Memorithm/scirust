@@ -145,10 +145,10 @@
     "scirust-transpiler": 11,
     "scirust-units": 0,
     "scirust-unsupervised": 6,
-    "scirust-variational": 122,
+    "scirust-variational": 111,
     "scirust-vision": 10,
     "scirust-water": 0
   },
   "schema_version": 1,
-  "total_undocumented": 2392
+  "total_undocumented": 2381
 }
