@@ -17,7 +17,9 @@ jobs:
           ref: ${{ github.event.pull_request.head.ref }}
           fetch-depth: 0
       - name: Apply source patch
-        run: python3 .github/scripts/apply-per-tensor-quantized.py
+        run: |
+          python3 .github/scripts/apply-per-tensor-quantized.py
+          python3 .github/scripts/fix-attention-intent-const.py
       - name: Format
         run: cargo fmt --all
       - name: Test tensor Representation IR
@@ -32,7 +34,7 @@ jobs:
           git config user.name "OpenAI"
           git config user.email "noreply@openai.com"
           git add scirust-tensor-ir/src/representation.rs scirust-tensor-ir/tests/representation.rs scirust-attention-intent/src/lib.rs
-          git rm .github/workflows/zz-apply-quantized-representation-patch.yml .github/scripts/apply-per-tensor-quantized.py
+          git rm .github/workflows/zz-apply-quantized-representation-patch.yml .github/scripts/apply-per-tensor-quantized.py .github/scripts/fix-attention-intent-const.py
           git diff --cached --check
           git commit -m "feat(tensor-ir): bind per-tensor quantized representations"
           git push origin HEAD:${{ github.event.pull_request.head.ref }}
