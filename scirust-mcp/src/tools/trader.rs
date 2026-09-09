@@ -1110,7 +1110,9 @@ fn certified_predict_tool() -> McpTool {
             let mut agent = TradingAgent::new(model, Box::new(DeterministicNarrator));
             agent.lookback = 10;
             let snapshot = snapshot_from(&symbol, "provided", candles);
-            let record = agent.try_process(&snapshot).map_err(|error| error.to_string())?;
+            let record = agent
+                .try_process(&snapshot)
+                .map_err(|error| error.to_string())?;
             let p = &record.prediction;
             Ok(json!({
                 "symbol": p.symbol,

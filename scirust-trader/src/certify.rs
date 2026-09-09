@@ -122,7 +122,9 @@ pub fn try_certify(
         .iter()
         .map(|&x| Interval::new(x - eps, x + eps))
         .collect();
-    if bounds.iter().any(|b| !b.lo.is_finite() || !b.hi.is_finite())
+    if bounds
+        .iter()
+        .any(|b| !b.lo.is_finite() || !b.hi.is_finite())
     {
         return Err(CertificationError::NonFiniteArithmetic);
     }
@@ -231,7 +233,11 @@ mod tests {
     use crate::model::PricePredictor;
 
     fn linear_weights(layers: Vec<Vec<f32>>, input_dim: usize) -> ModelWeights {
-        ModelWeights { layers, input_dim, fingerprint: "test-only".into() }
+        ModelWeights {
+            layers,
+            input_dim,
+            fingerprint: "test-only".into(),
+        }
     }
 
     #[test]
@@ -239,20 +245,43 @@ mod tests {
         let weights = linear_weights(vec![vec![1.0, 2.0]], 1);
         for eps in [-1.0, f32::NAN, f32::INFINITY]
         {
-            assert_eq!(try_certify(&weights, &[1.0], eps).unwrap_err(), CertificationError::InvalidRadius);
+            assert_eq!(
+                try_certify(&weights, &[1.0], eps).unwrap_err(),
+                CertificationError::InvalidRadius
+            );
         }
         for input in [vec![], vec![1.0, 2.0], vec![f32::NAN], vec![f32::INFINITY]]
         {
-            assert_eq!(try_certify(&weights, &input, 0.0).unwrap_err(), CertificationError::InvalidInput);
+            assert_eq!(
+                try_certify(&weights, &input, 0.0).unwrap_err(),
+                CertificationError::InvalidInput
+            );
         }
-        for layers in [vec![], vec![vec![]], vec![vec![1.0]], vec![vec![0.0, f32::NAN]],
-                       vec![vec![0.0, 1.0], vec![1.0]]]
+        for layers in [
+            vec![],
+            vec![vec![]],
+            vec![vec![1.0]],
+            vec![vec![0.0, f32::NAN]],
+            vec![vec![0.0, 1.0], vec![1.0]],
+        ]
         {
-            assert!(matches!(try_certify(&linear_weights(layers, 1), &[1.0], 0.0), Err(CertificationError::InvalidLayer(_))));
+            assert!(matches!(
+                try_certify(&linear_weights(layers, 1), &[1.0], 0.0),
+                Err(CertificationError::InvalidLayer(_))
+            ));
         }
-        assert_eq!(try_certify(&linear_weights(vec![vec![0.0; 4]], 1), &[1.0], 0.0).unwrap_err(), CertificationError::NonScalarOutput);
-        assert_eq!(try_certify(&weights, &[f32::MAX], f32::MAX).unwrap_err(), CertificationError::NonFiniteArithmetic);
-        assert_eq!(try_certify(&linear_weights(vec![vec![0.0, f32::MAX]], 1), &[2.0], 0.0).unwrap_err(), CertificationError::NonFiniteArithmetic);
+        assert_eq!(
+            try_certify(&linear_weights(vec![vec![0.0; 4]], 1), &[1.0], 0.0).unwrap_err(),
+            CertificationError::NonScalarOutput
+        );
+        assert_eq!(
+            try_certify(&weights, &[f32::MAX], f32::MAX).unwrap_err(),
+            CertificationError::NonFiniteArithmetic
+        );
+        assert_eq!(
+            try_certify(&linear_weights(vec![vec![0.0, f32::MAX]], 1), &[2.0], 0.0).unwrap_err(),
+            CertificationError::NonFiniteArithmetic
+        );
     }
 
     #[test]
@@ -260,9 +289,18 @@ mod tests {
         // y = 1 - 2*x0 + 3*x1; exact integer-valued corner arithmetic.
         let weights = linear_weights(vec![vec![1.0, -2.0, 3.0]], 2);
         let bounds = try_certify(&weights, &[2.0, 3.0], 1.0).unwrap();
-        let corners: Vec<f32> = [1.0, 3.0].iter().flat_map(|x| [2.0, 4.0].iter().map(move |y| 1.0 - 2.0*x + 3.0*y)).collect();
-        assert_eq!(bounds.output.lo, corners.iter().copied().fold(f32::INFINITY, f32::min));
-        assert_eq!(bounds.output.hi, corners.iter().copied().fold(f32::NEG_INFINITY, f32::max));
+        let corners: Vec<f32> = [1.0, 3.0]
+            .iter()
+            .flat_map(|x| [2.0, 4.0].iter().map(move |y| 1.0 - 2.0 * x + 3.0 * y))
+            .collect();
+        assert_eq!(
+            bounds.output.lo,
+            corners.iter().copied().fold(f32::INFINITY, f32::min)
+        );
+        assert_eq!(
+            bounds.output.hi,
+            corners.iter().copied().fold(f32::NEG_INFINITY, f32::max)
+        );
     }
 
     #[test]

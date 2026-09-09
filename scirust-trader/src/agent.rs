@@ -315,22 +315,36 @@ impl TradingAgent {
     /// # Panics
     /// Panics on invalid configuration/data. Use `try_process` for untrusted inputs.
     pub fn process(&mut self, snapshot: &MarketSnapshot) -> DecisionRecord {
-        self.try_process(snapshot).expect("invalid agent input; use try_process")
+        self.try_process(snapshot)
+            .expect("invalid agent input; use try_process")
     }
 
     /// Fallible entrypoint; validates before model inference or narration.
-    pub fn try_process(&mut self, snapshot: &MarketSnapshot) -> Result<DecisionRecord, CertificationError> {
-        if self.lookback == 0 || self.lookback.checked_add(3) != Some(self.model.input_dim)
-            || !self.action_threshold.is_finite() || self.action_threshold < 0.0
+    pub fn try_process(
+        &mut self,
+        snapshot: &MarketSnapshot,
+    ) -> Result<DecisionRecord, CertificationError> {
+        if self.lookback == 0
+            || self.lookback.checked_add(3) != Some(self.model.input_dim)
+            || !self.action_threshold.is_finite()
+            || self.action_threshold < 0.0
         {
             return Err(CertificationError::InvalidAgentConfiguration);
         }
-        if snapshot.candles.is_empty() || snapshot.candles.iter().any(|c| {
-            !c.open.is_finite() || !c.high.is_finite() || !c.low.is_finite()
-                || !c.close.is_finite() || !c.volume.is_finite()
-                || c.low <= 0.0 || c.low > c.open || c.low > c.close
-                || c.high < c.open || c.high < c.close || c.volume < 0.0
-        })
+        if snapshot.candles.is_empty()
+            || snapshot.candles.iter().any(|c| {
+                !c.open.is_finite()
+                    || !c.high.is_finite()
+                    || !c.low.is_finite()
+                    || !c.close.is_finite()
+                    || !c.volume.is_finite()
+                    || c.low <= 0.0
+                    || c.low > c.open
+                    || c.low > c.close
+                    || c.high < c.open
+                    || c.high < c.close
+                    || c.volume < 0.0
+            })
         {
             return Err(CertificationError::InvalidInput);
         }
@@ -427,17 +441,29 @@ mod tests {
 
     #[test]
     fn checked_agent_rejects_configuration_and_data_before_inference() {
-        let mut agent = TradingAgent::new(PricePredictor::new(13, &[8], 42), Box::new(DeterministicNarrator));
+        let mut agent = TradingAgent::new(
+            PricePredictor::new(13, &[8], 42),
+            Box::new(DeterministicNarrator),
+        );
         let mut feed = MockExchange::new(42, 100.0);
         let mut snapshot = feed.next_snapshot(50).unwrap();
         agent.lookback = usize::MAX;
-        assert_eq!(agent.try_process(&snapshot).unwrap_err(), CertificationError::InvalidAgentConfiguration);
+        assert_eq!(
+            agent.try_process(&snapshot).unwrap_err(),
+            CertificationError::InvalidAgentConfiguration
+        );
         agent.lookback = 10;
         agent.certify_eps = -1.0;
-        assert_eq!(agent.try_process(&snapshot).unwrap_err(), CertificationError::InvalidRadius);
+        assert_eq!(
+            agent.try_process(&snapshot).unwrap_err(),
+            CertificationError::InvalidRadius
+        );
         agent.certify_eps = 0.01;
         snapshot.candles[0].close = f32::NAN;
-        assert_eq!(agent.try_process(&snapshot).unwrap_err(), CertificationError::InvalidInput);
+        assert_eq!(
+            agent.try_process(&snapshot).unwrap_err(),
+            CertificationError::InvalidInput
+        );
     }
 
     #[test]
