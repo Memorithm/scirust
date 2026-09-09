@@ -11,9 +11,10 @@
 //!
 //! Representation-awareness is deliberately one-way: `TensorType` describes
 //! *logical* tensors; a `RepresentationPlan` is a side-table. Dense is the
-//! only currently executable physical path; quantized and sparse are honest
-//! declaration skeletons and fail explicitly when an execution intent is
-//! requested. Unsupported cases fail; they never fall back silently.
+//! only currently executable physical path. Bindable per-tensor quantization
+//! can be described by an intent but remains explicitly non-executable; legacy
+//! quantized and sparse skeletons still fail because they lack reconstruction
+//! geometry. Unsupported cases never fall back silently.
 //!
 //! Honest storage accounting follows: storage comes from inspected
 //! `PrimitiveRepresentation` variants, not from floating bits-per-value
@@ -46,9 +47,11 @@ pub enum TensorRole {
 pub enum RepresentationVariant {
     /// Dense identity storage: `F32` or another aligned scalar dtype.
     Dense { storage_dtype: DType },
-    /// Quantized codes + scales contract — representable but not executable
-    /// through dense attention.
+    /// Legacy quantized codes + scales skeleton without reconstruction geometry.
     QuantizedSkeleton,
+    /// Per-tensor integer codes plus one scalar scale. Representable and exactly
+    /// accountable, but no attention kernel is mapped to it in this slice.
+    QuantizedPerTensor,
     /// Sparse indices + values contract — likewise representable only.
     SparseSkeleton,
     /// Factorized left × right — representable only.
@@ -131,12 +134,18 @@ impl AttentionExecutionIntent {
     /// Whether the physical path of this intent is currently executable.
     ///
     /// Today this means: `value_dim == head_dim` and every bound variant is
-    /// `Dense { storage_dtype }`. Quantized and sparse succeed in plan
-    /// declaration but not here.
+    /// dense. `derive_attention_intent` separately guarantees dense storage dtype
+    /// equality with the logical dtype. Representable quantized intents remain false.
     #[must_use]
     pub const fn is_executable(&self) -> bool {
         matches!(
             self.representation.query_variant,
+            RepresentationVariant::Dense { .. }
+        ) && matches!(
+            self.representation.key_variant,
+            RepresentationVariant::Dense { .. }
+        ) && matches!(
+            self.representation.value_variant,
             RepresentationVariant::Dense { .. }
         )
     }
@@ -360,31 +369,30 @@ pub fn derive_attention_intent(
     fn dense_dtype_matches(variant: RepresentationVariant, logical: DType) -> bool {
         matches!(variant, RepresentationVariant::Dense { storage_dtype } if storage_dtype == logical)
     }
-    match (q_variant, k_variant, v_variant)
+    fn describable(variant: RepresentationVariant, logical: DType) -> bool {
+        dense_dtype_matches(variant, logical)
+            || matches!(variant, RepresentationVariant::QuantizedPerTensor)
+    }
+    if !describable(q_variant, logical_dtype)
+        || !describable(k_variant, logical_dtype)
+        || !describable(v_variant, logical_dtype)
     {
-        _ if dense_dtype_matches(q_variant, logical_dtype)
-            && dense_dtype_matches(k_variant, logical_dtype)
-            && dense_dtype_matches(v_variant, logical_dtype) =>
-        {},
-        _ =>
+        let failing = if !describable(q_variant, logical_dtype)
         {
-            let failing = if !matches!(q_variant, RepresentationVariant::Dense { .. })
-            {
-                (TensorRole::Query, q_variant)
-            }
-            else if !matches!(k_variant, RepresentationVariant::Dense { .. })
-            {
-                (TensorRole::Key, k_variant)
-            }
-            else
-            {
-                (TensorRole::Value, v_variant)
-            };
-            return Err(IntentError::UnsupportedRepresentation {
-                role: failing.0,
-                variant: failing.1,
-            });
-        },
+            (TensorRole::Query, q_variant)
+        }
+        else if !describable(k_variant, logical_dtype)
+        {
+            (TensorRole::Key, k_variant)
+        }
+        else
+        {
+            (TensorRole::Value, v_variant)
+        };
+        return Err(IntentError::UnsupportedRepresentation {
+            role: failing.0,
+            variant: failing.1,
+        });
     }
 
     let q_bits = plan
@@ -473,6 +481,7 @@ fn variant_of(
             storage_dtype: *storage_dtype,
         }),
         Prim::Quantized { .. } => Ok(RepresentationVariant::QuantizedSkeleton),
+        Prim::QuantizedPerTensor { .. } => Ok(RepresentationVariant::QuantizedPerTensor),
         Prim::Sparse { .. } => Ok(RepresentationVariant::SparseSkeleton),
         Prim::Factorized { .. } => Ok(RepresentationVariant::Factorized),
         #[allow(unreachable_patterns)]
@@ -562,6 +571,54 @@ mod tests {
         // identical structural assignment, not node id permutation.
         let _ = b;
         assert_ne!(a, 0);
+    }
+
+    #[test]
+    fn derives_non_executable_intent_for_per_tensor_quantized_bindings() {
+        let (graph, q, k, v, mut plan) = graph_fixture(1, 2, 4, 8);
+        let dense_f32 = plan.assignment(q).expect("f32");
+        let dense_u8 = plan.declare_dense(DType::U8).expect("u8");
+        let logical_shape = Shape::new([1usize, 2, 4, 8]);
+        let quantized = plan
+            .declare_quantized_per_tensor(
+                TensorType::new(DType::U8, logical_shape),
+                dense_u8,
+                TensorType::new(DType::F32, Shape::scalar()),
+                dense_f32,
+            )
+            .expect("quantized");
+
+        plan.replan(
+            &graph,
+            &[
+                scirust_tensor_ir::Rebinding {
+                    node: q,
+                    representation: quantized,
+                },
+                scirust_tensor_ir::Rebinding {
+                    node: k,
+                    representation: quantized,
+                },
+                scirust_tensor_ir::Rebinding {
+                    node: v,
+                    representation: quantized,
+                },
+            ],
+        )
+        .expect("bind quantized");
+
+        let intent = derive_attention_intent(&graph, &plan, q, k, v, true)
+            .expect("quantized intent remains describable");
+        assert!(!intent.is_executable());
+        assert_eq!(
+            intent.representation.query_variant,
+            RepresentationVariant::QuantizedPerTensor
+        );
+        // Per tensor: 64 U8 codes (512 bits) + one F32 scale (32 bits).
+        assert_eq!(
+            intent.representation.total_storage_bits,
+            StorageBits::new(3 * 544)
+        );
     }
 
     #[test]

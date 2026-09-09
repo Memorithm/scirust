@@ -365,3 +365,73 @@ fn replan_batches_apply_atomically_from_the_public_surface() {
     let after_total = plan.total_storage_bits(&graph).unwrap();
     assert!(after_total.get() < before_total.get());
 }
+
+#[test]
+fn per_tensor_quantized_representation_binds_and_accounts_exactly() {
+    let mut graph = Graph::new();
+    let weight = graph
+        .add_input("weight", tensor_type(DType::F32, &[8, 8]))
+        .unwrap();
+    let bias = graph
+        .add_input("bias", tensor_type(DType::F32, &[8]))
+        .unwrap();
+    graph.set_outputs(vec![weight, bias]).unwrap();
+
+    let mut plan = RepresentationPlan::dense(&graph).unwrap();
+    let dense_u8 = plan.declare_dense(DType::U8).unwrap();
+    let dense_f16 = plan.declare_dense(DType::F16).unwrap();
+
+    let quantized = plan
+        .declare_quantized_per_tensor(
+            tensor_type(DType::U8, &[8, 8]),
+            dense_u8,
+            TensorType::new(DType::F16, Shape::scalar()),
+            dense_f16,
+        )
+        .unwrap();
+
+    plan.assign(&graph, weight, quantized).unwrap();
+
+    // 64 U8 codes + one F16 scale = 64*8 + 16 physical bits.
+    assert_eq!(
+        plan.node_storage_bits(&graph, weight),
+        Ok(StorageBits::new(528))
+    );
+    // Bias remains dense F32[8] = 256 bits.
+    assert_eq!(
+        plan.total_storage_bits(&graph),
+        Ok(StorageBits::new(528 + 256))
+    );
+
+    let before = plan.assignments().to_vec();
+    let incompatible = plan
+        .declare_quantized_per_tensor(
+            tensor_type(DType::U8, &[7, 8]),
+            dense_u8,
+            TensorType::new(DType::F16, Shape::scalar()),
+            dense_f16,
+        )
+        .unwrap();
+
+    assert_eq!(
+        plan.replan(
+            &graph,
+            &[
+                Rebinding {
+                    node: bias,
+                    representation: plan.assignment(bias).unwrap(),
+                },
+                Rebinding {
+                    node: weight,
+                    representation: incompatible,
+                },
+            ],
+        ),
+        Err(RepresentationError::QuantizedPerTensorIncompatibleShapes {
+            codes: Shape::new(vec![7, 8]),
+            scale: Shape::scalar(),
+            logical: Shape::new(vec![8, 8]),
+        })
+    );
+    assert_eq!(plan.assignments(), &before[..]);
+}
