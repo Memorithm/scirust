@@ -5,11 +5,16 @@ pub mod symbolic;
 use scirust_symbolic::Expr;
 use std::collections::HashMap;
 
+/// One symbolic Euler-Lagrange residual associated with a generalized coordinate.
 #[derive(Debug, Clone)]
 pub struct ELEquation {
+    /// Name of the generalized coordinate represented by this equation.
     pub coordinate: String,
+    /// Symbolic residual whose equation of motion is `residual = 0`.
     pub residual: Expr,
+    /// Acceleration variable names referenced by the residual.
     pub acceleration_deps: Vec<String>,
+    /// Whether the equation is represented explicitly in acceleration form.
     pub is_explicit: bool,
 }
 
@@ -23,28 +28,37 @@ impl std::fmt::Display for ELEquation {
     }
 }
 
+/// Symbolic Euler-Lagrange derivation for a Lagrangian and its coordinates.
 #[derive(Debug, Clone)]
 pub struct ELDerivation {
+    /// Derived equation for each generalized coordinate.
     pub equations: Vec<ELEquation>,
+    /// Symbolic Lagrangian used to derive the equations.
     pub lagrangian: Expr,
+    /// Ordered generalized-coordinate names.
     pub coordinates: Vec<String>,
+    /// Optional symbolic time-variable name.
     pub time_var: Option<String>,
 }
 
 impl ELDerivation {
+    /// Returns the number of generalized coordinates in the derivation.
     pub fn num_coordinates(&self) -> usize {
         self.coordinates.len()
     }
 
+    /// Returns whether every derived equation is marked explicit in acceleration.
     pub fn is_acceleration_explicit(&self) -> bool {
         self.equations.iter().all(|eq| eq.is_explicit)
     }
 
+    /// Finds the Euler-Lagrange equation associated with `coord`.
     pub fn get_equation(&self, coord: &str) -> Option<&ELEquation> {
         self.equations.iter().find(|eq| eq.coordinate == coord)
     }
 }
 
+/// Recursively substitutes every variable named `from` with `to` in an expression tree.
 pub fn substitute(expr: &Expr, from: &str, to: &Expr) -> Expr {
     match expr
     {
@@ -78,6 +92,7 @@ pub fn substitute(expr: &Expr, from: &str, to: &Expr) -> Expr {
     }
 }
 
+/// Collects the distinct variable names occurring in `expr` in sorted order.
 pub fn collect_vars_set(expr: &Expr) -> Vec<String> {
     let mut vars = std::collections::BTreeSet::new();
     collect_vars_into(expr, &mut vars);
@@ -111,6 +126,12 @@ fn collect_vars_into(expr: &Expr, out: &mut std::collections::BTreeSet<String>) 
     }
 }
 
+/// Builds symbolic coordinate, velocity, and acceleration variables for a Lagrangian.
+///
+/// For each coordinate `q`, the returned vectors contain `q`, `q_dot`, and `q_ddot`.
+/// The fourth vector mirrors the acceleration symbols for callers that need a dedicated
+/// acceleration dependency list. When `time_label` is supplied, the returned binding map
+/// contains that time symbol.
 pub fn make_lagrangian_symbolic(
     coords: &[&str],
     time_label: Option<&str>,
