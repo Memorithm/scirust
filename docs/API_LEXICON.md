@@ -10,7 +10,7 @@ reference, source-level discovery, and authoritative API documentation.
 2. `docs/REFERENCE.md` documents commands, quality gates, features, and API
    entry points.
 3. `scripts/api-lexicon.py` generates a compact, searchable lexicon of directly
-   declared public functions and methods across workspace crates.
+   declared public functions and methods across Cargo library targets.
 4. Rustdoc remains the authoritative API reference for effective visibility,
    signatures, re-exports, cfg expansion, trait-provided methods, generated
    items, and intra-doc links.
@@ -43,10 +43,11 @@ when present, and source file/line.
 
 ## What the lexicon indexes
 
-The scanner includes directly declared public Rust callables matching `pub fn`
-and the corresponding `async`, `const`, `unsafe`, and `extern` forms. This
-covers free functions and inherent public methods declared in workspace `src/`
-trees.
+The scanner first uses `cargo metadata` to select workspace packages that expose
+library-like Cargo targets. It then indexes directly declared public Rust
+callables matching `pub fn` and the corresponding `async`, `const`, `unsafe`,
+and `extern` forms. Conventional binary sources (`main.rs` and `src/bin/`) are
+excluded so binary helper functions are not presented as library API.
 
 The scanner deliberately does **not** claim that this source-level inventory is
 the exact externally reachable API. In particular, Rust visibility can be
