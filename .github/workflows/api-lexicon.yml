@@ -1,0 +1,126 @@
+name: API function lexicon
+
+on:
+  pull_request:
+    paths:
+      - "**/*.rs"
+      - "**/Cargo.toml"
+      - "scripts/api-lexicon.py"
+      - "docs/API_LEXICON.md"
+      - "docs/api-domains.json"
+      - "docs/api-doc-baseline.json"
+      - ".github/workflows/api-lexicon.yml"
+  push:
+    branches: [master]
+    paths:
+      - "**/*.rs"
+      - "**/Cargo.toml"
+      - "scripts/api-lexicon.py"
+      - "docs/API_LEXICON.md"
+      - "docs/api-domains.json"
+      - "docs/api-doc-baseline.json"
+      - ".github/workflows/api-lexicon.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  lexicon:
+    name: Generate public function inventory
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master
+        with:
+          toolchain: stable
+
+      - name: Validate generator, taxonomy and baseline syntax
+        run: |
+          python3 -m py_compile scripts/api-lexicon.py
+          python3 -m json.tool docs/api-domains.json >/dev/null
+          python3 -m json.tool docs/api-doc-baseline.json >/dev/null
+
+      - name: Generate lexicon, capability index and statistics
+        run: |
+          python3 scripts/api-lexicon.py \
+            --require-domain-coverage \
+            --check-doc-baseline docs/api-doc-baseline.json \
+            --output api-function-lexicon.md \
+            --stats-json api-function-lexicon.json \
+            --index-json api-function-index.json \
+            --domain-index api-capability-index.md
+          test -s api-function-lexicon.md
+          test -s api-function-lexicon.json
+          test -s api-function-index.json
+          test -s api-capability-index.md
+          grep -Fq '# SciRust public function lexicon' api-function-lexicon.md
+          grep -Fq '# SciRust capability index' api-capability-index.md
+
+      - name: Smoke test capability search and documentation-debt filters
+        run: |
+          python3 scripts/api-lexicon.py --list-domains | grep -Fq $'tensor-compute\tTensor & compute'
+          python3 scripts/api-lexicon.py \
+            --domain tensor-compute \
+            --query tensor \
+            --output /tmp/tensor-search.md
+          grep -Fq 'domains=tensor-compute' /tmp/tensor-search.md
+          python3 scripts/api-lexicon.py \
+            --missing-docs \
+            --output /tmp/missing-docs.md
+          grep -Fq 'missing-docs-only' /tmp/missing-docs.md
+
+      - name: Publish coverage and documentation-debt summary
+        shell: bash
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          from pathlib import Path
+
+          stats = json.loads(Path("api-function-lexicon.json").read_text())
+          total = stats["public_callables"]
+          documented = stats["documented"]
+          missing = stats["undocumented"]
+          packages = len(stats["packages"])
+          domains = stats["domains"]
+          unclassified = stats["unclassified_packages"]
+
+          print("### API function lexicon")
+          print()
+          print(f"- Directly declared public callables: **{total}**")
+          print(f"- With adjacent `///` summary: **{documented}**")
+          print(f"- Without adjacent `///` summary: **{missing}**")
+          print(f"- Workspace packages represented: **{packages}**")
+          print(f"- Capability domains: **{len(domains)}**")
+          print(f"- Unclassified represented packages: **{len(unclassified)}**")
+          print("- Documentation-debt baseline: **exact match required**")
+          print()
+          print("#### Largest adjacent-rustdoc gaps")
+          print()
+          print("| Package | Missing summaries | Public callables |")
+          print("|---|---:|---:|")
+          ranked = sorted(
+              stats["packages"].items(),
+              key=lambda item: (-item[1]["undocumented"], item[0]),
+          )[:10]
+          for package, values in ranked:
+              print(
+                  f"| `{package}` | {values['undocumented']} | "
+                  f"{values['public_callables']} |"
+              )
+          print()
+          print("Rustdoc remains authoritative for effective public reachability and signatures.")
+          PY
+
+      - name: Upload generated API discovery artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: scirust-api-function-lexicon-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            api-function-lexicon.md
+            api-function-lexicon.json
+            api-function-index.json
+            api-capability-index.md

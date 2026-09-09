@@ -1,0 +1,271 @@
+{
+  "schema_version": 1,
+  "domains": [
+    {
+      "id": "foundation-tooling",
+      "title": "Foundation & tooling",
+      "description": "Root facade, core/runtime infrastructure, command-line tooling, integration helpers, data frames, units, licensing and history utilities.",
+      "packages": [
+        "scirust",
+        "scirust-core",
+        "scirust-macros",
+        "scirust-runtime",
+        "scirust-cli",
+        "scirust-bridge",
+        "scirust-integration",
+        "scirust-frame",
+        "scirust-units",
+        "scirust-license",
+        "scirust-history"
+      ]
+    },
+    {
+      "id": "tensor-compute",
+      "title": "Tensor & compute",
+      "description": "Tensor representation and compilation, autodiff, compute backends, SIMD/GPU/CUDA paths, sparse operations, tensor networks, fusion and ONNX interoperability.",
+      "packages": [
+        "scirust-autodiff",
+        "scirust-compute",
+        "scirust-cuda",
+        "scirust-gpu",
+        "scirust-simd",
+        "scirust-sparse",
+        "scirust-tensor-core",
+        "scirust-tensor-ir",
+        "scirust-tensor-einsum",
+        "scirust-tensor-contraction",
+        "scirust-tensor-compile",
+        "scirust-tensor-reference",
+        "scirust-tensor-runtime",
+        "scirust-tn",
+        "scirust-fusion",
+        "scirust-onnx"
+      ]
+    },
+    {
+      "id": "learning-ai",
+      "title": "Learning & AI",
+      "description": "Learning algorithms, AutoML/NAS/RL, SciAgent/RSI, reasoning, neuro-symbolic and causal methods, language/vision/audio/graph components, retrieval/discovery and SOM components.",
+      "packages": [
+        "scirust-learning",
+        "scirust-automl",
+        "scirust-nas",
+        "scirust-rl-algo",
+        "scirust-sciagent",
+        "scirust-rsi",
+        "scirust-reasoning",
+        "scirust-neuro-symbolic",
+        "scirust-causal",
+        "scirust-gp",
+        "scirust-unsupervised",
+        "scirust-nlp-advanced",
+        "scirust-vision",
+        "scirust-audio",
+        "scirust-graph",
+        "scirust-retrieval",
+        "scirust-discovery",
+        "scirust-som-pcg",
+        "scirust-som-tokenizer",
+        "scirust-som-dataset",
+        "scirust-som-model",
+        "scirust-som-trainer",
+        "scirust-som-inference",
+        "scirust-som-symbolic",
+        "scirust-som-frontend",
+        "scirust-som-cli",
+        "scirust-som-visualizer"
+      ]
+    },
+    {
+      "id": "optimization-search",
+      "title": "Optimization & algorithm search",
+      "description": "Autotuning, evolutionary search, algorithm generation, symbolic regression, synthesis and variational optimization components.",
+      "packages": [
+        "elastic-autotuner",
+        "scirust-evo",
+        "scirust-algogen",
+        "scirust-symreg",
+        "scirust-synthesis",
+        "scirust-variational"
+      ]
+    },
+    {
+      "id": "algebra-symbolic",
+      "title": "Algebra & symbolic mathematics",
+      "description": "Algebraic, symbolic, modular-algebra, special-function, interpolation, fractional and elliptic-discovery components.",
+      "packages": [
+        "scirust-algebra",
+        "scirust-symbolic",
+        "scirust-modalg",
+        "scirust-special",
+        "scirust-interp",
+        "scirust-fractional",
+        "scirust-elliptic-discovery"
+      ]
+    },
+    {
+      "id": "numerics-statistics",
+      "title": "Numerics, statistics & estimation",
+      "description": "Numerical solvers, stiff systems, statistics, multivariate/sequential/seasonal analysis, forecasting, estimation, signal processing and Cayley filtering.",
+      "packages": [
+        "scirust-solvers",
+        "scirust-stiff",
+        "scirust-stats",
+        "scirust-multivariate",
+        "scirust-sequential",
+        "scirust-seasonal",
+        "scirust-forecast",
+        "scirust-estimation",
+        "scirust-signal",
+        "scirust-cayley-filter",
+        "scirust-sigma"
+      ]
+    },
+    {
+      "id": "simulation-physics",
+      "title": "Simulation & physics",
+      "description": "Simulation, fluid and thermal models, relativity/nonlocal-relativity experiments, and the ITD deterministic 2-D field-simulation core.",
+      "packages": [
+        "scirust-sim",
+        "scirust-fluids",
+        "scirust-thermo",
+        "scirust-relativity",
+        "scirust-nonlocal-relativity",
+        "nonlocal-relativity-experiments",
+        "scirust-itd"
+      ]
+    },
+    {
+      "id": "control-robotics",
+      "title": "Control, robotics & navigation",
+      "description": "Control and adaptive-control components together with robotics, navigation, battery, grid, HVAC and water-system models.",
+      "packages": [
+        "scirust-control",
+        "scirust-adaptive-control",
+        "scirust-robotics",
+        "scirust-nav",
+        "scirust-bms",
+        "scirust-grid",
+        "scirust-hvac",
+        "scirust-water"
+      ]
+    },
+    {
+      "id": "industrial-engineering",
+      "title": "Industrial & engineering domains",
+      "description": "Engineering-domain crates for machining, metrology, predictive maintenance, SPC, tolerances, fatigue, fabrication, civil/electrical/process/agricultural/maritime/biomedical work, reliability and safety-instrumented systems.",
+      "packages": [
+        "scirust-machining",
+        "scirust-metrology",
+        "scirust-pdm",
+        "scirust-spc",
+        "scirust-tolerance",
+        "scirust-fatigue",
+        "scirust-fab",
+        "scirust-civil",
+        "scirust-electrotech",
+        "scirust-process",
+        "scirust-agtech",
+        "scirust-maritime",
+        "scirust-biomed",
+        "scirust-reliability",
+        "scirust-sis"
+      ]
+    },
+    {
+      "id": "security-provenance",
+      "title": "Security, provenance & safety evidence",
+      "description": "Intrusion detection, hash signatures, cryptographic experiments, provenance/digests, capsules and functional-safety evidence components.",
+      "packages": [
+        "scirust-ids",
+        "scirust-hashsig",
+        "scirust-hypercrypto",
+        "scirust-provenance",
+        "scirust-digest",
+        "scirust-capsule",
+        "scirust-capsule-schema",
+        "scirust-func-safety"
+      ]
+    },
+    {
+      "id": "data-messaging",
+      "title": "Data transport, messaging & events",
+      "description": "MQTT, OPC UA, shared memory and event-model/runtime components.",
+      "packages": [
+        "scirust-mqtt",
+        "scirust-opcua",
+        "scirust-shm",
+        "scirust-events-core",
+        "scirust-events-models",
+        "scirust-events-runtime",
+        "scirust-events-examples"
+      ]
+    },
+    {
+      "id": "trading-finance",
+      "title": "Trading & financial tooling",
+      "description": "Trading and financial-migration components.",
+      "packages": [
+        "scirust-trader",
+        "scirust-finmigrate"
+      ]
+    },
+    {
+      "id": "agent-systems",
+      "title": "Agent systems & code transformation",
+      "description": "Agent protocol/CCOS/MCP components, attention-intent handling, scaffolding and code transformation/transpilation tooling.",
+      "packages": [
+        "scirust-agent-protocol",
+        "scirust-ccos",
+        "scirust-mcp",
+        "scirust-attention-intent",
+        "scirust-scaffold",
+        "scirust-codetrans",
+        "scirust-transpiler"
+      ]
+    },
+    {
+      "id": "studio-visualization",
+      "title": "Studio application services",
+      "description": "SciRust Studio command, schema, registry, runtime, IPC, storage and application-service libraries.",
+      "packages": [
+        "scirust-studio-app-service",
+        "scirust-studio-command",
+        "scirust-studio-ipc",
+        "scirust-studio-registry",
+        "scirust-studio-runtime",
+        "scirust-studio-schema",
+        "scirust-studio-store"
+      ]
+    },
+    {
+      "id": "deployment-operations",
+      "title": "Deployment & operations",
+      "description": "Embedded/edge deployment and MLOps components.",
+      "packages": [
+        "scirust-edge",
+        "scirust-embedded",
+        "scirust-mlops"
+      ]
+    },
+    {
+      "id": "research-methods",
+      "title": "Research methods",
+      "description": "Dedicated research-method crates for prospective dynamic-information analysis (TDI) and deterministic resonant-consensus closure/projection (SRCC).",
+      "packages": [
+        "scirust-tdi",
+        "scirust-srcc"
+      ]
+    },
+    {
+      "id": "research-benchmarks",
+      "title": "Research benchmarking & evaluation infrastructure",
+      "description": "Benchmark schema, SRCC benchmark and arena components used to structure or evaluate experiments.",
+      "packages": [
+        "scirust-bench-schema",
+        "scirust-srcc-bench",
+        "scirust-arena"
+      ]
+    }
+  ]
+}
