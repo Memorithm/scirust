@@ -2,9 +2,9 @@
 //! trading model.
 //!
 //! Given a perturbation radius `eps` around the input feature vector, we
-//! propagate interval bounds through the network and obtain a provable
-//! output interval `[lo, hi]`. The LLM is then **hard-constrained** to
-//! announce a prediction within this interval.
+//! propagate numerical interval estimates through the exported network.
+//! This f32 implementation has no directed rounding and is not a formal
+//! floating-point enclosure, a market-return guarantee, or an LLM constraint.
 //!
 //! This is a simplified IBP: for a linear layer `y = Wx + b`, if `x ∈ [x_lo, x_hi]`
 //! then `y_j ∈ [sum(W_ji * x_lo_i if W_ji>0 else W_ji * x_hi_i) + b_j,
@@ -15,6 +15,25 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 use crate::model::ModelWeights;
+
+/// Invalid input never produces a partial or zero-width certificate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CertificationError {
+    InvalidRadius,
+    InvalidInput,
+    InvalidLayer(usize),
+    NonScalarOutput,
+    NonFiniteArithmetic,
+    InvalidAgentConfiguration,
+}
+
+impl std::fmt::Display for CertificationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "interval estimation failed: {self:?}")
+    }
+}
+
+impl std::error::Error for CertificationError {}
 
 /// An interval `[lo, hi]`.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -70,25 +89,57 @@ impl CertifiedBounds {
 /// (`out` values) immediately followed by its weight matrix (`in*out`, row-major
 /// `(in, out)`). ReLU is applied after every layer except the last, mirroring the
 /// `Sequential` network. `input` is the feature vector; `eps` is the L∞ radius.
+///
+/// # Panics
+/// Panics on invalid input. Use `try_certify` at untrusted/public boundaries.
 pub fn certify(weights: &ModelWeights, input: &[f32], eps: f32) -> CertifiedBounds {
+    try_certify(weights, input, eps).expect("invalid certification input; use try_certify")
+}
+
+/// Checked numerical IBP for the exported linear/ReLU scalar network.
+///
+/// Rejects malformed layers, dimensional mismatch, nonfinite inputs/weights,
+/// invalid radius and nonfinite intermediate arithmetic. This does not verify
+/// training provenance or floating-point enclosure soundness.
+pub fn try_certify(
+    weights: &ModelWeights,
+    input: &[f32],
+    eps: f32,
+) -> Result<CertifiedBounds, CertificationError> {
+    if !eps.is_finite() || eps < 0.0
+    {
+        return Err(CertificationError::InvalidRadius);
+    }
+    if input.is_empty() || input.len() != weights.input_dim || input.iter().any(|x| !x.is_finite())
+    {
+        return Err(CertificationError::InvalidInput);
+    }
+    if weights.layers.is_empty()
+    {
+        return Err(CertificationError::InvalidLayer(0));
+    }
     let mut bounds: Vec<Interval> = input
         .iter()
         .map(|&x| Interval::new(x - eps, x + eps))
         .collect();
+    if bounds.iter().any(|b| !b.lo.is_finite() || !b.hi.is_finite())
+    {
+        return Err(CertificationError::NonFiniteArithmetic);
+    }
 
     let n_layers = weights.layers.len();
     for (li, entry) in weights.layers.iter().enumerate()
     {
         let in_dim = bounds.len();
         // entry = bias(out) ++ weight(in*out)  =>  len = out*(in+1)  =>  out = len/(in+1)
-        if in_dim == 0 || entry.len() % (in_dim + 1) != 0
+        if in_dim == 0 || entry.len() % (in_dim + 1) != 0 || entry.iter().any(|x| !x.is_finite())
         {
-            break;
+            return Err(CertificationError::InvalidLayer(li));
         }
         let out_dim = entry.len() / (in_dim + 1);
         if out_dim == 0
         {
-            break;
+            return Err(CertificationError::InvalidLayer(li));
         }
         let (b_flat, w_flat) = entry.split_at(out_dim);
         let mut out_bounds = Vec::with_capacity(out_dim);
@@ -111,6 +162,10 @@ pub fn certify(weights: &ModelWeights, input: &[f32], eps: f32) -> CertifiedBoun
                     hi += w * x_lo;
                 }
             }
+            if !lo.is_finite() || !hi.is_finite() || lo > hi
+            {
+                return Err(CertificationError::NonFiniteArithmetic);
+            }
             out_bounds.push(Interval::new(lo, hi));
         }
         bounds = out_bounds;
@@ -124,23 +179,24 @@ pub fn certify(weights: &ModelWeights, input: &[f32], eps: f32) -> CertifiedBoun
             }
         }
     }
-    let out = if bounds.is_empty()
+    if bounds.len() != 1
     {
-        Interval::new(0.0, 0.0)
+        return Err(CertificationError::NonScalarOutput);
     }
-    else
-    {
-        bounds[0]
-    };
+    let out = bounds[0];
     let midpoint = out.midpoint();
     let uncertainty = out.width() / 2.0;
-    CertifiedBounds {
+    if !midpoint.is_finite() || !uncertainty.is_finite()
+    {
+        return Err(CertificationError::NonFiniteArithmetic);
+    }
+    Ok(CertifiedBounds {
         eps,
         output: out,
         midpoint,
         uncertainty,
         weights_fingerprint: weights.fingerprint.clone(),
-    }
+    })
 }
 
 /// Feature attribution using Integrated Gradients.
@@ -173,6 +229,41 @@ pub fn feature_attribution(
 mod tests {
     use super::*;
     use crate::model::PricePredictor;
+
+    fn linear_weights(layers: Vec<Vec<f32>>, input_dim: usize) -> ModelWeights {
+        ModelWeights { layers, input_dim, fingerprint: "test-only".into() }
+    }
+
+    #[test]
+    fn checked_certification_rejects_malformed_inputs() {
+        let weights = linear_weights(vec![vec![1.0, 2.0]], 1);
+        for eps in [-1.0, f32::NAN, f32::INFINITY]
+        {
+            assert_eq!(try_certify(&weights, &[1.0], eps).unwrap_err(), CertificationError::InvalidRadius);
+        }
+        for input in [vec![], vec![1.0, 2.0], vec![f32::NAN], vec![f32::INFINITY]]
+        {
+            assert_eq!(try_certify(&weights, &input, 0.0).unwrap_err(), CertificationError::InvalidInput);
+        }
+        for layers in [vec![], vec![vec![]], vec![vec![1.0]], vec![vec![0.0, f32::NAN]],
+                       vec![vec![0.0, 1.0], vec![1.0]]]
+        {
+            assert!(matches!(try_certify(&linear_weights(layers, 1), &[1.0], 0.0), Err(CertificationError::InvalidLayer(_))));
+        }
+        assert_eq!(try_certify(&linear_weights(vec![vec![0.0; 4]], 1), &[1.0], 0.0).unwrap_err(), CertificationError::NonScalarOutput);
+        assert_eq!(try_certify(&weights, &[f32::MAX], f32::MAX).unwrap_err(), CertificationError::NonFiniteArithmetic);
+        assert_eq!(try_certify(&linear_weights(vec![vec![0.0, f32::MAX]], 1), &[2.0], 0.0).unwrap_err(), CertificationError::NonFiniteArithmetic);
+    }
+
+    #[test]
+    fn checked_linear_interval_matches_independent_corner_oracle() {
+        // y = 1 - 2*x0 + 3*x1; exact integer-valued corner arithmetic.
+        let weights = linear_weights(vec![vec![1.0, -2.0, 3.0]], 2);
+        let bounds = try_certify(&weights, &[2.0, 3.0], 1.0).unwrap();
+        let corners: Vec<f32> = [1.0, 3.0].iter().flat_map(|x| [2.0, 4.0].iter().map(move |y| 1.0 - 2.0*x + 3.0*y)).collect();
+        assert_eq!(bounds.output.lo, corners.iter().copied().fold(f32::INFINITY, f32::min));
+        assert_eq!(bounds.output.hi, corners.iter().copied().fold(f32::NEG_INFINITY, f32::max));
+    }
 
     #[test]
     fn interval_basic() {
