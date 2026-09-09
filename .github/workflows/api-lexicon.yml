@@ -8,6 +8,7 @@ on:
       - "scripts/api-lexicon.py"
       - "docs/API_LEXICON.md"
       - "docs/api-domains.json"
+      - "docs/api-doc-baseline.json"
       - ".github/workflows/api-lexicon.yml"
   push:
     branches: [master]
@@ -17,6 +18,7 @@ on:
       - "scripts/api-lexicon.py"
       - "docs/API_LEXICON.md"
       - "docs/api-domains.json"
+      - "docs/api-doc-baseline.json"
       - ".github/workflows/api-lexicon.yml"
 
 permissions:
@@ -34,15 +36,17 @@ jobs:
         with:
           toolchain: stable
 
-      - name: Validate generator and taxonomy syntax
+      - name: Validate generator, taxonomy and baseline syntax
         run: |
           python3 -m py_compile scripts/api-lexicon.py
           python3 -m json.tool docs/api-domains.json >/dev/null
+          python3 -m json.tool docs/api-doc-baseline.json >/dev/null
 
       - name: Generate lexicon, capability index and statistics
         run: |
           python3 scripts/api-lexicon.py \
             --require-domain-coverage \
+            --check-doc-baseline docs/api-doc-baseline.json \
             --output api-function-lexicon.md \
             --stats-json api-function-lexicon.json \
             --index-json api-function-index.json \
@@ -90,6 +94,7 @@ jobs:
           print(f"- Workspace packages represented: **{packages}**")
           print(f"- Capability domains: **{len(domains)}**")
           print(f"- Unclassified represented packages: **{len(unclassified)}**")
+          print("- Documentation-debt baseline: **exact match required**")
           print()
           print("#### Largest adjacent-rustdoc gaps")
           print()
