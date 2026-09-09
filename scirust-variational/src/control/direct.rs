@@ -14,6 +14,84 @@ where
     let m = problem.control_dim;
     let s = problem.state_dim;
     let (t0, tf) = problem.horizon;
+
+    if s == 0
+    {
+        return Err(VariationalError::DimensionMismatch {
+            expected: 1,
+            got: 0,
+            context: "direct_shooting: state dimension".into(),
+        });
+    }
+    if m == 0
+    {
+        return Err(VariationalError::DimensionMismatch {
+            expected: 1,
+            got: 0,
+            context: "direct_shooting: control dimension".into(),
+        });
+    }
+    if problem.initial_state.len() != s
+    {
+        return Err(VariationalError::DimensionMismatch {
+            expected: s,
+            got: problem.initial_state.len(),
+            context: "direct_shooting: initial state".into(),
+        });
+    }
+    if n < 2
+    {
+        return Err(VariationalError::DimensionMismatch {
+            expected: 2,
+            got: n,
+            context: "direct_shooting: num_time_steps".into(),
+        });
+    }
+    if t0 >= tf
+    {
+        return Err(VariationalError::InvalidInterval { start: t0, end: tf });
+    }
+
+    if let Some(bounds) = problem.control_bounds.as_ref()
+    {
+        if bounds.lower.len() != m
+        {
+            return Err(VariationalError::DimensionMismatch {
+                expected: m,
+                got: bounds.lower.len(),
+                context: "direct_shooting: control lower bounds".into(),
+            });
+        }
+        if bounds.upper.len() != m
+        {
+            return Err(VariationalError::DimensionMismatch {
+                expected: m,
+                got: bounds.upper.len(),
+                context: "direct_shooting: control upper bounds".into(),
+            });
+        }
+    }
+
+    if let Some(bounds) = problem.state_bounds.as_ref()
+    {
+        if bounds.lower.len() != s
+        {
+            return Err(VariationalError::DimensionMismatch {
+                expected: s,
+                got: bounds.lower.len(),
+                context: "direct_shooting: state lower bounds".into(),
+            });
+        }
+        if bounds.upper.len() != s
+        {
+            return Err(VariationalError::DimensionMismatch {
+                expected: s,
+                got: bounds.upper.len(),
+                context: "direct_shooting: state upper bounds".into(),
+            });
+        }
+    }
+
     let dt = (tf - t0) / (n - 1) as f32;
 
     if u_initial_guess.len() != n * m
@@ -189,6 +267,53 @@ mod tests {
         let solution = direct_shooting(&problem, &u_init).unwrap();
         assert_eq!(solution.states.len(), n);
         assert!(solution.objective.is_finite(), "objective should be finite");
+    }
+
+    #[test]
+    fn rejects_too_few_time_steps_before_rollout() {
+        let dynamics = |_t: f32, _x: &[f32], _u: &[f32], dx: &mut [f32]| {
+            dx[0] = 0.0;
+        };
+        let running_cost = |_t: f32, _x: &[f32], _u: &[f32]| -> f32 { 0.0 };
+        let terminal_cost = |_x: &[f32], _t: f32| -> f32 { 0.0 };
+
+        let problem = OptimalControlProblem::new(
+            1,
+            1,
+            dynamics,
+            running_cost,
+            terminal_cost,
+            vec![0.0],
+            (0.0, 1.0),
+        )
+        .unwrap()
+        .with_time_steps(1);
+
+        assert!(direct_shooting(&problem, &[0.0]).is_err());
+    }
+
+    #[test]
+    fn rejects_mismatched_control_bounds_before_indexing() {
+        let dynamics = |_t: f32, _x: &[f32], _u: &[f32], dx: &mut [f32]| {
+            dx[0] = 0.0;
+        };
+        let running_cost = |_t: f32, _x: &[f32], _u: &[f32]| -> f32 { 0.0 };
+        let terminal_cost = |_x: &[f32], _t: f32| -> f32 { 0.0 };
+
+        let problem = OptimalControlProblem::new(
+            1,
+            2,
+            dynamics,
+            running_cost,
+            terminal_cost,
+            vec![0.0],
+            (0.0, 1.0),
+        )
+        .unwrap()
+        .with_time_steps(2)
+        .with_control_bounds(ControlBounds::new(vec![-1.0], vec![1.0]).unwrap());
+
+        assert!(direct_shooting(&problem, &[0.0; 4]).is_err());
     }
 
     #[test]
