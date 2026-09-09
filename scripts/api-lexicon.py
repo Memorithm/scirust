@@ -125,6 +125,16 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="fail if a represented library package is absent from the taxonomy",
     )
+    parser.add_argument(
+        "--check-doc-baseline",
+        type=Path,
+        help="require current adjacent-rustdoc debt to exactly match this baseline",
+    )
+    parser.add_argument(
+        "--write-doc-baseline",
+        type=Path,
+        help="write the current adjacent-rustdoc debt baseline to this path",
+    )
     return parser.parse_args()
 
 
@@ -588,6 +598,74 @@ def render_domain_index(entries: list[Entry], domains: list[Domain]) -> str:
     return "\n".join(lines)
 
 
+def doc_baseline_payload(entries: list[Entry]) -> dict:
+    counts = package_counts(entries)
+    package_debt = {
+        package: values["undocumented"]
+        for package, values in sorted(counts.items())
+    }
+    return {
+        "schema_version": 1,
+        "metric": "directly_declared_public_callables_without_adjacent_rustdoc_summary",
+        "total_undocumented": sum(package_debt.values()),
+        "packages": package_debt,
+    }
+
+
+def baseline_path(root: Path, configured: Path) -> Path:
+    return configured if configured.is_absolute() else root / configured
+
+
+def validate_doc_baseline(path: Path, entries: list[Entry]) -> None:
+    if not path.is_file():
+        raise RuntimeError(f"documentation debt baseline does not exist: {path}")
+    try:
+        expected = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"invalid documentation debt baseline JSON: {exc}") from exc
+
+    if expected.get("schema_version") != 1:
+        raise RuntimeError("documentation debt baseline schema_version must be 1")
+    if expected.get("metric") != (
+        "directly_declared_public_callables_without_adjacent_rustdoc_summary"
+    ):
+        raise RuntimeError("documentation debt baseline metric is not recognized")
+    expected_packages = expected.get("packages")
+    if not isinstance(expected_packages, dict):
+        raise RuntimeError("documentation debt baseline needs a `packages` object")
+
+    current = doc_baseline_payload(entries)
+    current_packages = current["packages"]
+    changed: list[str] = []
+    for package in sorted(set(expected_packages) | set(current_packages)):
+        old = expected_packages.get(package, 0)
+        new = current_packages.get(package, 0)
+        if not isinstance(old, int) or old < 0:
+            raise RuntimeError(
+                f"documentation debt baseline has invalid count for `{package}`"
+            )
+        if old != new:
+            direction = "regression" if new > old else "improvement"
+            changed.append(f"{package}: {old} -> {new} ({direction})")
+
+    expected_total = expected.get("total_undocumented")
+    if not isinstance(expected_total, int) or expected_total < 0:
+        raise RuntimeError("documentation debt baseline total_undocumented is invalid")
+    if expected_total != sum(expected_packages.values()):
+        raise RuntimeError(
+            "documentation debt baseline total does not equal its package counts"
+        )
+
+    if changed:
+        details = "; ".join(changed[:20])
+        if len(changed) > 20:
+            details += f"; ... and {len(changed) - 20} more"
+        raise RuntimeError(
+            "documentation debt baseline changed; refresh it only after reviewing "
+            f"the API documentation delta: {details}"
+        )
+
+
 def write_text(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
@@ -618,6 +696,30 @@ def main() -> int:
             raise RuntimeError(
                 "represented package(s) missing from domain taxonomy: "
                 + ", ".join(unclassified)
+            )
+
+        if args.check_doc_baseline and args.write_doc_baseline:
+            raise RuntimeError(
+                "--check-doc-baseline and --write-doc-baseline are mutually exclusive"
+            )
+        if (args.check_doc_baseline or args.write_doc_baseline) and (
+            args.package or args.domain or args.query or args.missing_docs
+        ):
+            raise RuntimeError(
+                "documentation debt baseline operations require the full unfiltered lexicon"
+            )
+        if args.check_doc_baseline:
+            validate_doc_baseline(
+                baseline_path(root, args.check_doc_baseline), all_entries
+            )
+        if args.write_doc_baseline:
+            target = baseline_path(root, args.write_doc_baseline)
+            write_text(
+                target,
+                json.dumps(
+                    doc_baseline_payload(all_entries), indent=2, sort_keys=True
+                )
+                + "\n",
             )
 
         entries = filter_entries(
