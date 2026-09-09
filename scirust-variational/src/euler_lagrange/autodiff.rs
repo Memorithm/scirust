@@ -3,30 +3,44 @@ use scirust_core::tensor::tensor_nd::TensorND;
 
 use crate::error::{Result, VariationalError};
 
+/// Finite-difference approximation of the Lagrangian Hessian with respect to velocity.
 #[derive(Debug, Clone)]
 pub struct VelocityHessian {
+    /// Dense Hessian matrix in generalized-coordinate order.
     pub matrix: Vec<Vec<f32>>,
+    /// Estimated conditioning ratio used by the solver's singularity heuristic.
     pub condition_number: f32,
+    /// Whether the Hessian is classified as singular by the configured tolerance.
     pub is_singular: bool,
 }
 
+/// Result of solving the Euler-Lagrange system for generalized acceleration.
 #[derive(Debug, Clone)]
 pub struct AccelerationResult {
+    /// Generalized acceleration vector.
     pub acceleration: Vec<f32>,
+    /// Velocity Hessian used for the linear solve.
     pub hessian: VelocityHessian,
+    /// Right-hand side of the solved Euler-Lagrange linear system.
     pub rhs: Vec<f32>,
+    /// Euclidean norm of the linear-system residual for the returned acceleration.
     pub residual_norm: f32,
 }
 
+/// First derivatives of a Lagrangian with respect to coordinates and velocities.
 #[derive(Debug, Clone)]
 pub struct ELGradients {
+    /// Partial derivatives of the Lagrangian with respect to generalized coordinates.
     #[allow(non_snake_case)]
     pub dL_dq: Vec<f32>,
+    /// Partial derivatives of the Lagrangian with respect to generalized velocities.
     #[allow(non_snake_case)]
     pub dL_ddq: Vec<f32>,
 }
 
+/// Interface for a Lagrangian that can be evaluated on SciRust's N-dimensional autodiff tape.
 pub trait DifferentiableLagrangian {
+    /// Evaluates the Lagrangian from coordinate, velocity, and optional time variables.
     fn compute_lagrangian<'t>(
         &self,
         tape: &'t NdTape,
@@ -36,13 +50,18 @@ pub trait DifferentiableLagrangian {
     ) -> NdVar<'t>;
 }
 
+/// Autodiff-backed numerical Euler-Lagrange evaluator for a fixed coordinate dimension.
 pub struct AutodiffEulerLagrange {
+    /// Number of generalized coordinates expected by the evaluator.
     pub ndim: usize,
+    /// Finite-difference step used for second and mixed derivatives.
     pub epsilon: f32,
+    /// Threshold used when classifying the velocity Hessian as singular.
     pub singularity_tol: f32,
 }
 
 impl AutodiffEulerLagrange {
+    /// Creates an evaluator with default finite-difference and singularity tolerances.
     pub fn new(ndim: usize) -> Self {
         Self {
             ndim,
@@ -51,12 +70,14 @@ impl AutodiffEulerLagrange {
         }
     }
 
+    /// Replaces the finite-difference step and Hessian singularity tolerance.
     pub fn with_tolerances(mut self, epsilon: f32, singularity_tol: f32) -> Self {
         self.epsilon = epsilon;
         self.singularity_tol = singularity_tol;
         self
     }
 
+    /// Computes first derivatives of the Lagrangian at `(q, dq, t)` using reverse-mode autodiff.
     pub fn compute_gradients<F>(
         &self,
         lagrangian: &F,
@@ -115,6 +136,7 @@ impl AutodiffEulerLagrange {
         Ok(ELGradients { dL_dq, dL_ddq })
     }
 
+    /// Approximates the velocity Hessian by centered finite differences of autodiff gradients.
     pub fn compute_velocity_hessian<F>(
         &self,
         lagrangian: &F,
@@ -159,6 +181,10 @@ impl AutodiffEulerLagrange {
         })
     }
 
+    /// Solves the Euler-Lagrange equations for acceleration at `(q, dq, t)`.
+    ///
+    /// The method combines autodiff first derivatives, finite-difference second and
+    /// mixed derivatives, a velocity-Hessian singularity check, and a dense linear solve.
     pub fn compute_acceleration<F>(
         &self,
         lagrangian: &F,
