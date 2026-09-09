@@ -1,14 +1,13 @@
 //! Trading agent — the orchestrator that ties market → indicators → model →
 //! certify → LLM narration → proof.
 //!
-//! **Golden rule**: the LLM never decides alone. The `TradingAgent` emits a
-//! `CertifiedPrediction` first (pure SciRust), then asks the LLM to narrate
-//! and sanity-check it. If the LLM's narration falls outside the certified
-//! bounds, the decision is **blocked** and an alert is raised.
+//! `TradingAgent` emits a numerical model-sensitivity estimate and asks the
+//! narrator to describe it. `llm_consistent` is a heuristic text check, not a
+//! hallucination guarantee, order authorization, blocking action or alert.
 
 use serde::{Deserialize, Serialize};
 
-use crate::certify::{CertifiedBounds, certify, feature_attribution};
+use crate::certify::{CertificationError, CertifiedBounds, feature_attribution, try_certify};
 use crate::indicators::IndicatorSet;
 use crate::market::{MarketFeed, MarketSnapshot};
 use crate::model::{PricePredictor, build_features};
@@ -169,7 +168,7 @@ impl OllamaClient {
             .join(", ");
         format!(
             "You are a crypto trading analyst. The SciRust model has produced a \
-             CERTIFIED prediction (mathematically proven bounds via Interval Bound Propagation):\n\n\
+             numerical model-sensitivity estimate (f32 IBP, not formally rounded or a market guarantee):\n\n\
              Symbol: {}\n\
              Action: {}\n\
              Raw predicted return: {:.6}\n\
@@ -312,7 +311,43 @@ impl TradingAgent {
     }
 
     /// Process one market snapshot → certified prediction → LLM narration.
+    ///
+    /// # Panics
+    /// Panics on invalid configuration/data. Use `try_process` for untrusted inputs.
     pub fn process(&mut self, snapshot: &MarketSnapshot) -> DecisionRecord {
+        self.try_process(snapshot)
+            .expect("invalid agent input; use try_process")
+    }
+
+    /// Fallible entrypoint; validates before model inference or narration.
+    pub fn try_process(
+        &mut self,
+        snapshot: &MarketSnapshot,
+    ) -> Result<DecisionRecord, CertificationError> {
+        if self.lookback == 0
+            || self.lookback.checked_add(3) != Some(self.model.input_dim)
+            || !self.action_threshold.is_finite()
+            || self.action_threshold < 0.0
+        {
+            return Err(CertificationError::InvalidAgentConfiguration);
+        }
+        if snapshot.candles.is_empty()
+            || snapshot.candles.iter().any(|c| {
+                !c.open.is_finite()
+                    || !c.high.is_finite()
+                    || !c.low.is_finite()
+                    || !c.close.is_finite()
+                    || !c.volume.is_finite()
+                    || c.low <= 0.0
+                    || c.low > c.open
+                    || c.low > c.close
+                    || c.high < c.open
+                    || c.high < c.close
+                    || c.volume < 0.0
+            })
+        {
+            return Err(CertificationError::InvalidInput);
+        }
         let closes = snapshot.closes();
         let _n = closes.len();
         let highs: Vec<f32> = snapshot.candles.iter().map(|c| c.high).collect();
@@ -329,17 +364,24 @@ impl TradingAgent {
             self.lookback,
         );
 
-        let raw_pred = self.model.predict(&features);
-        let action = Action::from_prediction(raw_pred, self.action_threshold);
-
         let weights = self.model.export_weights();
-        let bounds = certify(&weights, &features, self.certify_eps);
+        let bounds = try_certify(&weights, &features, self.certify_eps)?;
+        let raw_pred = self.model.predict(&features);
+        if !raw_pred.is_finite()
+        {
+            return Err(CertificationError::NonFiniteArithmetic);
+        }
+        let action = Action::from_prediction(raw_pred, self.action_threshold);
 
         let feature_names: Vec<String> = (0..self.lookback)
             .map(|i| format!("close_{}", i))
             .chain(["rsi", "macd_hist", "atr"].iter().map(|s| s.to_string()))
             .collect();
         let attribution = feature_attribution(&mut self.model, &features, &feature_names);
+        if attribution.values().any(|value| !value.is_finite())
+        {
+            return Err(CertificationError::NonFiniteArithmetic);
+        }
 
         let pred = CertifiedPrediction {
             symbol: snapshot.symbol.clone(),
@@ -355,12 +397,12 @@ impl TradingAgent {
         let narration = self.llm.narrate(&pred);
         let consistent = self.llm.sanity_check(&pred, &narration);
 
-        DecisionRecord {
+        Ok(DecisionRecord {
             prediction: pred,
             narration,
             llm_consistent: consistent,
             timestamp_ms: chrono::Utc::now().timestamp_millis(),
-        }
+        })
     }
 
     /// Run a backtest on a mock feed and produce proofs.
@@ -396,6 +438,33 @@ impl TradingAgent {
 mod tests {
     use super::*;
     use crate::market::MockExchange;
+
+    #[test]
+    fn checked_agent_rejects_configuration_and_data_before_inference() {
+        let mut agent = TradingAgent::new(
+            PricePredictor::new(13, &[8], 42),
+            Box::new(DeterministicNarrator),
+        );
+        let mut feed = MockExchange::new(42, 100.0);
+        let mut snapshot = feed.next_snapshot(50).unwrap();
+        agent.lookback = usize::MAX;
+        assert_eq!(
+            agent.try_process(&snapshot).unwrap_err(),
+            CertificationError::InvalidAgentConfiguration
+        );
+        agent.lookback = 10;
+        agent.certify_eps = -1.0;
+        assert_eq!(
+            agent.try_process(&snapshot).unwrap_err(),
+            CertificationError::InvalidRadius
+        );
+        agent.certify_eps = 0.01;
+        snapshot.candles[0].close = f32::NAN;
+        assert_eq!(
+            agent.try_process(&snapshot).unwrap_err(),
+            CertificationError::InvalidInput
+        );
+    }
 
     #[test]
     fn agent_processes_snapshot() {

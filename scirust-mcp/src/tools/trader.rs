@@ -1083,11 +1083,10 @@ fn chart_tool() -> McpTool {
 fn certified_predict_tool() -> McpTool {
     McpTool {
         name: "trader_certified_predict".to_string(),
-        description: "Run SciRust's certified ML predictor on an OHLCV window. A small MLP predicts \
-            the next-bar return; Interval Bound Propagation then proves a certified output interval \
-            the prediction is guaranteed to lie in, so any LLM narration is hard-bounded and cannot \
-            hallucinate a move outside it. Returns the action, the certified bounds, feature \
-            attributions, and SHA-256 fingerprints of the input window and model weights."
+        description: "Run a seeded, untrained demonstration MLP on an OHLCV window. Returns \
+            f32 interval-propagation estimates of model sensitivity, feature attributions and \
+            fingerprints. Not a trained forecast, formal floating-point enclosure, market-return \
+            guarantee, hallucination prevention mechanism or trading authorization."
             .to_string(),
         input_schema: json!({
             "type": "object",
@@ -1111,10 +1110,17 @@ fn certified_predict_tool() -> McpTool {
             let mut agent = TradingAgent::new(model, Box::new(DeterministicNarrator));
             agent.lookback = 10;
             let snapshot = snapshot_from(&symbol, "provided", candles);
-            let record = agent.process(&snapshot);
+            let record = agent
+                .try_process(&snapshot)
+                .map_err(|error| error.to_string())?;
             let p = &record.prediction;
             Ok(json!({
                 "symbol": p.symbol,
+                "model_status": "untrained_seeded_demo",
+                "bound_scope": "exported_linear_relu_model_input_perturbation",
+                "formal_floating_point_enclosure": false,
+                "market_return_guarantee": false,
+                "narration_check": "heuristic_not_authorization",
                 "action": p.action.label(),
                 "raw_prediction": p.raw_prediction,
                 "certified_interval": { "lo": p.bounds.output.lo, "hi": p.bounds.output.hi },
@@ -2599,6 +2605,9 @@ mod tests {
     fn certified_predict_bounds() {
         let t = tool("trader_certified_predict");
         let out = (t.handler)(json!({ "ohlcv": mock_ohlcv(50) })).unwrap();
+        assert_eq!(out["model_status"], "untrained_seeded_demo");
+        assert_eq!(out["formal_floating_point_enclosure"], false);
+        assert_eq!(out["market_return_guarantee"], false);
         let lo = out["certified_interval"]["lo"].as_f64().unwrap();
         let hi = out["certified_interval"]["hi"].as_f64().unwrap();
         assert!(lo <= hi);
