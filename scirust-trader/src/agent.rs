@@ -331,7 +331,8 @@ impl TradingAgent {
         {
             return Err(CertificationError::InvalidAgentConfiguration);
         }
-        if snapshot.candles.is_empty()
+        const MIN_INDICATOR_HISTORY: usize = 26;
+        if snapshot.candles.len() < MIN_INDICATOR_HISTORY
             || snapshot.candles.iter().any(|c| {
                 !c.open.is_finite()
                     || !c.high.is_finite()
@@ -464,6 +465,17 @@ mod tests {
             agent.try_process(&snapshot).unwrap_err(),
             CertificationError::InvalidInput
         );
+
+        let valid_snapshot = feed.next_snapshot(50).unwrap();
+        for len in [1usize, 25]
+        {
+            let mut short_snapshot = valid_snapshot.clone();
+            short_snapshot.candles.truncate(len);
+            assert_eq!(
+                agent.try_process(&short_snapshot).unwrap_err(),
+                CertificationError::InvalidInput
+            );
+        }
     }
 
     #[test]
