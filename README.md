@@ -176,6 +176,7 @@ and exact command instead.
 - [Quickstart](docs/QUICKSTART.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Command and API reference](docs/REFERENCE.md)
+- [Public function lexicon](docs/API_LEXICON.md)
 - [GPU status and usage](docs/GPU.md)
 - [Test protocol](docs/TEST_PROTOCOL.md)
 - [Release process](docs/RELEASING.md)
