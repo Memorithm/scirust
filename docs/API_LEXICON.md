@@ -2,8 +2,8 @@
 
 SciRust is large enough that a hand-maintained function catalogue would drift
 quickly. The documentation stack therefore separates orientation, operational
-reference, source-level discovery, capability navigation, and authoritative API
-documentation.
+reference, source-level discovery, capability navigation, documentation-debt
+control, and authoritative API documentation.
 
 ## Documentation layers
 
@@ -14,15 +14,17 @@ documentation.
    declared public functions and methods across Cargo library targets.
 4. `docs/api-domains.json` is the reviewed navigation taxonomy that maps
    workspace packages to functional domains.
-5. The generated capability index summarizes API volume and adjacent-rustdoc
+5. `docs/api-doc-baseline.json` is the reviewed adjacent-rustdoc debt baseline
+   used as a CI ratchet.
+6. The generated capability index summarizes API volume and adjacent-rustdoc
    coverage by domain and package.
-6. Rustdoc remains the authoritative API reference for effective visibility,
+7. Rustdoc remains the authoritative API reference for effective visibility,
    signatures, re-exports, cfg expansion, trait-provided methods, generated
    items, and intra-doc links.
 
 This distinction is intentional: the lexicon and capability taxonomy are
-optimized for discovering where a capability lives; rustdoc is optimized for
-exact API semantics.
+optimized for discovering where a capability lives; the debt baseline controls
+measurable drift; rustdoc is optimized for exact API semantics.
 
 ## Generate the current function lexicon
 
@@ -102,6 +104,42 @@ undocumented everywhere. The symbol may be explained by module-level docs,
 traits, generated documentation, or a longer guide. The metric is useful for
 prioritization because it is mechanical and reproducible, but it must not be
 presented as semantic documentation coverage.
+
+## Documentation-debt ratchet
+
+`docs/api-doc-baseline.json` records, per represented package, the number of
+directly declared public callables for which the scanner did not find an
+adjacent `///` summary. CI requires an exact match with this baseline:
+
+```bash
+python3 scripts/api-lexicon.py \
+  --check-doc-baseline docs/api-doc-baseline.json \
+  --output /tmp/scirust-api-functions.md
+```
+
+This produces two useful failure modes:
+
+- if the count increases, CI exposes a documentation regression instead of
+  allowing new undocumented public callables to accumulate silently;
+- if the count decreases, CI also asks for an explicit baseline refresh so the
+  improvement becomes the new lower ceiling rather than being lost later.
+
+After reviewing an intentional documentation improvement, refresh the baseline
+with the same source-level scanner:
+
+```bash
+python3 scripts/api-lexicon.py \
+  --write-doc-baseline docs/api-doc-baseline.json \
+  --output /tmp/scirust-api-functions.md
+
+git diff -- docs/api-doc-baseline.json
+```
+
+A baseline increase should normally be treated as a regression to fix, not a
+number to accept automatically. The file exists to make that decision visible
+in code review. Baseline check/write operations deliberately reject package,
+domain, query, and `--missing-docs` filters so a partial inventory cannot be
+mistaken for the workspace baseline.
 
 ## Capability taxonomy
 
@@ -184,16 +222,18 @@ inspect before dropping into specialist crates.
 ## CI and review artifacts
 
 The `API function lexicon` GitHub Actions workflow runs when Rust sources,
-Cargo manifests, the generator, taxonomy, guide, or workflow itself change. It:
+Cargo manifests, the generator, taxonomy, debt baseline, guide, or workflow
+itself change. It:
 
-1. validates Python and taxonomy JSON syntax;
+1. validates Python, taxonomy JSON, and baseline JSON syntax;
 2. regenerates the full lexicon;
 3. requires every represented package to be classified;
-4. generates aggregate statistics, the machine-readable callable index, and the
+4. requires the adjacent-rustdoc debt counts to match the reviewed baseline;
+5. generates aggregate statistics, the machine-readable callable index, and the
    capability index;
-5. smoke-tests domain search and the documentation-debt filter;
-6. publishes the largest adjacent-rustdoc gaps in the Actions summary;
-7. uploads all generated discovery artifacts for review.
+6. smoke-tests domain search and the documentation-debt filter;
+7. publishes the largest adjacent-rustdoc gaps in the Actions summary;
+8. uploads all generated discovery artifacts for review.
 
 The workflow is intentionally non-destructive: it does not commit generated
 output or rewrite source documentation from CI.
@@ -207,4 +247,6 @@ sentence, but it must never become a second manually maintained API truth.
 
 The domain taxonomy should describe discoverability, not redefine architecture.
 When a crate's responsibility changes, update its code/docs first and then
-update the taxonomy to match the reviewed reality.
+update the taxonomy to match the reviewed reality. The debt baseline should
+ratchet downward as documentation improves and should not be raised merely to
+make CI green.
