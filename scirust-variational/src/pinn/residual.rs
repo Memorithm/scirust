@@ -16,8 +16,7 @@ pub enum DifferentialOperator {
 
 impl std::fmt::Display for DifferentialOperator {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self
-        {
+        match self {
             Self::FirstDerivative(i) => write!(f, "d/dx{i}"),
             Self::SecondDerivative(i) => write!(f, "d²/dx{i}²"),
             Self::Gradient => write!(f, "∇"),
@@ -34,8 +33,7 @@ pub fn try_central_difference_1d<F: Fn(f32) -> f32>(
     h: f32,
 ) -> Result<(f32, f32)> {
     validate_step(h, "try_central_difference_1d")?;
-    if !x.is_finite()
-    {
+    if !x.is_finite() {
         return Err(VariationalError::NonFiniteValue {
             component: "central-difference coordinate",
             value: x,
@@ -44,15 +42,13 @@ pub fn try_central_difference_1d<F: Fn(f32) -> f32>(
 
     let xp = x + h;
     let xm = x - h;
-    if !xp.is_finite()
-    {
+    if !xp.is_finite() {
         return Err(VariationalError::NonFiniteValue {
             component: "central-difference positive perturbation",
             value: xp,
         });
     }
-    if !xm.is_finite()
-    {
+    if !xm.is_finite() {
         return Err(VariationalError::NonFiniteValue {
             component: "central-difference negative perturbation",
             value: xm,
@@ -78,16 +74,14 @@ pub fn try_central_difference<F: Fn(&[f32]) -> f32>(
     h: f32,
 ) -> Result<(f32, f32)> {
     validate_step(h, "try_central_difference")?;
-    if axis >= x.len()
-    {
+    if axis >= x.len() {
         return Err(VariationalError::DimensionMismatch {
             expected: x.len(),
             got: axis.saturating_add(1),
             context: "try_central_difference axis".into(),
         });
     }
-    if let Some(&value) = x.iter().find(|value| !value.is_finite())
-    {
+    if let Some(&value) = x.iter().find(|value| !value.is_finite()) {
         return Err(VariationalError::NonFiniteValue {
             component: "central-difference coordinate",
             value,
@@ -96,8 +90,7 @@ pub fn try_central_difference<F: Fn(&[f32]) -> f32>(
 
     let mut xp = x.to_vec();
     xp[axis] += h;
-    if !xp[axis].is_finite()
-    {
+    if !xp[axis].is_finite() {
         return Err(VariationalError::NonFiniteValue {
             component: "central-difference positive perturbation",
             value: xp[axis],
@@ -107,8 +100,7 @@ pub fn try_central_difference<F: Fn(&[f32]) -> f32>(
 
     let mut xm = x.to_vec();
     xm[axis] -= h;
-    if !xm[axis].is_finite()
-    {
+    if !xm[axis].is_finite() {
         return Err(VariationalError::NonFiniteValue {
             component: "central-difference negative perturbation",
             value: xm[axis],
@@ -131,15 +123,13 @@ pub fn central_difference<F: Fn(&[f32]) -> f32>(
 }
 
 fn validate_step(h: f32, context: &str) -> Result<()> {
-    if !h.is_finite() || h <= 0.0
-    {
+    if !h.is_finite() || h <= 0.0 {
         return Err(VariationalError::UnsupportedOperation {
             details: format!("{context} requires a finite positive step, got {h}"),
         });
     }
     let h_sq = h * h;
-    if !h_sq.is_finite() || h_sq == 0.0
-    {
+    if !h_sq.is_finite() || h_sq == 0.0 {
         return Err(VariationalError::UnsupportedOperation {
             details: format!("{context} step squared is not a finite non-zero f32"),
         });
@@ -148,8 +138,7 @@ fn validate_step(h: f32, context: &str) -> Result<()> {
 }
 
 fn checked_eval(value: f32, component: &'static str) -> Result<f32> {
-    if !value.is_finite()
-    {
+    if !value.is_finite() {
         return Err(VariationalError::NonFiniteValue { component, value });
     }
     Ok(value)
@@ -158,15 +147,13 @@ fn checked_eval(value: f32, component: &'static str) -> Result<f32> {
 fn checked_derivatives(fp: f32, fm: f32, f0: f32, h: f32) -> Result<(f32, f32)> {
     let df = (fp - fm) / (2.0 * h);
     let d2f = (fp - 2.0 * f0 + fm) / (h * h);
-    if !df.is_finite()
-    {
+    if !df.is_finite() {
         return Err(VariationalError::NonFiniteValue {
             component: "central-difference first derivative",
             value: df,
         });
     }
-    if !d2f.is_finite()
-    {
+    if !d2f.is_finite() {
         return Err(VariationalError::NonFiniteValue {
             component: "central-difference second derivative",
             value: d2f,
