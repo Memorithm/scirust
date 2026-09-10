@@ -45,6 +45,9 @@ pub mod order;
 /// Presented groups and fixed-capacity coset enumeration.
 #[rustfmt::skip]
 pub mod presented;
+/// Runtime-sized permutations and bounded exhaustive enumeration.
+#[rustfmt::skip]
+pub mod runtime_permutation;
 /// Deterministic orbit/transversal and stabilizer-chain algorithms.
 #[rustfmt::skip]
 pub mod schreier;
@@ -65,5 +68,8 @@ pub use crate::core::{AbelianGroup, Field, Group, Magma, Monoid, Ring, Semigroup
 pub use crate::order::{
     Antichain, JoinSemilattice, Lattice, MeetSemilattice, PartiallyOrdered, ProductOrder2,
     TotalOrder,
+};
+pub use crate::runtime_permutation::{
+    LexicographicPermutations, RuntimePermutation, RuntimePermutationError, checked_factorial,
 };
 pub use crate::semiring::{BooleanSemiring, CommutativeSemiring, RingSemiring, Semiring};
