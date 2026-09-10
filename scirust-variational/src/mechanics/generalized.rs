@@ -222,8 +222,8 @@ mod tests {
 
     #[test]
     fn positive_definite_rejects_non_finite_entries() {
-        let matrix = GeneralizedMassMatrix::new(vec![vec![1.0, f32::NAN], vec![f32::NAN, 1.0]])
-            .unwrap();
+        let matrix =
+            GeneralizedMassMatrix::new(vec![vec![1.0, f32::NAN], vec![f32::NAN, 1.0]]).unwrap();
 
         assert!(!matrix.is_positive_definite());
         assert!(!matrix.is_symmetric(1e-6));
