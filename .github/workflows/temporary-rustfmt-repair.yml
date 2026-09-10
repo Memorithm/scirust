@@ -1,0 +1,36 @@
+name: Temporary Rustfmt Repair
+
+on:
+  push:
+    branches:
+      - chore/repair-rustfmt-baseline
+
+permissions:
+  contents: write
+
+jobs:
+  format:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: chore/repair-rustfmt-baseline
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: nightly-2026-07-02
+          components: rustfmt
+      - name: Apply canonical formatting
+        run: cargo +nightly-2026-07-02 fmt --all
+      - name: Commit formatting only when needed
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo "No formatting changes required."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -u
+          git commit -m "style: apply canonical rustfmt to baseline"
+          git push origin HEAD:chore/repair-rustfmt-baseline
