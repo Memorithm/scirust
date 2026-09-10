@@ -324,12 +324,8 @@ mod tests {
 
     #[test]
     fn linear_solver_solves_well_conditioned_system() {
-        let solution = solve_linear_system(
-            &[vec![3.0, 2.0], vec![1.0, 2.0]],
-            &[5.0, 5.0],
-            2,
-        )
-        .unwrap();
+        let solution =
+            solve_linear_system(&[vec![3.0, 2.0], vec![1.0, 2.0]], &[5.0, 5.0], 2).unwrap();
 
         assert!((solution[0] - 0.0).abs() < 1e-5);
         assert!((solution[1] - 2.5).abs() < 1e-5);
