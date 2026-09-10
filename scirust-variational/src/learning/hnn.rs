@@ -141,9 +141,12 @@ impl HamiltonianNetwork {
         {
             return Err(VariationalError::DimensionMismatch {
                 expected: self.ndim,
-                got: if q.len() != self.ndim {
+                got: if q.len() != self.ndim
+                {
                     q.len()
-                } else {
+                }
+                else
+                {
                     p.len()
                 },
                 context: context.into(),
