@@ -33,6 +33,9 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, Linux, ARM64, scirust-arm64, jetson-thor, internal]
     timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: .ci-source
     env:
       RUST_BACKTRACE: 1
       CARGO_INCREMENTAL: 0
@@ -40,15 +43,9 @@ jobs:
       SCIRUST_REQUIRE_CUDA: "1"
       SCIRUST_THOR_GPU_LOCK: /dev/nvidia0
     steps:
-      - name: Sanitize persistent workspace before checkout
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ -e "$GITHUB_WORKSPACE/target" ]]; then
-            sudo rm -rf -- "$GITHUB_WORKSPACE/target"
-          fi
-          test ! -e "$GITHUB_WORKSPACE/target"
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          path: .ci-source
       - name: Prepare isolated executable build directory
         run: |
           tmpdir="$(mktemp -d "$GITHUB_WORKSPACE/.ci-tmp.XXXXXX")"
