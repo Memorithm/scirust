@@ -36,9 +36,11 @@ impl SftDataset {
         let reader = io::BufReader::new(file);
         let mut examples = Vec::new();
 
-        for (line_number, line) in std::io::BufRead::lines(reader).enumerate() {
+        for (line_number, line) in std::io::BufRead::lines(reader).enumerate()
+        {
             let line = line?;
-            if line.trim().is_empty() {
+            if line.trim().is_empty()
+            {
                 continue;
             }
             let example = parse_sft_example(&line).map_err(|error| {
@@ -87,11 +89,13 @@ fn parse_sft_example(line: &str) -> io::Result<SftExample> {
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| invalid_data("SFT `instruction` must be a string"))?
         .to_string();
-    if instruction.trim().is_empty() {
+    if instruction.trim().is_empty()
+    {
         return Err(invalid_data("SFT `instruction` must not be empty"));
     }
 
-    let output = match object.get("output") {
+    let output = match object.get("output")
+    {
         Some(value) => value
             .as_str()
             .ok_or_else(|| invalid_data("SFT `output` must be a string"))?
@@ -99,20 +103,26 @@ fn parse_sft_example(line: &str) -> io::Result<SftExample> {
         None => String::new(),
     };
 
-    let tool_calls = match object.get("tool_calls") {
+    let tool_calls = match object.get("tool_calls")
+    {
         None | Some(serde_json::Value::Null) => None,
-        Some(value) => {
+        Some(value) =>
+        {
             let calls = value
                 .as_array()
                 .ok_or_else(|| invalid_data("SFT `tool_calls` must be an array"))?;
-            if calls.len() > 1 {
+            if calls.len() > 1
+            {
                 return Err(invalid_data(
                     "SFT records may contain at most one tool call per assistant turn",
                 ));
             }
-            if calls.is_empty() {
+            if calls.is_empty()
+            {
                 None
-            } else {
+            }
+            else
+            {
                 let call = calls[0]
                     .as_object()
                     .ok_or_else(|| invalid_data("SFT tool call must be a JSON object"))?;
@@ -120,7 +130,8 @@ fn parse_sft_example(line: &str) -> io::Result<SftExample> {
                     .get("name")
                     .and_then(serde_json::Value::as_str)
                     .ok_or_else(|| invalid_data("SFT tool call `name` must be a string"))?;
-                if name.trim().is_empty() {
+                if name.trim().is_empty()
+                {
                     return Err(invalid_data("SFT tool call `name` must not be empty"));
                 }
                 let params = call
@@ -143,15 +154,17 @@ fn parse_sft_example(line: &str) -> io::Result<SftExample> {
                     params,
                 }])
             }
-        }
+        },
     };
 
-    if tool_calls.is_some() && !output.trim().is_empty() {
+    if tool_calls.is_some() && !output.trim().is_empty()
+    {
         return Err(invalid_data(
             "SFT assistant turn cannot contain both `output` text and a tool call",
         ));
     }
-    if tool_calls.is_none() && output.trim().is_empty() {
+    if tool_calls.is_none() && output.trim().is_empty()
+    {
         return Err(invalid_data(
             "SFT assistant turn must contain either `output` text or one tool call",
         ));
@@ -170,10 +183,14 @@ fn parse_sft_example(line: &str) -> io::Result<SftExample> {
 /// `AgentRouter`: `{"name": ..., "params": {...}}`. Parameters are sorted so
 /// an identical logical call always has byte-identical training text.
 pub fn format_sft_target(example: &SftExample) -> String {
-    let Some(tool_calls) = example.tool_calls.as_ref() else {
+    let Some(tool_calls) = example.tool_calls.as_ref()
+    else
+    {
         return example.output.clone();
     };
-    let Some(call) = tool_calls.first() else {
+    let Some(call) = tool_calls.first()
+    else
+    {
         return example.output.clone();
     };
 
@@ -222,17 +239,21 @@ pub fn sft_train(
     let scheduler = WarmupCosineSchedule::new(lr, lr * 0.1, total_steps / 20, total_steps);
 
     let mut step = 0usize;
-    for epoch in 0..epochs {
+    for epoch in 0..epochs
+    {
         let mut epoch_loss = 0.0f64;
 
-        for chunk in dataset.examples.chunks(batch_size) {
+        for chunk in dataset.examples.chunks(batch_size)
+        {
             let tape = Tape::new();
             let mut all_inputs = Vec::new();
             let mut all_targets = Vec::new();
 
-            for ex in chunk {
+            for ex in chunk
+            {
                 let tokens = format_sft_prompt(ex, tokenizer);
-                if tokens.len() < 2 {
+                if tokens.len() < 2
+                {
                     continue;
                 }
                 let seq = &tokens[..tokens.len().min(max_seq_len)];
@@ -242,7 +263,8 @@ pub fn sft_train(
                 all_targets.extend(targets);
             }
 
-            if all_inputs.is_empty() {
+            if all_inputs.is_empty()
+            {
                 continue;
             }
 
@@ -262,7 +284,8 @@ pub fn sft_train(
 
             step += 1;
 
-            if step.is_multiple_of(10) {
+            if step.is_multiple_of(10)
+            {
                 println!("[SFT Epoch {epoch} Step {step}] loss: {loss_val:.4} | lr: {lr:.8}");
             }
         }
