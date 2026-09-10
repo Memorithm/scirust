@@ -18,6 +18,20 @@ impl ControlBounds {
         }
         for i in 0..lower.len()
         {
+            if lower[i].is_nan()
+            {
+                return Err(VariationalError::NonFiniteValue {
+                    component: "ControlBounds::lower",
+                    value: lower[i],
+                });
+            }
+            if upper[i].is_nan()
+            {
+                return Err(VariationalError::NonFiniteValue {
+                    component: "ControlBounds::upper",
+                    value: upper[i],
+                });
+            }
             if lower[i] > upper[i]
             {
                 return Err(VariationalError::InfeasibleControlProblem {
@@ -144,5 +158,16 @@ mod tests {
     fn test_control_bounds_validation() {
         assert!(ControlBounds::new(vec![0.0], vec![1.0]).is_ok());
         assert!(ControlBounds::new(vec![1.0], vec![0.0]).is_err());
+    }
+
+    #[test]
+    fn control_bounds_reject_nan_endpoints() {
+        assert!(ControlBounds::new(vec![f32::NAN], vec![1.0]).is_err());
+        assert!(ControlBounds::new(vec![0.0], vec![f32::NAN]).is_err());
+    }
+
+    #[test]
+    fn control_bounds_allow_infinite_endpoints() {
+        assert!(ControlBounds::new(vec![f32::NEG_INFINITY], vec![f32::INFINITY]).is_ok());
     }
 }
