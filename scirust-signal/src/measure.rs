@@ -98,7 +98,10 @@ mod tests {
         let values: Vec<f64> = t.iter().map(|time| (omega * time).sin()).collect();
         let measured = period_from_second_half(&t, &values, 0.0).expect("many crossings");
         let relative_error = (measured - period).abs() / period;
-        assert!(relative_error < 1e-4, "measured {measured}, error {relative_error:e}");
+        assert!(
+            relative_error < 1e-4,
+            "measured {measured}, error {relative_error:e}"
+        );
     }
 
     #[test]
@@ -108,12 +111,12 @@ mod tests {
         let h = period / 37.0;
         let n = 400;
         let t: Vec<f64> = (0..n).map(|i| i as f64 * h).collect();
-        let values: Vec<f64> = t
-            .iter()
-            .map(|time| 0.3 + (omega * time).sin())
-            .collect();
+        let values: Vec<f64> = t.iter().map(|time| 0.3 + (omega * time).sin()).collect();
         let measured = period_from_second_half(&t, &values, 0.0).expect("many crossings");
-        assert!((measured - period).abs() / period < 1e-4, "measured {measured}");
+        assert!(
+            (measured - period).abs() / period < 1e-4,
+            "measured {measured}"
+        );
     }
 
     #[test]
