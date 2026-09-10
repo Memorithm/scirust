@@ -45,7 +45,8 @@ impl PinnNet {
 impl HasParameters for PinnNet {
     fn parameters(&mut self) -> Vec<NdParam<'_>> {
         let mut params = Vec::new();
-        for layer in &mut self.layers {
+        for layer in &mut self.layers
+        {
             params.extend(layer.parameters());
         }
         params
@@ -82,13 +83,15 @@ impl PinnTrainer {
         let mut opt = NdAdam::with_lr(self.config.learning_rate);
         let mut metrics = TrainingMetrics::new();
 
-        for epoch in 0..self.config.num_epochs {
+        for epoch in 0..self.config.num_epochs
+        {
             let tape = NdTape::new();
             let (x_flat, x_shape) = interior_points.to_batched_tensor();
             let xv = tape.input(TensorND::new(x_flat, x_shape));
 
             let mut bc_loss_terms = Vec::new();
-            for condition in &bc_config.conditions {
+            for condition in &bc_config.conditions
+            {
                 let c_flat: Vec<f32> = condition
                     .points
                     .iter()
@@ -104,7 +107,8 @@ impl PinnTrainer {
                     .iter()
                     .map(|point| (condition.target_fn)(point))
                     .collect();
-                if let Some(&value) = targets.iter().find(|value| !value.is_finite()) {
+                if let Some(&value) = targets.iter().find(|value| !value.is_finite())
+                {
                     return Err(VariationalError::NonFiniteValue {
                         component: "PINN boundary target",
                         value,
@@ -112,7 +116,8 @@ impl PinnTrainer {
                 }
 
                 let output_len = tape.value(u_bc).data.len();
-                if output_len != targets.len() {
+                if output_len != targets.len()
+                {
                     return Err(VariationalError::TrainingFailure {
                         details: format!(
                             "PINN boundary condition '{}' expects one scalar model output per point: got {output_len} outputs for {} points",
@@ -134,11 +139,15 @@ impl PinnTrainer {
             let interior_loss = interior_residual(&tape, model, u_pred);
             ensure_scalar_finite_loss(&tape, interior_loss, "PINN interior residual loss")?;
 
-            let total_loss = if bc_loss_terms.is_empty() {
+            let total_loss = if bc_loss_terms.is_empty()
+            {
                 interior_loss
-            } else {
+            }
+            else
+            {
                 let mut loss = interior_loss;
-                for term in bc_loss_terms {
+                for term in bc_loss_terms
+                {
                     loss = loss.add(term);
                 }
                 loss
@@ -151,11 +160,15 @@ impl PinnTrainer {
                 validate_parameter_gradients(&params, &grads)?;
 
             let mut optimizer_grads = grads.clone();
-            if let Some(clip_norm) = self.config.gradient_clip_norm {
-                if grad_norm > clip_norm {
+            if let Some(clip_norm) = self.config.gradient_clip_norm
+            {
+                if grad_norm > clip_norm
+                {
                     let scale = clip_norm / grad_norm;
-                    for grad_idx in parameter_grad_indices {
-                        for value in optimizer_grads[grad_idx].data_mut().iter_mut() {
+                    for grad_idx in parameter_grad_indices
+                    {
+                        for value in optimizer_grads[grad_idx].data_mut().iter_mut()
+                        {
                             *value *= scale;
                         }
                     }
@@ -164,7 +177,8 @@ impl PinnTrainer {
 
             opt.step(&mut params, &optimizer_grads);
 
-            if epoch % 10 == 0 || epoch + 1 == self.config.num_epochs {
+            if epoch % 10 == 0 || epoch + 1 == self.config.num_epochs
+            {
                 metrics.record(epoch, loss_val, f32::NAN, grad_norm);
             }
         }
@@ -179,7 +193,8 @@ impl PinnTrainer {
         source_fn: impl Fn(f32) -> f32,
         bc_config: &ConditionConfig,
     ) -> Result<TrainingMetrics> {
-        if interior.ndim != 1 || model.ndim != 1 {
+        if interior.ndim != 1 || model.ndim != 1
+        {
             return Err(VariationalError::UnsupportedOperation {
                 details: format!(
                     "PinnTrainer::solve_poisson currently supports one-dimensional scalar-coordinate problems only (collocation ndim={}, model input dim={})",
@@ -191,7 +206,8 @@ impl PinnTrainer {
 
         let x = interior.to_flat();
         let source_vals: Vec<f32> = x.iter().map(|&xi| source_fn(xi)).collect();
-        if let Some(&value) = source_vals.iter().find(|value| !value.is_finite()) {
+        if let Some(&value) = source_vals.iter().find(|value| !value.is_finite())
+        {
             return Err(VariationalError::NonFiniteValue {
                 component: "PINN Poisson source",
                 value,
@@ -202,7 +218,8 @@ impl PinnTrainer {
             let tape = NdTape::new();
             let xv = tape.input(TensorND::new(x.clone(), vec![x.len(), 1]));
             let u = model.forward(&tape, xv);
-            if tape.value(u).data.len() != x.len() {
+            if tape.value(u).data.len() != x.len()
+            {
                 return Err(VariationalError::UnsupportedOperation {
                     details: "PinnTrainer::solve_poisson requires one scalar model output per collocation point"
                         .into(),
@@ -216,7 +233,8 @@ impl PinnTrainer {
             move |tape, net, u| {
                 let eps = 1e-3;
                 let mut lap_terms = Vec::new();
-                for i in 0..x.len() {
+                for i in 0..x.len()
+                {
                     let mut xp = x.clone();
                     xp[i] += eps;
                     let xp_var = tape.input(TensorND::new(xp, vec![x.len(), 1]));
@@ -234,7 +252,8 @@ impl PinnTrainer {
                 }
 
                 let mut laplacian = tape.input(TensorND::zeros(&[x.len(), 1]));
-                for term in lap_terms {
+                for term in lap_terms
+                {
                     laplacian = laplacian.add(term);
                 }
 
@@ -248,7 +267,8 @@ impl PinnTrainer {
 }
 
 fn validate_training_config(config: &TrainingConfig) -> Result<()> {
-    if !config.learning_rate.is_finite() || config.learning_rate <= 0.0 {
+    if !config.learning_rate.is_finite() || config.learning_rate <= 0.0
+    {
         return Err(VariationalError::TrainingFailure {
             details: format!(
                 "PINN learning rate must be finite and positive, got {}",
@@ -256,8 +276,10 @@ fn validate_training_config(config: &TrainingConfig) -> Result<()> {
             ),
         });
     }
-    if let Some(clip_norm) = config.gradient_clip_norm {
-        if !clip_norm.is_finite() || clip_norm <= 0.0 {
+    if let Some(clip_norm) = config.gradient_clip_norm
+    {
+        if !clip_norm.is_finite() || clip_norm <= 0.0
+        {
             return Err(VariationalError::TrainingFailure {
                 details: format!(
                     "PINN gradient clip norm must be finite and positive, got {clip_norm}"
@@ -269,32 +291,38 @@ fn validate_training_config(config: &TrainingConfig) -> Result<()> {
 }
 
 fn validate_collocation_points(points: &CollocationPoints, expected_dim: usize) -> Result<()> {
-    if expected_dim == 0 {
+    if expected_dim == 0
+    {
         return Err(VariationalError::TrainingFailure {
             details: "PINN model input dimension must be greater than zero".into(),
         });
     }
-    if points.is_empty() {
+    if points.is_empty()
+    {
         return Err(VariationalError::TrainingFailure {
             details: "PINN requires at least one interior collocation point".into(),
         });
     }
-    if points.ndim != expected_dim {
+    if points.ndim != expected_dim
+    {
         return Err(VariationalError::DimensionMismatch {
             expected: expected_dim,
             got: points.ndim,
             context: "PinnTrainer collocation dimension".into(),
         });
     }
-    for point in &points.points {
-        if point.len() != expected_dim {
+    for point in &points.points
+    {
+        if point.len() != expected_dim
+        {
             return Err(VariationalError::DimensionMismatch {
                 expected: expected_dim,
                 got: point.len(),
                 context: "PinnTrainer collocation point".into(),
             });
         }
-        if let Some(&value) = point.iter().find(|value| !value.is_finite()) {
+        if let Some(&value) = point.iter().find(|value| !value.is_finite())
+        {
             return Err(VariationalError::NonFiniteValue {
                 component: "PINN collocation point",
                 value,
@@ -305,8 +333,10 @@ fn validate_collocation_points(points: &CollocationPoints, expected_dim: usize) 
 }
 
 fn validate_conditions(config: &ConditionConfig, expected_dim: usize) -> Result<()> {
-    for condition in &config.conditions {
-        if !condition.weight.is_finite() || condition.weight < 0.0 {
+    for condition in &config.conditions
+    {
+        if !condition.weight.is_finite() || condition.weight < 0.0
+        {
             return Err(VariationalError::InvalidBoundaryCondition {
                 details: format!(
                     "condition '{}' has invalid weight {}",
@@ -314,20 +344,24 @@ fn validate_conditions(config: &ConditionConfig, expected_dim: usize) -> Result<
                 ),
             });
         }
-        if condition.points.is_empty() {
+        if condition.points.is_empty()
+        {
             return Err(VariationalError::InvalidBoundaryCondition {
                 details: format!("condition '{}' has no points", condition.name),
             });
         }
-        for point in &condition.points {
-            if point.len() != expected_dim {
+        for point in &condition.points
+        {
+            if point.len() != expected_dim
+            {
                 return Err(VariationalError::DimensionMismatch {
                     expected: expected_dim,
                     got: point.len(),
                     context: format!("PINN boundary condition '{}' point", condition.name),
                 });
             }
-            if let Some(&value) = point.iter().find(|value| !value.is_finite()) {
+            if let Some(&value) = point.iter().find(|value| !value.is_finite())
+            {
                 return Err(VariationalError::NonFiniteValue {
                     component: "PINN boundary point",
                     value,
@@ -344,7 +378,8 @@ fn ensure_scalar_finite_loss(
     component: &str,
 ) -> Result<f32> {
     let value = tape.value(loss);
-    if value.data.len() != 1 {
+    if value.data.len() != 1
+    {
         return Err(VariationalError::TrainingFailure {
             details: format!(
                 "{component} must be scalar, got {} values",
@@ -353,7 +388,8 @@ fn ensure_scalar_finite_loss(
         });
     }
     let scalar = value.data[0];
-    if !scalar.is_finite() {
+    if !scalar.is_finite()
+    {
         return Err(VariationalError::TrainingFailure {
             details: format!("{component} is non-finite: {scalar}"),
         });
@@ -368,8 +404,10 @@ fn validate_parameter_gradients(
     let mut grad_norm_sq = 0.0f64;
     let mut grad_indices = Vec::with_capacity(params.len());
 
-    for (param_index, param) in params.iter().enumerate() {
-        if grad_indices.contains(&param.grad_idx) {
+    for (param_index, param) in params.iter().enumerate()
+    {
+        if grad_indices.contains(&param.grad_idx)
+        {
             return Err(VariationalError::TrainingFailure {
                 details: format!(
                     "PINN parameter {param_index} reuses gradient index {}",
@@ -386,15 +424,18 @@ fn validate_parameter_gradients(
                     grads.len()
                 ),
             })?;
-        if grad.data.len() != param.value.data.len() {
+        if grad.data.len() != param.value.data.len()
+        {
             return Err(VariationalError::DimensionMismatch {
                 expected: param.value.data.len(),
                 got: grad.data.len(),
                 context: format!("PinnTrainer parameter {param_index} gradient"),
             });
         }
-        for &value in grad.data.iter() {
-            if !value.is_finite() {
+        for &value in grad.data.iter()
+        {
+            if !value.is_finite()
+            {
                 return Err(VariationalError::NonFiniteValue {
                     component: "PINN parameter gradient",
                     value,
@@ -407,7 +448,8 @@ fn validate_parameter_gradients(
     }
 
     let grad_norm = grad_norm_sq.sqrt() as f32;
-    if !grad_norm.is_finite() {
+    if !grad_norm.is_finite()
+    {
         return Err(VariationalError::TrainingFailure {
             details: "PINN parameter gradient norm overflowed".into(),
         });
