@@ -427,7 +427,7 @@ fn validate_parameter_gradients(
                 context: format!("PinnTrainer parameter {param_index} gradient"),
             });
         }
-        for &value in &grad.data
+        for &value in grad.data.iter()
         {
             if !value.is_finite()
             {
