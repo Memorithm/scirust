@@ -372,11 +372,7 @@ fn validate_conditions(config: &ConditionConfig, expected_dim: usize) -> Result<
     Ok(())
 }
 
-fn ensure_scalar_finite_loss(
-    tape: &NdTape,
-    loss: NdVar<'_>,
-    component: &str,
-) -> Result<f32> {
+fn ensure_scalar_finite_loss(tape: &NdTape, loss: NdVar<'_>, component: &str) -> Result<f32> {
     let value = tape.value(loss);
     if value.data.len() != 1
     {
