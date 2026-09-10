@@ -1,4 +1,4 @@
-name: Temporary format and Thor checkout repair
+name: Temporary source format repair
 
 on:
   push:
@@ -20,39 +20,21 @@ jobs:
         with:
           toolchain: nightly-2026-07-02
           components: rustfmt
-      - name: Apply canonical rustfmt and harden Thor pre-checkout cleanup
+      - name: Apply canonical rustfmt
         shell: bash
         run: |
           set -euo pipefail
           cargo +nightly-2026-07-02 fmt --all
-          python3 - <<'PY'
-          from pathlib import Path
-
-          insertion = '''    steps:\n      - name: Sanitize persistent workspace before checkout\n        shell: bash\n        run: |\n          set -euo pipefail\n          if [[ -e "$GITHUB_WORKSPACE/target" ]]; then\n            sudo rm -rf -- "$GITHUB_WORKSPACE/target"\n          fi\n          test ! -e "$GITHUB_WORKSPACE/target"\n'''
-
-          for raw in [
-              '.github/workflows/sciagent-thor-gate.yml',
-              '.github/workflows/sciagent-flat-m33-thor.yml',
-          ]:
-              path = Path(raw)
-              text = path.read_text()
-              marker = '    steps:\n      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5\n'
-              if 'Sanitize persistent workspace before checkout' in text:
-                  continue
-              if marker not in text:
-                  raise SystemExit(f'expected checkout marker not found in {raw}')
-              path.write_text(text.replace(marker, insertion + '      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5\n', 1))
-          PY
-      - name: Commit repair
+      - name: Commit source formatting
         shell: bash
         run: |
           set -euo pipefail
           if git diff --quiet; then
-            echo "No repair changes needed"
+            echo "No source formatting changes needed"
             exit 0
           fi
           git config user.name MEMOPERF
           git config user.email contact@checkupauto.fr
           git add -A
-          git commit -m "ci: restore canonical formatting and sanitize Thor workspaces"
+          git commit -m "style: restore canonical repository formatting"
           git push origin HEAD:fix/rustfmt-master-20260910
