@@ -86,7 +86,7 @@ impl DomainRect {
                 context: "DomainRect::try_uniform_grid points_per_dim".into(),
             });
         }
-        if points_per_dim.iter().any(|&count| count == 0)
+        if points_per_dim.contains(&0)
         {
             return Ok(Vec::new());
         }
