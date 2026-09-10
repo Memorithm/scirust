@@ -39,18 +39,8 @@ impl Condition {
         weight: f32,
         name: &str,
     ) -> Result<Self> {
-        if weight < 0.0
-        {
-            return Err(VariationalError::InvalidBoundaryCondition {
-                details: format!("negative weight {weight}"),
-            });
-        }
-        if points.is_empty()
-        {
-            return Err(VariationalError::InvalidBoundaryCondition {
-                details: "no points provided".into(),
-            });
-        }
+        validate_weight(weight, name)?;
+        validate_points(&points, name)?;
         Ok(Self {
             kind,
             points,
@@ -60,8 +50,29 @@ impl Condition {
         })
     }
 
+    /// Evaluates scalar boundary targets and rejects non-finite callback results.
+    pub fn try_evaluate_targets(&self) -> Result<Vec<f32>> {
+        validate_weight(self.weight, &self.name)?;
+        validate_points(&self.points, &self.name)?;
+        let mut targets = Vec::with_capacity(self.points.len());
+        for point in &self.points
+        {
+            let value = (self.target_fn)(point);
+            if !value.is_finite()
+            {
+                return Err(VariationalError::NonFiniteValue {
+                    component: "PINN boundary target",
+                    value,
+                });
+            }
+            targets.push(value);
+        }
+        Ok(targets)
+    }
+
     pub fn evaluate_targets(&self) -> Vec<f32> {
-        self.points.iter().map(|p| (self.target_fn)(p)).collect()
+        self.try_evaluate_targets()
+            .expect("Condition::evaluate_targets requires valid finite boundary data")
     }
 }
 
@@ -91,6 +102,52 @@ impl Default for ConditionConfig {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn validate_weight(weight: f32, name: &str) -> Result<()> {
+    if !weight.is_finite() || weight < 0.0
+    {
+        return Err(VariationalError::InvalidBoundaryCondition {
+            details: format!("condition '{name}' has invalid weight {weight}"),
+        });
+    }
+    Ok(())
+}
+
+fn validate_points(points: &[Vec<f32>], name: &str) -> Result<()> {
+    if points.is_empty()
+    {
+        return Err(VariationalError::InvalidBoundaryCondition {
+            details: format!("condition '{name}' has no points"),
+        });
+    }
+    let ndim = points[0].len();
+    if ndim == 0
+    {
+        return Err(VariationalError::InvalidBoundaryCondition {
+            details: format!("condition '{name}' contains zero-dimensional points"),
+        });
+    }
+    for point in points
+    {
+        if point.len() != ndim
+        {
+            return Err(VariationalError::InvalidBoundaryCondition {
+                details: format!(
+                    "condition '{name}' has inconsistent point dimensions: expected {ndim}, got {}",
+                    point.len()
+                ),
+            });
+        }
+        if let Some(&value) = point.iter().find(|value| !value.is_finite())
+        {
+            return Err(VariationalError::NonFiniteValue {
+                component: "PINN boundary point",
+                value,
+            });
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -123,5 +180,70 @@ mod tests {
             "bad",
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn condition_rejects_nan_weight() {
+        assert!(
+            Condition::new(
+                ConditionKind::Dirichlet,
+                vec![vec![0.0]],
+                |_| 0.0,
+                f32::NAN,
+                "bad"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn condition_rejects_inconsistent_or_non_finite_points() {
+        assert!(
+            Condition::new(
+                ConditionKind::Dirichlet,
+                vec![vec![0.0], vec![1.0, 2.0]],
+                |_| 0.0,
+                1.0,
+                "bad"
+            )
+            .is_err()
+        );
+        assert!(
+            Condition::new(
+                ConditionKind::Dirichlet,
+                vec![vec![f32::NAN]],
+                |_| 0.0,
+                1.0,
+                "bad"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn checked_target_evaluation_rejects_non_finite_result() {
+        let condition = Condition::new(
+            ConditionKind::Dirichlet,
+            vec![vec![0.0]],
+            |_| f32::NAN,
+            1.0,
+            "nan-target",
+        )
+        .unwrap();
+        assert!(condition.try_evaluate_targets().is_err());
+    }
+
+    #[test]
+    fn checked_target_evaluation_revalidates_mutated_state() {
+        let mut condition = Condition::new(
+            ConditionKind::Dirichlet,
+            vec![vec![0.0]],
+            |_| 0.0,
+            1.0,
+            "mutated",
+        )
+        .unwrap();
+        condition.weight = f32::NAN;
+        assert!(condition.try_evaluate_targets().is_err());
     }
 }
