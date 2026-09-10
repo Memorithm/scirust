@@ -38,9 +38,12 @@ where
         {
             return Err(VariationalError::DimensionMismatch {
                 expected: self.config.ndim,
-                got: if q.len() != self.config.ndim {
+                got: if q.len() != self.config.ndim
+                {
                     q.len()
-                } else {
+                }
+                else
+                {
                     dq.len()
                 },
                 context: "LagrangianDynamics::acceleration".into(),
@@ -143,12 +146,14 @@ mod tests {
         );
 
         let err = dynamics.acceleration(&[0.0], &[], 0.0).unwrap_err();
-        match err {
+        match err
+        {
             VariationalError::DimensionMismatch {
                 expected,
                 got,
                 context,
-            } => {
+            } =>
+            {
                 assert_eq!(expected, 1);
                 assert_eq!(got, 0);
                 assert_eq!(context, "LagrangianDynamics::acceleration");
@@ -169,12 +174,14 @@ mod tests {
         let mut deriv = vec![0.0; 1];
 
         let err = dynamics.dynamics(0.0, &[1.0, 0.0], &mut deriv).unwrap_err();
-        match err {
+        match err
+        {
             VariationalError::DimensionMismatch {
                 expected,
                 got,
                 context,
-            } => {
+            } =>
+            {
                 assert_eq!(expected, 2);
                 assert_eq!(got, 1);
                 assert_eq!(context, "LagrangianDynamics::dynamics deriv");
@@ -197,12 +204,14 @@ mod tests {
         let err = dynamics
             .compute_ode_rhs(0.0, &[1.0, 0.0], &mut deriv)
             .unwrap_err();
-        match err {
+        match err
+        {
             VariationalError::DimensionMismatch {
                 expected,
                 got,
                 context,
-            } => {
+            } =>
+            {
                 assert_eq!(expected, 2);
                 assert_eq!(got, 3);
                 assert_eq!(context, "LagrangianDynamics::compute_ode_rhs deriv");
