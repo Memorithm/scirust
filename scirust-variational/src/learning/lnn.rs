@@ -78,6 +78,8 @@ impl LagrangianNetwork {
     }
 
     pub fn acceleration_from_state(&mut self, q: &[f32], dq: &[f32], t: f32) -> Result<Vec<f32>> {
+        self.validate_state_inputs(q, dq, t, "LagrangianNetwork::acceleration_from_state")?;
+
         let n = self.ndim;
         let tape = NdTape::new();
         let qv = tape.input(TensorND::new(q.to_vec(), vec![1, n]));
@@ -85,18 +87,18 @@ impl LagrangianNetwork {
         let tv = tape.input(TensorND::new(vec![t], vec![1, 1]));
         let q_arr = [qv];
         let dq_arr = [dqv];
-        let L = self.forward(&tape, &q_arr, &dq_arr, Some(tv));
-        let grads = tape.backward(L);
-        let dL_dq: Vec<f32> = grads[0].data[..n].to_vec();
-        let dL_ddq: Vec<f32> = grads[1].data[..n].to_vec();
+        let lagrangian = self.forward(&tape, &q_arr, &dq_arr, Some(tv));
+        let grads = tape.backward(lagrangian);
+        let d_l_dq: Vec<f32> = grads[0].data[..n].to_vec();
+        let d_l_ddq: Vec<f32> = grads[1].data[..n].to_vec();
 
-        for &v in dL_dq.iter().chain(dL_ddq.iter())
+        for &value in d_l_dq.iter().chain(d_l_ddq.iter())
         {
-            if !v.is_finite()
+            if !value.is_finite()
             {
                 return Err(VariationalError::NonFiniteValue {
                     component: "LNN gradient",
-                    value: v,
+                    value,
                 });
             }
         }
@@ -110,11 +112,11 @@ impl LagrangianNetwork {
                 let tv2 = tape2.input(TensorND::new(vec![t], vec![1, 1]));
                 let q2_arr = [qv2];
                 let dq2_arr = [dqv2];
-                let L2 = self.forward(&tape2, &q2_arr, &dq2_arr, Some(tv2));
-                let g2 = tape2.backward(L2);
-                g2[1].data[..n].to_vec()
+                let lagrangian2 = self.forward(&tape2, &q2_arr, &dq2_arr, Some(tv2));
+                let grads2 = tape2.backward(lagrangian2);
+                grads2[1].data[..n].to_vec()
             };
-            crate::util::finite_difference_hessian(&mut closure, dq, eps, n)
+            crate::util::try_finite_difference_hessian(&mut closure, dq, eps, n)?
         };
 
         for i in 0..n
@@ -128,7 +130,7 @@ impl LagrangianNetwork {
             }
         }
 
-        let acc = crate::util::solve_linear_system(&hessian, &dL_dq, n).map_err(|_| {
+        let acc = crate::util::solve_linear_system(&hessian, &d_l_dq, n).map_err(|_| {
             VariationalError::LinearSolveFailure {
                 details: "LNN acceleration solve failed".into(),
             }
@@ -138,14 +140,66 @@ impl LagrangianNetwork {
     }
 
     pub fn eval_lagrangian(&mut self, q: &[f32], dq: &[f32], t: f32) -> f32 {
+        self.try_eval_lagrangian(q, dq, t)
+            .unwrap_or_else(|err| panic!("LagrangianNetwork::eval_lagrangian: {err}"))
+    }
+
+    /// Evaluate the learned Lagrangian after validating state and time inputs.
+    pub fn try_eval_lagrangian(&mut self, q: &[f32], dq: &[f32], t: f32) -> Result<f32> {
+        self.validate_state_inputs(q, dq, t, "LagrangianNetwork::try_eval_lagrangian")?;
+
         let tape = NdTape::new();
         let qv = tape.input(TensorND::new(q.to_vec(), vec![1, self.ndim]));
         let dqv = tape.input(TensorND::new(dq.to_vec(), vec![1, self.ndim]));
         let tv = tape.input(TensorND::new(vec![t], vec![1, 1]));
         let q_arr = [qv];
         let dq_arr = [dqv];
-        let L = self.forward(&tape, &q_arr, &dq_arr, Some(tv));
-        tape.value(L).data[0]
+        let lagrangian = self.forward(&tape, &q_arr, &dq_arr, Some(tv));
+        let value = tape.value(lagrangian).data[0];
+        if !value.is_finite()
+        {
+            return Err(VariationalError::NonFiniteValue {
+                component: "LNN Lagrangian",
+                value,
+            });
+        }
+        Ok(value)
+    }
+
+    fn validate_state_inputs(&self, q: &[f32], dq: &[f32], t: f32, context: &str) -> Result<()> {
+        if q.len() != self.ndim || dq.len() != self.ndim
+        {
+            return Err(VariationalError::DimensionMismatch {
+                expected: self.ndim,
+                got: if q.len() != self.ndim
+                {
+                    q.len()
+                }
+                else
+                {
+                    dq.len()
+                },
+                context: context.into(),
+            });
+        }
+        if !t.is_finite()
+        {
+            return Err(VariationalError::NonFiniteValue {
+                component: "LNN time",
+                value: t,
+            });
+        }
+        for &value in q.iter().chain(dq.iter())
+        {
+            if !value.is_finite()
+            {
+                return Err(VariationalError::NonFiniteValue {
+                    component: "LNN state",
+                    value,
+                });
+            }
+        }
+        Ok(())
     }
 }
 
@@ -157,5 +211,45 @@ impl HasParameters for LagrangianNetwork {
             params.extend(layer.parameters());
         }
         params
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn checked_lagrangian_rejects_state_dimension_mismatch() {
+        let mut rng = PcgEngine::new(42);
+        let mut lnn = LagrangianNetwork::new(2, 8, &mut rng);
+
+        let err = lnn
+            .try_eval_lagrangian(&[0.0, 1.0], &[0.0], 0.0)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            VariationalError::DimensionMismatch {
+                expected: 2,
+                got: 1,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn checked_lagrangian_rejects_non_finite_time() {
+        let mut rng = PcgEngine::new(42);
+        let mut lnn = LagrangianNetwork::new(1, 8, &mut rng);
+
+        let err = lnn
+            .try_eval_lagrangian(&[0.0], &[0.0], f32::NAN)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            VariationalError::NonFiniteValue {
+                component: "LNN time",
+                ..
+            }
+        ));
     }
 }
