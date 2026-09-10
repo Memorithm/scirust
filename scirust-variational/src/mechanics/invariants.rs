@@ -71,8 +71,7 @@ pub fn compute_energy<F>(lagrangian: &F, q: &[f32], dq: &[f32], t: f32) -> f32
 where
     F: Fn(&[f32], &[f32], f32) -> f32,
 {
-    try_compute_energy(lagrangian, q, dq, t)
-        .unwrap_or_else(|err| panic!("compute_energy: {err}"))
+    try_compute_energy(lagrangian, q, dq, t).unwrap_or_else(|err| panic!("compute_energy: {err}"))
 }
 
 /// Compute the Legendre energy while validating dimensions and finite values.
@@ -309,12 +308,14 @@ mod tests {
     #[test]
     fn try_report_rejects_empty_values() {
         let err = ConservationReport::try_new(&[]).unwrap_err();
-        match err {
+        match err
+        {
             VariationalError::DimensionMismatch {
                 expected,
                 got,
                 context,
-            } => {
+            } =>
+            {
                 assert_eq!(expected, 1);
                 assert_eq!(got, 0);
                 assert_eq!(context, "ConservationReport::try_new");
@@ -365,13 +366,8 @@ mod tests {
 
     #[test]
     fn try_invariant_diagnostics_rejects_empty_trajectory() {
-        let err = try_compute_invariant_diagnostics(
-            &harmonic_oscillator_energy,
-            &[],
-            1,
-            "empty",
-        )
-        .unwrap_err();
+        let err = try_compute_invariant_diagnostics(&harmonic_oscillator_energy, &[], 1, "empty")
+            .unwrap_err();
         assert!(matches!(
             err,
             VariationalError::DimensionMismatch {
