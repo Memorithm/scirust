@@ -1,0 +1,58 @@
+name: Temporary format and Thor checkout repair
+
+on:
+  push:
+    branches:
+      - fix/rustfmt-master-20260910
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: fix/rustfmt-master-20260910
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: nightly-2026-07-02
+          components: rustfmt
+      - name: Apply canonical rustfmt and harden Thor pre-checkout cleanup
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +nightly-2026-07-02 fmt --all
+          python3 - <<'PY'
+          from pathlib import Path
+
+          insertion = '''    steps:\n      - name: Sanitize persistent workspace before checkout\n        shell: bash\n        run: |\n          set -euo pipefail\n          if [[ -e "$GITHUB_WORKSPACE/target" ]]; then\n            sudo rm -rf -- "$GITHUB_WORKSPACE/target"\n          fi\n          test ! -e "$GITHUB_WORKSPACE/target"\n'''
+
+          for raw in [
+              '.github/workflows/sciagent-thor-gate.yml',
+              '.github/workflows/sciagent-flat-m33-thor.yml',
+          ]:
+              path = Path(raw)
+              text = path.read_text()
+              marker = '    steps:\n      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5\n'
+              if 'Sanitize persistent workspace before checkout' in text:
+                  continue
+              if marker not in text:
+                  raise SystemExit(f'expected checkout marker not found in {raw}')
+              path.write_text(text.replace(marker, insertion + '      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5\n', 1))
+          PY
+      - name: Commit repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo "No repair changes needed"
+            exit 0
+          fi
+          git config user.name MEMOPERF
+          git config user.email contact@checkupauto.fr
+          git add -A
+          git commit -m "ci: restore canonical formatting and sanitize Thor workspaces"
+          git push origin HEAD:fix/rustfmt-master-20260910
