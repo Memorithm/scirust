@@ -83,8 +83,7 @@ impl CollocationPoints {
             if !(hi - lo).is_finite()
             {
                 return Err(VariationalError::UnsupportedOperation {
-                    details: "Latin-hypercube bound span is not representable as finite f32"
-                        .into(),
+                    details: "Latin-hypercube bound span is not representable as finite f32".into(),
                 });
             }
         }
@@ -187,13 +186,11 @@ impl CollocationPoints {
             }
         }
 
-        let expected_len = self
-            .points
-            .len()
-            .checked_mul(self.ndim)
-            .ok_or_else(|| VariationalError::UnsupportedOperation {
+        let expected_len = self.points.len().checked_mul(self.ndim).ok_or_else(|| {
+            VariationalError::UnsupportedOperation {
                 details: "collocation tensor element count overflow".into(),
-            })?;
+            }
+        })?;
         let flat = self.to_flat();
         if flat.len() != expected_len
         {
@@ -243,9 +240,7 @@ mod tests {
     #[test]
     fn checked_sampling_rejects_invalid_bounds() {
         assert!(CollocationPoints::try_from_latin_hypercube(&[], 10, 42).is_err());
-        assert!(
-            CollocationPoints::try_from_latin_hypercube(&[(0.0, f32::NAN)], 10, 42).is_err()
-        );
+        assert!(CollocationPoints::try_from_latin_hypercube(&[(0.0, f32::NAN)], 10, 42).is_err());
         assert!(CollocationPoints::try_from_latin_hypercube(&[(1.0, 0.0)], 10, 42).is_err());
     }
 
