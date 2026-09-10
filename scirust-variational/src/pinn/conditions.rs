@@ -11,7 +11,8 @@ pub enum ConditionKind {
 
 impl std::fmt::Display for ConditionKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
+        match self
+        {
             Self::Initial => write!(f, "initial"),
             Self::Dirichlet => write!(f, "Dirichlet"),
             Self::Neumann => write!(f, "Neumann"),
@@ -54,9 +55,11 @@ impl Condition {
         validate_weight(self.weight, &self.name)?;
         validate_points(&self.points, &self.name)?;
         let mut targets = Vec::with_capacity(self.points.len());
-        for point in &self.points {
+        for point in &self.points
+        {
             let value = (self.target_fn)(point);
-            if !value.is_finite() {
+            if !value.is_finite()
+            {
                 return Err(VariationalError::NonFiniteValue {
                     component: "PINN boundary target",
                     value,
@@ -102,7 +105,8 @@ impl Default for ConditionConfig {
 }
 
 fn validate_weight(weight: f32, name: &str) -> Result<()> {
-    if !weight.is_finite() || weight < 0.0 {
+    if !weight.is_finite() || weight < 0.0
+    {
         return Err(VariationalError::InvalidBoundaryCondition {
             details: format!("condition '{name}' has invalid weight {weight}"),
         });
@@ -111,19 +115,23 @@ fn validate_weight(weight: f32, name: &str) -> Result<()> {
 }
 
 fn validate_points(points: &[Vec<f32>], name: &str) -> Result<()> {
-    if points.is_empty() {
+    if points.is_empty()
+    {
         return Err(VariationalError::InvalidBoundaryCondition {
             details: format!("condition '{name}' has no points"),
         });
     }
     let ndim = points[0].len();
-    if ndim == 0 {
+    if ndim == 0
+    {
         return Err(VariationalError::InvalidBoundaryCondition {
             details: format!("condition '{name}' contains zero-dimensional points"),
         });
     }
-    for point in points {
-        if point.len() != ndim {
+    for point in points
+    {
+        if point.len() != ndim
+        {
             return Err(VariationalError::InvalidBoundaryCondition {
                 details: format!(
                     "condition '{name}' has inconsistent point dimensions: expected {ndim}, got {}",
@@ -131,7 +139,8 @@ fn validate_points(points: &[Vec<f32>], name: &str) -> Result<()> {
                 ),
             });
         }
-        if let Some(&value) = point.iter().find(|value| !value.is_finite()) {
+        if let Some(&value) = point.iter().find(|value| !value.is_finite())
+        {
             return Err(VariationalError::NonFiniteValue {
                 component: "PINN boundary point",
                 value,
