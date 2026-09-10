@@ -72,11 +72,30 @@ impl GeneralizedMassMatrix {
     }
 
     pub fn is_symmetric(&self, tolerance: f32) -> bool {
+        if !tolerance.is_finite() || tolerance < 0.0 || self.matrix.len() != self.ndim
+        {
+            return false;
+        }
+
+        for row in &self.matrix
+        {
+            if row.len() != self.ndim
+            {
+                return false;
+            }
+        }
+
         for i in 0..self.ndim
         {
+            if !self.matrix[i][i].is_finite()
+            {
+                return false;
+            }
             for j in i + 1..self.ndim
             {
-                if (self.matrix[i][j] - self.matrix[j][i]).abs() > tolerance
+                let a = self.matrix[i][j];
+                let b = self.matrix[j][i];
+                if !a.is_finite() || !b.is_finite() || (a - b).abs() > tolerance
                 {
                     return false;
                 }
@@ -87,38 +106,143 @@ impl GeneralizedMassMatrix {
 
     pub fn is_positive_definite(&self) -> bool {
         let n = self.ndim;
+        if n == 0 || self.matrix.len() != n || self.matrix.iter().any(|row| row.len() != n)
+        {
+            return false;
+        }
+
+        // Positive definiteness is defined for symmetric real matrices. Use a
+        // scale-aware tolerance so harmless f32 roundoff does not reject an
+        // otherwise symmetric matrix, while materially asymmetric matrices do.
+        let symmetry_factor = 32.0 * f32::EPSILON;
         for i in 0..n
         {
-            let mut det = self.matrix[0][0];
-            if i > 0
-            {
-                let mut sub = vec![vec![0.0; i + 1]; i + 1];
-                for r in 0..=i
-                {
-                    for c in 0..=i
-                    {
-                        sub[r][c] = self.matrix[r][c];
-                    }
-                }
-                det = sub[0][0];
-                for k in 1..=i
-                {
-                    let factor = sub[k][0] / sub[0][0];
-                    for j in 1..=i
-                    {
-                        sub[k][j] -= factor * sub[0][j];
-                    }
-                }
-                for k in 1..=i
-                {
-                    det *= sub[k][k];
-                }
-            }
-            if det <= 0.0
+            let diagonal = self.matrix[i][i];
+            if !diagonal.is_finite()
             {
                 return false;
             }
+            for j in i + 1..n
+            {
+                let a = self.matrix[i][j];
+                let b = self.matrix[j][i];
+                if !a.is_finite() || !b.is_finite()
+                {
+                    return false;
+                }
+                let scale = a.abs().max(b.abs()).max(1.0);
+                if (a - b).abs() > symmetry_factor * scale
+                {
+                    return false;
+                }
+            }
         }
+
+        // Cholesky factorization provides a direct test for symmetric positive
+        // definiteness. Accumulate in f64 to reduce cancellation from the f32
+        // source matrix without changing the public representation.
+        let mut lower = vec![vec![0.0_f64; n]; n];
+        for i in 0..n
+        {
+            for j in 0..=i
+            {
+                let mut value = self.matrix[i][j] as f64;
+                for k in 0..j
+                {
+                    value -= lower[i][k] * lower[j][k];
+                }
+
+                if i == j
+                {
+                    if !value.is_finite() || value <= 0.0
+                    {
+                        return false;
+                    }
+                    lower[i][j] = value.sqrt();
+                }
+                else
+                {
+                    let pivot = lower[j][j];
+                    if !pivot.is_finite() || pivot <= 0.0
+                    {
+                        return false;
+                    }
+                    lower[i][j] = value / pivot;
+                    if !lower[i][j].is_finite()
+                    {
+                        return false;
+                    }
+                }
+            }
+        }
+
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn positive_definite_accepts_spd_matrix() {
+        let matrix = GeneralizedMassMatrix::new(vec![
+            vec![4.0, 1.0, 1.0],
+            vec![1.0, 3.0, 0.5],
+            vec![1.0, 0.5, 2.0],
+        ])
+        .unwrap();
+
+        assert!(matrix.is_positive_definite());
+    }
+
+    #[test]
+    fn positive_definite_rejects_indefinite_matrix() {
+        let matrix = GeneralizedMassMatrix::new(vec![vec![1.0, 2.0], vec![2.0, 1.0]]).unwrap();
+
+        assert!(!matrix.is_positive_definite());
+    }
+
+    #[test]
+    fn positive_definite_rejects_positive_semidefinite_matrix() {
+        let matrix = GeneralizedMassMatrix::new(vec![vec![1.0, 1.0], vec![1.0, 1.0]]).unwrap();
+
+        assert!(!matrix.is_positive_definite());
+    }
+
+    #[test]
+    fn positive_definite_rejects_asymmetric_matrix() {
+        // The previous leading-minor implementation incorrectly returned true
+        // for this matrix because it never validated symmetry and only
+        // eliminated the first column of each principal submatrix.
+        let matrix = GeneralizedMassMatrix::new(vec![vec![2.0, 10.0], vec![0.0, 2.0]]).unwrap();
+
+        assert!(!matrix.is_positive_definite());
+    }
+
+    #[test]
+    fn positive_definite_rejects_non_finite_entries() {
+        let matrix =
+            GeneralizedMassMatrix::new(vec![vec![1.0, f32::NAN], vec![f32::NAN, 1.0]]).unwrap();
+
+        assert!(!matrix.is_positive_definite());
+        assert!(!matrix.is_symmetric(1e-6));
+    }
+
+    #[test]
+    fn mass_matrix_checks_reject_mutated_shape_metadata() {
+        let mut matrix = GeneralizedMassMatrix::new(vec![vec![1.0]]).unwrap();
+        matrix.ndim = 2;
+
+        assert!(!matrix.is_positive_definite());
+        assert!(!matrix.is_symmetric(1e-6));
+    }
+
+    #[test]
+    fn symmetric_rejects_invalid_tolerance() {
+        let matrix = GeneralizedMassMatrix::new(vec![vec![1.0]]).unwrap();
+
+        assert!(!matrix.is_symmetric(-1.0));
+        assert!(!matrix.is_symmetric(f32::NAN));
     }
 }
