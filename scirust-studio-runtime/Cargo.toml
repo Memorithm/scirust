@@ -11,6 +11,7 @@ scirust-studio-registry = { path = "../scirust-studio-registry" }
 scirust-studio-schema = { path = "../scirust-studio-schema" }
 scirust-units = { path = "../scirust-units" }
 scirust-sim = { path = "../scirust-sim", features = ["stiff"] }
+scirust-signal = { path = "../scirust-signal" }
 serde = { version = "1", features = ["derive"] }
 # `float_roundtrip` is required, not optional: `RunResult::to_json_pretty` is
 # how a result leaves this crate, and a result that does not parse back to
