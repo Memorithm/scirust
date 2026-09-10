@@ -28,9 +28,11 @@ impl CollocationPoints {
         let mut rng = PcgEngine::new(seed);
         let span = domain.end - domain.start;
         let mut points = Vec::with_capacity(n_points);
-        for _ in 0..n_points {
+        for _ in 0..n_points
+        {
             let x = domain.start + rng.float() * span;
-            if !x.is_finite() {
+            if !x.is_finite()
+            {
                 return Err(VariationalError::NonFiniteValue {
                     component: "PINN random collocation point",
                     value: x,
@@ -52,36 +54,44 @@ impl CollocationPoints {
         n_points: usize,
         seed: u64,
     ) -> Result<Self> {
-        if bounds.is_empty() {
+        if bounds.is_empty()
+        {
             return Err(VariationalError::UnsupportedOperation {
                 details: "Latin-hypercube collocation requires at least one dimension".into(),
             });
         }
-        for &(lo, hi) in bounds {
-            if !lo.is_finite() {
+        for &(lo, hi) in bounds
+        {
+            if !lo.is_finite()
+            {
                 return Err(VariationalError::NonFiniteValue {
                     component: "PINN collocation lower bound",
                     value: lo,
                 });
             }
-            if !hi.is_finite() {
+            if !hi.is_finite()
+            {
                 return Err(VariationalError::NonFiniteValue {
                     component: "PINN collocation upper bound",
                     value: hi,
                 });
             }
-            if lo >= hi {
+            if lo >= hi
+            {
                 return Err(VariationalError::InvalidInterval { start: lo, end: hi });
             }
-            if !(hi - lo).is_finite() {
+            if !(hi - lo).is_finite()
+            {
                 return Err(VariationalError::UnsupportedOperation {
-                    details: "Latin-hypercube bound span is not representable as finite f32".into(),
+                    details: "Latin-hypercube bound span is not representable as finite f32"
+                        .into(),
                 });
             }
         }
 
         let ndim = bounds.len();
-        if n_points == 0 {
+        if n_points == 0
+        {
             return Ok(Self {
                 points: Vec::new(),
                 ndim,
@@ -91,10 +101,12 @@ impl CollocationPoints {
         let mut rng = PcgEngine::new(seed);
         let mut points: Vec<Vec<f32>> = (0..n_points).map(|_| vec![0.0; ndim]).collect();
 
-        for d in 0..ndim {
+        for d in 0..ndim
+        {
             let (lo, hi) = bounds[d];
             let bin_width = (hi - lo) / n_points as f32;
-            if !bin_width.is_finite() || bin_width <= 0.0 {
+            if !bin_width.is_finite() || bin_width <= 0.0
+            {
                 return Err(VariationalError::UnsupportedOperation {
                     details: format!(
                         "Latin-hypercube bin width for dimension {d} is not a finite positive f32"
@@ -103,14 +115,17 @@ impl CollocationPoints {
             }
 
             let mut perm: Vec<usize> = (0..n_points).collect();
-            for i in (1..perm.len()).rev() {
+            for i in (1..perm.len()).rev()
+            {
                 let j = (rng.float() * (i as f32 + 1.0)) as usize;
                 perm.swap(i, j.min(i));
             }
-            for i in 0..n_points {
+            for i in 0..n_points
+            {
                 let bin_start = lo + perm[i] as f32 * bin_width;
                 let value = bin_start + rng.float() * bin_width;
-                if !value.is_finite() {
+                if !value.is_finite()
+                {
                     return Err(VariationalError::NonFiniteValue {
                         component: "PINN Latin-hypercube point",
                         value,
@@ -138,7 +153,8 @@ impl CollocationPoints {
 
     pub fn to_flat(&self) -> Vec<f32> {
         let mut flat = Vec::with_capacity(self.points.len().saturating_mul(self.ndim));
-        for pt in &self.points {
+        for pt in &self.points
+        {
             flat.extend_from_slice(pt);
         }
         flat
@@ -146,20 +162,24 @@ impl CollocationPoints {
 
     /// Converts the current public point state into a tensor payload only if shape invariants hold.
     pub fn try_to_batched_tensor(&self) -> Result<(Vec<f32>, Vec<usize>)> {
-        if self.ndim == 0 {
+        if self.ndim == 0
+        {
             return Err(VariationalError::TrainingFailure {
                 details: "collocation dimension must be greater than zero".into(),
             });
         }
-        for point in &self.points {
-            if point.len() != self.ndim {
+        for point in &self.points
+        {
+            if point.len() != self.ndim
+            {
                 return Err(VariationalError::DimensionMismatch {
                     expected: self.ndim,
                     got: point.len(),
                     context: "CollocationPoints::try_to_batched_tensor".into(),
                 });
             }
-            if let Some(&value) = point.iter().find(|value| !value.is_finite()) {
+            if let Some(&value) = point.iter().find(|value| !value.is_finite())
+            {
                 return Err(VariationalError::NonFiniteValue {
                     component: "PINN collocation point",
                     value,
@@ -175,7 +195,8 @@ impl CollocationPoints {
                 details: "collocation tensor element count overflow".into(),
             })?;
         let flat = self.to_flat();
-        if flat.len() != expected_len {
+        if flat.len() != expected_len
+        {
             return Err(VariationalError::DimensionMismatch {
                 expected: expected_len,
                 got: flat.len(),
