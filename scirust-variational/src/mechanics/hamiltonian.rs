@@ -87,6 +87,14 @@ where
                 context: "HamiltonianDynamics::dynamics".into(),
             });
         }
+        if deriv.len() != 2 * n
+        {
+            return Err(VariationalError::DimensionMismatch {
+                expected: 2 * n,
+                got: deriv.len(),
+                context: "HamiltonianDynamics::dynamics deriv".into(),
+            });
+        }
 
         let q = &state[..n];
         let p = &state[n..];
@@ -166,5 +174,31 @@ mod tests {
             "dp should be -1 for H = 0.5*q^2, got {}",
             result.1[0]
         );
+    }
+
+    #[test]
+    fn dynamics_rejects_wrong_derivative_buffer_length() {
+        let config = HamiltonianDynamicsConfig {
+            ndim: 1,
+            epsilon: 1e-4,
+        };
+        let hd = HamiltonianDynamics::new(harmonic_hamiltonian, config);
+        let mut deriv = vec![0.0; 1];
+
+        let err = hd.dynamics(0.0, &[1.0, 0.5], &mut deriv).unwrap_err();
+        match err
+        {
+            VariationalError::DimensionMismatch {
+                expected,
+                got,
+                context,
+            } =>
+            {
+                assert_eq!(expected, 2);
+                assert_eq!(got, 1);
+                assert_eq!(context, "HamiltonianDynamics::dynamics deriv");
+            },
+            other => panic!("unexpected error: {other}"),
+        }
     }
 }

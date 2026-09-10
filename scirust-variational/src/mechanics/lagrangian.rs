@@ -38,7 +38,14 @@ where
         {
             return Err(VariationalError::DimensionMismatch {
                 expected: self.config.ndim,
-                got: q.len(),
+                got: if q.len() != self.config.ndim
+                {
+                    q.len()
+                }
+                else
+                {
+                    dq.len()
+                },
                 context: "LagrangianDynamics::acceleration".into(),
             });
         }
@@ -57,7 +64,15 @@ where
             return Err(VariationalError::DimensionMismatch {
                 expected: 2 * n,
                 got: state.len(),
-                context: "LagrangianDynamics::dynamics".into(),
+                context: "LagrangianDynamics::dynamics state".into(),
+            });
+        }
+        if deriv.len() != 2 * n
+        {
+            return Err(VariationalError::DimensionMismatch {
+                expected: 2 * n,
+                got: deriv.len(),
+                context: "LagrangianDynamics::dynamics deriv".into(),
             });
         }
 
@@ -77,7 +92,15 @@ where
             return Err(VariationalError::DimensionMismatch {
                 expected: 2 * n,
                 got: state.len(),
-                context: "LagrangianDynamics::compute_ode_rhs".into(),
+                context: "LagrangianDynamics::compute_ode_rhs state".into(),
+            });
+        }
+        if deriv.len() != 2 * n
+        {
+            return Err(VariationalError::DimensionMismatch {
+                expected: 2 * n,
+                got: deriv.len(),
+                context: "LagrangianDynamics::compute_ode_rhs deriv".into(),
             });
         }
         let q = &state[..n];
@@ -94,5 +117,106 @@ impl<F> std::fmt::Debug for LagrangianDynamics<F> {
         f.debug_struct("LagrangianDynamics")
             .field("config", &self.config)
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use scirust_core::tensor::tensor_nd::TensorND;
+
+    fn harmonic_lagrangian<'a>(
+        tape: &'a NdTape,
+        q: &'a [NdVar<'a>],
+        dq: &'a [NdVar<'a>],
+        _t: Option<NdVar<'a>>,
+    ) -> NdVar<'a> {
+        let half = tape.input(TensorND::new(vec![0.5], vec![1, 1]));
+        dq[0].mul(dq[0]).mul(half).sub(q[0].mul(q[0]).mul(half))
+    }
+
+    #[test]
+    fn acceleration_reports_velocity_dimension_mismatch() {
+        let dynamics = LagrangianDynamics::new(
+            harmonic_lagrangian,
+            LagrangianDynamicsConfig {
+                ndim: 1,
+                ..Default::default()
+            },
+        );
+
+        let err = dynamics.acceleration(&[0.0], &[], 0.0).unwrap_err();
+        match err
+        {
+            VariationalError::DimensionMismatch {
+                expected,
+                got,
+                context,
+            } =>
+            {
+                assert_eq!(expected, 1);
+                assert_eq!(got, 0);
+                assert_eq!(context, "LagrangianDynamics::acceleration");
+            },
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn dynamics_rejects_wrong_derivative_buffer_length() {
+        let dynamics = LagrangianDynamics::new(
+            harmonic_lagrangian,
+            LagrangianDynamicsConfig {
+                ndim: 1,
+                ..Default::default()
+            },
+        );
+        let mut deriv = vec![0.0; 1];
+
+        let err = dynamics.dynamics(0.0, &[1.0, 0.0], &mut deriv).unwrap_err();
+        match err
+        {
+            VariationalError::DimensionMismatch {
+                expected,
+                got,
+                context,
+            } =>
+            {
+                assert_eq!(expected, 2);
+                assert_eq!(got, 1);
+                assert_eq!(context, "LagrangianDynamics::dynamics deriv");
+            },
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn compute_ode_rhs_rejects_wrong_derivative_buffer_length() {
+        let dynamics = LagrangianDynamics::new(
+            harmonic_lagrangian,
+            LagrangianDynamicsConfig {
+                ndim: 1,
+                ..Default::default()
+            },
+        );
+        let mut deriv = vec![0.0; 3];
+
+        let err = dynamics
+            .compute_ode_rhs(0.0, &[1.0, 0.0], &mut deriv)
+            .unwrap_err();
+        match err
+        {
+            VariationalError::DimensionMismatch {
+                expected,
+                got,
+                context,
+            } =>
+            {
+                assert_eq!(expected, 2);
+                assert_eq!(got, 3);
+                assert_eq!(context, "LagrangianDynamics::compute_ode_rhs deriv");
+            },
+            other => panic!("unexpected error: {other}"),
+        }
     }
 }
