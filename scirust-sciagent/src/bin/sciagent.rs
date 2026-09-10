@@ -1,13 +1,17 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
-use scirust_core::autodiff::reverse::Tape;
+use scirust_sciagent::agentic::{AgentAction, AgentRouter, Tool};
 use scirust_sciagent::bpe::BpeTokenizer;
 use scirust_sciagent::config::SciAgentConfig;
+use scirust_sciagent::generate::Generator;
 use scirust_sciagent::model::SciAgentModel;
 use scirust_sciagent::train::checkpoint::{load_checkpoint, read_meta};
 
 type CliResult<T> = Result<T, (i32, String)>;
+
+const MAX_AGENT_STEPS: usize = 32;
+const MAX_AGENT_OBSERVATION_CHARS: usize = 16 * 1024;
 
 #[derive(Parser)]
 #[command(
@@ -52,6 +56,12 @@ enum Command {
         prompt: String,
     },
     Chat,
+    /// Run a bounded repository-aware tool loop for one maintenance task.
+    Agent {
+        task: String,
+        #[arg(long, default_value_t = 8)]
+        max_steps: usize,
+    },
     Explain {
         path: PathBuf,
         #[arg(long)]
@@ -146,6 +156,10 @@ fn main() {
     {
         Command::Ask { prompt } => cmd_ask(&mut model, prompt, &cli),
         Command::Chat => cmd_chat(&mut model, &cli),
+        Command::Agent { task, max_steps } => {
+            cmd_agent(&mut model, task, *max_steps, &cli)
+                .unwrap_or_else(|error| report_cli_error(error));
+        },
         Command::Explain { path, lines } => cmd_explain(&mut model, path, lines.as_deref(), &cli),
         Command::Generate { description } => cmd_generate(&mut model, description, &cli),
         Command::Info => unreachable!("info returns before model construction"),
@@ -167,26 +181,42 @@ fn get_config(model_name: &str) -> SciAgentConfig {
     }
 }
 
-fn cmd_ask(model: &mut SciAgentModel, prompt: &str, cli: &Cli) {
-    let vocab = model.config.vocab_size;
-    let tokens = tokenize_with_vocab(prompt, vocab);
-    let tape = Tape::new();
-    let _ = model.forward(&tape, &tokens, tokens.len());
-
-    let gen = scirust_sciagent::generate::Generator::new(&model.config)
+fn generator(cli: &Cli, config: &SciAgentConfig) -> Generator {
+    Generator::new(config)
         .with_temperature(cli.temperature)
         .with_top_k(cli.top_k)
         .with_top_p(cli.top_p)
-        .with_repetition_penalty(cli.repetition_penalty);
-    let result = gen.generate(model, &tokens, cli.max_tokens, cli.seed);
-    let text = detokenize_with_vocab(&result, vocab);
+        .with_repetition_penalty(cli.repetition_penalty)
+}
+
+/// `Generator::generate` returns the prompt followed by newly generated ids.
+/// Keep that contract internal to the CLI so callers only see the continuation.
+fn generate_continuation(
+    model: &mut SciAgentModel,
+    prompt: &[usize],
+    max_tokens: usize,
+    seed: u64,
+    cli: &Cli,
+) -> Vec<usize> {
+    let generated = generator(cli, &model.config).generate(model, prompt, max_tokens, seed);
+    generated
+        .get(prompt.len()..)
+        .unwrap_or_default()
+        .to_vec()
+}
+
+fn cmd_ask(model: &mut SciAgentModel, prompt: &str, cli: &Cli) {
+    let vocab = model.config.vocab_size;
+    let tokens = tokenize_with_vocab(prompt, vocab);
+    let continuation = generate_continuation(model, &tokens, cli.max_tokens, cli.seed, cli);
+    let text = detokenize_with_vocab(&continuation, vocab);
 
     if cli.json
     {
         let output = serde_json::json!({
             "prompt": prompt,
             "response": text,
-            "tokens": result.len(),
+            "tokens": continuation.len(),
             "seed": cli.seed,
         });
         println!("{}", serde_json::to_string_pretty(&output).unwrap());
@@ -202,11 +232,6 @@ fn cmd_chat(model: &mut SciAgentModel, cli: &Cli) {
     let max_seq = model.config.max_seq_len;
     println!("SCIAGENT chat (Ctrl+D to exit)");
     let mut history: Vec<usize> = Vec::new();
-    let gen = scirust_sciagent::generate::Generator::new(&model.config)
-        .with_temperature(cli.temperature)
-        .with_top_k(cli.top_k)
-        .with_top_p(cli.top_p)
-        .with_repetition_penalty(cli.repetition_penalty);
 
     loop
     {
@@ -228,22 +253,192 @@ fn cmd_chat(model: &mut SciAgentModel, cli: &Cli) {
             continue;
         }
 
-        let tokens = tokenize_with_vocab(line, vocab);
-        history.extend(&tokens);
-        let ctx = if history.len() > max_seq
+        history.extend(tokenize_with_vocab(
+            &format!("user: {line}\nassistant: "),
+            vocab,
+        ));
+        if history.len() > max_seq
         {
-            &history[history.len() - max_seq..]
+            let drain = history.len() - max_seq;
+            history.drain(..drain);
         }
-        else
-        {
-            &history
-        };
 
-        let result = gen.generate(model, ctx, cli.max_tokens.min(512), cli.seed);
-        let text = detokenize_with_vocab(&result, vocab);
+        let continuation = generate_continuation(
+            model,
+            &history,
+            cli.max_tokens.min(512),
+            cli.seed,
+            cli,
+        );
+        let text = detokenize_with_vocab(&continuation, vocab);
         println!("{text}");
-        history.push(result.last().copied().unwrap_or(0));
+
+        history.extend(continuation);
+        history.extend(tokenize_with_vocab("\n", vocab));
+        if history.len() > max_seq
+        {
+            let drain = history.len() - max_seq;
+            history.drain(..drain);
+        }
     }
+}
+
+fn agent_tool_catalog() -> String {
+    let mut catalog = String::new();
+    for tool in Tool::builtins()
+    {
+        catalog.push_str(tool.name);
+        catalog.push('(');
+        for (index, parameter) in tool.parameters.iter().enumerate()
+        {
+            if index > 0
+            {
+                catalog.push_str(", ");
+            }
+            catalog.push_str(parameter.name);
+            if !parameter.required
+            {
+                catalog.push('?');
+            }
+        }
+        catalog.push_str("): ");
+        catalog.push_str(tool.description);
+        catalog.push('\n');
+    }
+    catalog
+}
+
+fn bounded_observation(text: &str) -> String {
+    let mut chars = text.chars();
+    let bounded: String = chars.by_ref().take(MAX_AGENT_OBSERVATION_CHARS).collect();
+    if chars.next().is_some()
+    {
+        format!("{bounded}\n[observation truncated]")
+    }
+    else
+    {
+        bounded
+    }
+}
+
+fn agent_prompt(task: &str, transcript: &str, tools: &str) -> String {
+    format!(
+        "{transcript}\n\
+You are SCIAGENT operating on the live SciRust workspace. Ground every repository claim in tool observations. Never claim a build, test, file read, or search succeeded unless its observation says so. Use at most one tool call per turn. To call a tool, output only compact JSON: {{\"name\":\"TOOL\",\"params\":{{\"key\":\"value\"}}}}. When the task is complete or cannot be completed with the available tools, answer with plain text instead of JSON.\n\
+Available tools:\n{tools}\
+Task: {task}\n\
+Next action:"
+    )
+}
+
+fn cmd_agent(
+    model: &mut SciAgentModel,
+    task: &str,
+    max_steps: usize,
+    cli: &Cli,
+) -> CliResult<()> {
+    if max_steps == 0 || max_steps > MAX_AGENT_STEPS
+    {
+        return Err((
+            2,
+            format!("--max-steps must be in 1..={MAX_AGENT_STEPS}"),
+        ));
+    }
+
+    let router = AgentRouter::new();
+    let tools = agent_tool_catalog();
+    let vocab = model.config.vocab_size;
+    let mut transcript = String::new();
+    let mut trace = Vec::new();
+
+    for step in 0..max_steps
+    {
+        let prompt = agent_prompt(task, &transcript, &tools);
+        let prompt_tokens = tokenize_with_vocab(&prompt, vocab);
+        let continuation = generate_continuation(
+            model,
+            &prompt_tokens,
+            cli.max_tokens.min(512),
+            cli.seed.wrapping_add(step as u64),
+            cli,
+        );
+        let model_text = detokenize_with_vocab(&continuation, vocab);
+        let action = router.parse_action(model_text.trim());
+
+        match action
+        {
+            AgentAction::Call { tool, params } =>
+            {
+                let executable = AgentAction::Call {
+                    tool: tool.clone(),
+                    params: params.clone(),
+                };
+                let observation = router.execute(&executable);
+                let observation = bounded_observation(&observation);
+                trace.push(serde_json::json!({
+                    "step": step + 1,
+                    "action": "tool",
+                    "tool": tool,
+                    "params": params,
+                    "observation": observation,
+                }));
+                transcript.push_str("\nassistant: ");
+                transcript.push_str(model_text.trim());
+                transcript.push_str("\ntool observation: ");
+                transcript.push_str(&observation);
+                transcript.push('\n');
+            },
+            AgentAction::Respond { text } =>
+            {
+                if cli.json
+                {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "task": task,
+                            "completed": true,
+                            "response": text,
+                            "turns": trace,
+                        }))
+                        .unwrap()
+                    );
+                }
+                else
+                {
+                    println!("{text}");
+                }
+                return Ok(());
+            },
+            AgentAction::Abstain =>
+            {
+                let text = "I abstain — confidence below threshold.";
+                if cli.json
+                {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "task": task,
+                            "completed": false,
+                            "abstained": true,
+                            "response": text,
+                            "turns": trace,
+                        }))
+                        .unwrap()
+                    );
+                }
+                else
+                {
+                    println!("{text}");
+                }
+                return Ok(());
+            },
+        }
+    }
+
+    Err((
+        3,
+        format!("agent stopped after reaching the {max_steps}-step safety bound"),
+    ))
 }
 
 fn cmd_explain(model: &mut SciAgentModel, path: &PathBuf, lines: Option<&str>, cli: &Cli) {
@@ -463,5 +658,32 @@ mod tests {
     fn info_config_does_not_allocate_model_weights() {
         let config = info_config(&test_cli(None)).expect("info config should resolve");
         assert_eq!(config.d_model, SciAgentConfig::debug().d_model);
+    }
+
+    #[test]
+    fn tool_catalog_is_generated_from_builtin_contracts() {
+        let catalog = agent_tool_catalog();
+        assert!(catalog.contains("search(pattern, path?)"));
+        assert!(catalog.contains("read(path, lines?)"));
+        assert!(catalog.contains("build(crate)"));
+        assert!(catalog.contains("test(crate, test?)"));
+        assert!(catalog.contains("status()"));
+    }
+
+    #[test]
+    fn observation_bound_is_enforced() {
+        let oversized = "x".repeat(MAX_AGENT_OBSERVATION_CHARS + 10);
+        let bounded = bounded_observation(&oversized);
+        assert!(bounded.ends_with("[observation truncated]"));
+        assert!(bounded.len() < oversized.len() + 32);
+    }
+
+    #[test]
+    fn agent_step_bounds_are_rejected_before_inference() {
+        let cli = test_cli(None);
+        let config = SciAgentConfig::debug();
+        let mut model = SciAgentModel::new(&config);
+        assert!(cmd_agent(&mut model, "inspect", 0, &cli).is_err());
+        assert!(cmd_agent(&mut model, "inspect", MAX_AGENT_STEPS + 1, &cli).is_err());
     }
 }
