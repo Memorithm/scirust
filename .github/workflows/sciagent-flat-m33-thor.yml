@@ -25,6 +25,9 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, Linux, ARM64, scirust-arm64, jetson-thor, internal]
     timeout-minutes: 360
+    defaults:
+      run:
+        working-directory: .ci-source
     env:
       CARGO_INCREMENTAL: 0
       RUSTFLAGS: "-D warnings"
@@ -42,17 +45,10 @@ jobs:
       SCIAGENT_FLAT_M33_D_FF: "1408"
       WGPU_BACKEND: vulkan
     steps:
-      - name: Sanitize persistent workspace before checkout
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ -e "$GITHUB_WORKSPACE/target" ]]; then
-            sudo rm -rf -- "$GITHUB_WORKSPACE/target"
-          fi
-          test ! -e "$GITHUB_WORKSPACE/target"
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          path: .ci-source
       - name: Require persistent physical Thor runner
         shell: bash
         run: |
