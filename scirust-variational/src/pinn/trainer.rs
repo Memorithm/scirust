@@ -147,7 +147,8 @@ impl PinnTrainer {
             let loss_val = ensure_scalar_finite_loss(&tape, total_loss, "PINN total loss")?;
             let grads = tape.backward(total_loss);
             let mut params = model.parameters();
-            let (grad_norm, parameter_grad_indices) = validate_parameter_gradients(&params, &grads)?;
+            let (grad_norm, parameter_grad_indices) =
+                validate_parameter_gradients(&params, &grads)?;
 
             let mut optimizer_grads = grads.clone();
             if let Some(clip_norm) = self.config.gradient_clip_norm {
@@ -337,7 +338,11 @@ fn validate_conditions(config: &ConditionConfig, expected_dim: usize) -> Result<
     Ok(())
 }
 
-fn ensure_scalar_finite_loss(tape: &NdTape, loss: NdVar<'_>, component: &str) -> Result<f32> {
+fn ensure_scalar_finite_loss(
+    tape: &NdTape,
+    loss: NdVar<'_>,
+    component: &str,
+) -> Result<f32> {
     let value = tape.value(loss);
     if value.data.len() != 1 {
         return Err(VariationalError::TrainingFailure {
