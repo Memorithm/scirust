@@ -40,6 +40,14 @@ jobs:
       SCIRUST_REQUIRE_CUDA: "1"
       SCIRUST_THOR_GPU_LOCK: /dev/nvidia0
     steps:
+      - name: Sanitize persistent workspace before checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -e "$GITHUB_WORKSPACE/target" ]]; then
+            sudo rm -rf -- "$GITHUB_WORKSPACE/target"
+          fi
+          test ! -e "$GITHUB_WORKSPACE/target"
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - name: Prepare isolated executable build directory
         run: |
