@@ -19,25 +19,21 @@ impl Domain1D {
     /// Returns uniformly spaced points after revalidating the mutable public domain bounds.
     pub fn try_uniform_points(&self, n: usize) -> Result<Vec<f32>> {
         validate_interval(self.start, self.end, "Domain1D::try_uniform_points")?;
-        if n == 0
-        {
+        if n == 0 {
             return Ok(Vec::new());
         }
-        if n == 1
-        {
+        if n == 1 {
             return Ok(vec![0.5 * (self.start + self.end)]);
         }
         let dx = (self.end - self.start) / (n - 1) as f32;
-        if !dx.is_finite()
-        {
+        if !dx.is_finite() {
             return Err(VariationalError::NonFiniteValue {
                 component: "Domain1D uniform spacing",
                 value: dx,
             });
         }
         let points: Vec<f32> = (0..n).map(|i| self.start + i as f32 * dx).collect();
-        if let Some(&value) = points.iter().find(|value| !value.is_finite())
-        {
+        if let Some(&value) = points.iter().find(|value| !value.is_finite()) {
             return Err(VariationalError::NonFiniteValue {
                 component: "Domain1D uniform point",
                 value,
@@ -69,8 +65,7 @@ impl DomainRect {
 
     /// Builds a uniform Cartesian grid after validating dimensions and mutable public bounds.
     pub fn try_uniform_grid(&self, points_per_dim: &[usize]) -> Result<Vec<Vec<f32>>> {
-        if self.ndim == 0 || self.bounds.len() != self.ndim
-        {
+        if self.ndim == 0 || self.bounds.len() != self.ndim {
             return Err(VariationalError::DimensionMismatch {
                 expected: self.ndim,
                 got: self.bounds.len(),
@@ -78,16 +73,14 @@ impl DomainRect {
             });
         }
         validate_rect_bounds(&self.bounds, "DomainRect::try_uniform_grid")?;
-        if points_per_dim.len() != self.ndim
-        {
+        if points_per_dim.len() != self.ndim {
             return Err(VariationalError::DimensionMismatch {
                 expected: self.ndim,
                 got: points_per_dim.len(),
                 context: "DomainRect::try_uniform_grid points_per_dim".into(),
             });
         }
-        if points_per_dim.contains(&0)
-        {
+        if points_per_dim.contains(&0) {
             return Ok(Vec::new());
         }
 
@@ -99,26 +92,20 @@ impl DomainRect {
                 })
         })?;
         let mut grid = Vec::with_capacity(total);
-        for idx in 0..total
-        {
+        for idx in 0..total {
             let mut point = Vec::with_capacity(self.ndim);
             let mut remaining = idx;
-            for d in (0..self.ndim).rev()
-            {
+            for d in (0..self.ndim).rev() {
                 let dim_count = points_per_dim[d];
                 let coord_idx = remaining % dim_count;
                 remaining /= dim_count;
                 let (lo, hi) = self.bounds[d];
-                let x = if dim_count == 1
-                {
+                let x = if dim_count == 1 {
                     0.5 * (lo + hi)
-                }
-                else
-                {
+                } else {
                     lo + coord_idx as f32 * (hi - lo) / (dim_count - 1) as f32
                 };
-                if !x.is_finite()
-                {
+                if !x.is_finite() {
                     return Err(VariationalError::NonFiniteValue {
                         component: "DomainRect uniform-grid coordinate",
                         value: x,
@@ -139,27 +126,23 @@ impl DomainRect {
 }
 
 fn validate_interval(start: f32, end: f32, context: &str) -> Result<()> {
-    if !start.is_finite()
-    {
+    if !start.is_finite() {
         return Err(VariationalError::NonFiniteValue {
             component: "domain start",
             value: start,
         });
     }
-    if !end.is_finite()
-    {
+    if !end.is_finite() {
         return Err(VariationalError::NonFiniteValue {
             component: "domain end",
             value: end,
         });
     }
-    if start >= end
-    {
+    if start >= end {
         return Err(VariationalError::InvalidInterval { start, end });
     }
     let span = end - start;
-    if !span.is_finite()
-    {
+    if !span.is_finite() {
         return Err(VariationalError::UnsupportedOperation {
             details: format!("{context} span is not representable as finite f32"),
         });
@@ -168,14 +151,12 @@ fn validate_interval(start: f32, end: f32, context: &str) -> Result<()> {
 }
 
 fn validate_rect_bounds(bounds: &[(f32, f32)], context: &str) -> Result<()> {
-    if bounds.is_empty()
-    {
+    if bounds.is_empty() {
         return Err(VariationalError::UnsupportedOperation {
             details: format!("{context} requires at least one dimension"),
         });
     }
-    for &(lo, hi) in bounds
-    {
+    for &(lo, hi) in bounds {
         validate_interval(lo, hi, context)?;
     }
     Ok(())
