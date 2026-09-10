@@ -106,7 +106,8 @@ fn parse_sft_example(line: &str) -> io::Result<SftExample> {
     let tool_calls = match object.get("tool_calls")
     {
         None | Some(serde_json::Value::Null) => None,
-        Some(value) => {
+        Some(value) =>
+        {
             let calls = value
                 .as_array()
                 .ok_or_else(|| invalid_data("SFT `tool_calls` must be an array"))?;
@@ -143,9 +144,7 @@ fn parse_sft_example(line: &str) -> io::Result<SftExample> {
                             .as_str()
                             .map(|value| (key.clone(), value.to_string()))
                             .ok_or_else(|| {
-                                invalid_data(format!(
-                                    "SFT tool parameter `{key}` must be a string"
-                                ))
+                                invalid_data(format!("SFT tool parameter `{key}` must be a string"))
                             })
                     })
                     .collect::<io::Result<Vec<_>>>()?;
