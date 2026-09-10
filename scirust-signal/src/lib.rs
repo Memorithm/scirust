@@ -101,6 +101,7 @@ pub mod error;
 pub mod features;
 pub mod fft;
 pub mod filter;
+pub mod measure;
 pub mod mcsa;
 pub mod order;
 pub mod radar;
@@ -134,6 +135,7 @@ pub use fft::{fft, fft_real, ifft};
 pub use filter::{
     Biquad, butter_highpass_sos, butter_lowpass_sos, fir_highpass, fir_lowpass, lfilter, sos_filter,
 };
+pub use measure::{crossing_times, period_from_second_half, upward_crossing_times};
 pub use mcsa::{
     BarSeverity, BrokenBarResult, EccentricityResult, MotorDiagnosis, MotorFault,
     analyze_broken_bar, analyze_eccentricity, diagnose_motor, slip,
