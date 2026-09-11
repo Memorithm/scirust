@@ -156,7 +156,8 @@ fn main() {
     {
         Command::Ask { prompt } => cmd_ask(&mut model, prompt, &cli),
         Command::Chat => cmd_chat(&mut model, &cli),
-        Command::Agent { task, max_steps } => {
+        Command::Agent { task, max_steps } =>
+        {
             cmd_agent(&mut model, task, *max_steps, &cli)
                 .unwrap_or_else(|error| report_cli_error(error));
         },
@@ -199,10 +200,7 @@ fn generate_continuation(
     cli: &Cli,
 ) -> Vec<usize> {
     let generated = generator(cli, &model.config).generate(model, prompt, max_tokens, seed);
-    generated
-        .get(prompt.len()..)
-        .unwrap_or_default()
-        .to_vec()
+    generated.get(prompt.len()..).unwrap_or_default().to_vec()
 }
 
 fn cmd_ask(model: &mut SciAgentModel, prompt: &str, cli: &Cli) {
@@ -263,13 +261,8 @@ fn cmd_chat(model: &mut SciAgentModel, cli: &Cli) {
             history.drain(..drain);
         }
 
-        let continuation = generate_continuation(
-            model,
-            &history,
-            cli.max_tokens.min(512),
-            cli.seed,
-            cli,
-        );
+        let continuation =
+            generate_continuation(model, &history, cli.max_tokens.min(512), cli.seed, cli);
         let text = detokenize_with_vocab(&continuation, vocab);
         println!("{text}");
 
@@ -331,18 +324,10 @@ Next action:"
     )
 }
 
-fn cmd_agent(
-    model: &mut SciAgentModel,
-    task: &str,
-    max_steps: usize,
-    cli: &Cli,
-) -> CliResult<()> {
+fn cmd_agent(model: &mut SciAgentModel, task: &str, max_steps: usize, cli: &Cli) -> CliResult<()> {
     if max_steps == 0 || max_steps > MAX_AGENT_STEPS
     {
-        return Err((
-            2,
-            format!("--max-steps must be in 1..={MAX_AGENT_STEPS}"),
-        ));
+        return Err((2, format!("--max-steps must be in 1..={MAX_AGENT_STEPS}")));
     }
 
     let router = AgentRouter::new();

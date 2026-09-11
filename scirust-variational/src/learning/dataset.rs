@@ -375,8 +375,7 @@ mod tests {
     #[test]
     fn trajectory_rejects_non_increasing_time_grid() {
         assert!(
-            trajectory_from_ode(harmonic_dynamics, &[1.0], &[0.0], &[0.0, 0.1, 0.1], 1)
-                .is_err()
+            trajectory_from_ode(harmonic_dynamics, &[1.0], &[0.0], &[0.0, 0.1, 0.1], 1).is_err()
         );
     }
 
@@ -387,14 +386,8 @@ mod tests {
             deriv[1] = 0.0;
         }
 
-        let dataset = trajectory_from_ode(
-            unit_position_rate,
-            &[0.0],
-            &[0.0],
-            &[0.0, 0.1, 0.4],
-            1,
-        )
-        .unwrap();
+        let dataset =
+            trajectory_from_ode(unit_position_rate, &[0.0], &[0.0], &[0.0, 0.1, 0.4], 1).unwrap();
 
         assert!((dataset.samples[0].q[0] - 0.0).abs() < 1e-6);
         assert!((dataset.samples[1].q[0] - 0.1).abs() < 1e-6);
