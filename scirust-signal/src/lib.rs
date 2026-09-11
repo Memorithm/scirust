@@ -102,6 +102,7 @@ pub mod features;
 pub mod fft;
 pub mod filter;
 pub mod mcsa;
+pub mod measure;
 pub mod order;
 pub mod radar;
 pub mod sliding_stats;
@@ -138,6 +139,7 @@ pub use mcsa::{
     BarSeverity, BrokenBarResult, EccentricityResult, MotorDiagnosis, MotorFault,
     analyze_broken_bar, analyze_eccentricity, diagnose_motor, slip,
 };
+pub use measure::{crossing_times, period_from_second_half, upward_crossing_times};
 pub use order::{order_spectrum, order_track, resample_constant_angle, rpm_profile, tacho_to_rpm};
 pub use radar::{
     AlphaBeta, CensoredMeanResult, CfarConfig, CfarDecision, CfarDetector, CfarError, CfarMode,
