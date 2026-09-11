@@ -133,9 +133,9 @@ jobs:
                 printf '%s\n' "$training"
                 settled=0
               elif [[ -n "${active//[[:space:]]/}" ]]; then
-                echo "::error::Unknown GPU compute activity is active while M33 owns the Thor reservation during $phase:"
+                echo "External GPU compute activity is active; M33 $phase remains blocked without disturbing it."
                 printf '%s\n' "$active"
-                exit 1
+                settled=0
               else
                 settled=$((settled + settle_step))
                 if (( settled == settle_step || settled % 60 == 0 )); then
