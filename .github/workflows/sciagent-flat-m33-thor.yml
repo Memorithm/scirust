@@ -129,7 +129,7 @@ jobs:
               fi
 
               if [[ -n "${training//[[:space:]]/}" ]]; then
-                echo "SciAgent cuda_pretrain is active; M33 $phase remains blocked."
+                echo "SciAgent cuda_pretrain is active; M33 $phase remains blocked without holding the shared GPU lock."
                 printf '%s\n' "$training"
                 settled=0
               elif [[ -n "${active//[[:space:]]/}" ]]; then
@@ -162,14 +162,6 @@ jobs:
             exit 1
           fi
           stat -Lc 'gpu_lock_target=%n st_dev=%d inode=%i rdev_hex=%t:%T mode=%a owner=%U:%G type=%F' "$SCIRUST_THOR_GPU_LOCK"
-          exec 9<>"$SCIRUST_THOR_GPU_LOCK"
-          flock -x 9
-          echo "gpu_lock_acquired=true runner=$RUNNER_NAME"
-          if flock -n "$SCIRUST_THOR_GPU_LOCK" -c 'true'; then
-            echo "::error::physical GPU lock does not contend across independent file descriptions"
-            exit 1
-          fi
-          echo "gpu_lock_self_contention=pass"
 
           gpu_inventory="$(nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader)" || {
             echo "::error::cannot query NVIDIA GPU inventory"
@@ -195,7 +187,43 @@ jobs:
           deadline=$((SECONDS + 18000))
           settle_step=5
           settle_required="$SCIRUST_THOR_IDLE_SETTLE_SECONDS"
-          settle_idle "pre-parity qualification"
+          exec 9<>"$SCIRUST_THOR_GPU_LOCK"
+
+          while true; do
+            settle_idle "pre-parity qualification"
+
+            if ! flock -n 9; then
+              echo "Thor is idle but another SciRust qualification owns the shared GPU lock; restarting the idle proof after that reservation progresses."
+            else
+              post_lock_training="$(training_processes)"
+              if ! post_lock_active="$(compute_processes)"; then
+                flock -u 9
+                echo "::error::M33 cannot verify Thor compute occupancy after acquiring the shared GPU lock"
+                exit 1
+              fi
+
+              if [[ -z "${post_lock_training//[[:space:]]/}" && -z "${post_lock_active//[[:space:]]/}" ]]; then
+                echo "gpu_lock_acquired=true runner=$RUNNER_NAME"
+                if flock -n "$SCIRUST_THOR_GPU_LOCK" -c 'true'; then
+                  echo "::error::physical GPU lock does not contend across independent file descriptions"
+                  exit 1
+                fi
+                echo "gpu_lock_self_contention=pass"
+                break
+              fi
+
+              echo "GPU activity appeared between the idle proof and lock acquisition; releasing the reservation and restarting qualification."
+              [[ -z "${post_lock_training//[[:space:]]/}" ]] || printf '%s\n' "$post_lock_training"
+              [[ -z "${post_lock_active//[[:space:]]/}" ]] || printf '%s\n' "$post_lock_active"
+              flock -u 9
+            fi
+
+            if (( SECONDS >= deadline )); then
+              echo "::error::M33 could not obtain an uncontended idle Thor reservation before the five-hour deadline"
+              exit 1
+            fi
+            sleep "$settle_step"
+          done
 
           contamination="$RUNNER_TEMP/flat-m33-thor-contamination.txt"
           : > "$contamination"
