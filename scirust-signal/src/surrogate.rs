@@ -40,14 +40,26 @@ pub enum SurrogateError {
 
 impl fmt::Display for SurrogateError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::TooShort { len } => write!(f, "surrogate input must contain at least 4 samples, got {len}"),
-            Self::LengthNotPowerOfTwo { len } => {
-                write!(f, "surrogate input length must be a power of two, got {len}")
-            }
-            Self::NonFiniteSample { index } => {
-                write!(f, "surrogate input contains a non-finite sample at index {index}")
-            }
+        match self
+        {
+            Self::TooShort { len } => write!(
+                f,
+                "surrogate input must contain at least 4 samples, got {len}"
+            ),
+            Self::LengthNotPowerOfTwo { len } =>
+            {
+                write!(
+                    f,
+                    "surrogate input length must be a power of two, got {len}"
+                )
+            },
+            Self::NonFiniteSample { index } =>
+            {
+                write!(
+                    f,
+                    "surrogate input contains a non-finite sample at index {index}"
+                )
+            },
         }
     }
 }
@@ -74,13 +86,19 @@ impl std::error::Error for SurrogateError {}
 /// length is not a power of two, or any sample is non-finite.
 pub fn phase_randomized_surrogate(signal: &[f64], seed: u64) -> Result<Vec<f64>, SurrogateError> {
     let n = signal.len();
-    if n < 4 {
+    if n < 4
+    {
         return Err(SurrogateError::TooShort { len: n });
     }
-    if !n.is_power_of_two() {
+    if !n.is_power_of_two()
+    {
         return Err(SurrogateError::LengthNotPowerOfTwo { len: n });
     }
-    if let Some((index, _)) = signal.iter().enumerate().find(|(_, value)| !value.is_finite()) {
+    if let Some((index, _)) = signal
+        .iter()
+        .enumerate()
+        .find(|(_, value)| !value.is_finite())
+    {
         return Err(SurrogateError::NonFiniteSample { index });
     }
 
@@ -94,7 +112,8 @@ pub fn phase_randomized_surrogate(signal: &[f64], seed: u64) -> Result<Vec<f64>,
     let mut rng = SplitMix64::new(seed);
     let nyquist = n / 2;
 
-    for k in 1..nyquist {
+    for k in 1..nyquist
+    {
         let magnitude = spectrum[k].mag();
         let phase = TAU * rng.next_f64() - PI;
         let (sin_phase, cos_phase) = scirust_core::portable_f32::sincos_small_f64(phase);
@@ -167,7 +186,8 @@ mod tests {
         let before = spectrum_magnitude_squared(&signal);
         let after = spectrum_magnitude_squared(&surrogate);
 
-        for (index, (expected, observed)) in before.iter().zip(&after).enumerate() {
+        for (index, (expected, observed)) in before.iter().zip(&after).enumerate()
+        {
             let scale = expected.abs().max(1.0);
             assert!(
                 (expected - observed).abs() <= 2.0e-10 * scale,
@@ -181,7 +201,8 @@ mod tests {
     fn constant_signal_remains_constant_within_roundoff() {
         let signal = vec![3.25; 32];
         let surrogate = phase_randomized_surrogate(&signal, 99).unwrap();
-        for value in surrogate {
+        for value in surrogate
+        {
             assert!((value - 3.25).abs() <= 1.0e-12);
         }
     }
