@@ -105,6 +105,7 @@ pub mod mcsa;
 pub mod order;
 pub mod radar;
 pub mod sliding_stats;
+pub mod surrogate;
 pub mod windows;
 
 pub use error::{SignalError, SignalResult};
