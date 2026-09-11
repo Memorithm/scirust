@@ -1,0 +1,37 @@
+name: Thor GPU diagnostic
+
+on:
+  push:
+    branches:
+      - diag/thor-gpu-20260911
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    name: Inspect Thor GPU occupancy
+    runs-on: [self-hosted, Linux, ARM64, scirust-arm64, jetson-thor, internal]
+    timeout-minutes: 5
+    steps:
+      - name: Report GPU compute owners without modifying them
+        shell: bash
+        run: |
+          set -euo pipefail
+          date -u +'%Y-%m-%dT%H:%M:%SZ'
+          nvidia-smi --query-gpu=name,driver_version,utilization.gpu,temperature.gpu --format=csv,noheader || true
+          apps="$(nvidia-smi --query-compute-apps=pid,process_name --format=csv,noheader 2>/dev/null || true)"
+          printf 'compute_apps:\n%s\n' "$apps"
+          while IFS=',' read -r raw_pid process_name; do
+            pid="$(printf '%s' "$raw_pid" | tr -d '[:space:]')"
+            [[ "$pid" =~ ^[0-9]+$ ]] || continue
+            echo "--- pid=$pid process=${process_name# } ---"
+            ps -p "$pid" -o pid=,ppid=,user=,state=,etimes=,lstart=,cmd= || true
+            parent="$(ps -p "$pid" -o ppid= 2>/dev/null | tr -d '[:space:]')"
+            if [[ "$parent" =~ ^[0-9]+$ ]]; then
+              echo "parent:"
+              ps -p "$parent" -o pid=,ppid=,user=,state=,etimes=,lstart=,cmd= || true
+            fi
+            echo "cgroup:"
+            cat "/proc/$pid/cgroup" 2>/dev/null || true
+          done <<< "$apps"
