@@ -1,0 +1,188 @@
+name: Audit contract regressions
+
+on:
+  pull_request:
+    paths:
+      - "scirust-stats/**"
+      - "scirust-attention-intent/**"
+      - "scirust-tensor-ir/**"
+      - "scirust-compute/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/audit-contracts.yml"
+  push:
+    branches: [master]
+    paths:
+      - "scirust-stats/**"
+      - "scirust-attention-intent/**"
+      - "scirust-tensor-ir/**"
+      - "scirust-compute/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/audit-contracts.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: audit-contracts-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contracts:
+    name: Numerical and attention boundary regressions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      RUSTFLAGS: -D warnings
+      RUSTDOCFLAGS: -D warnings
+      CARGO_INCREMENTAL: 0
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master
+        with:
+          toolchain: stable
+          components: clippy
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Test the patched packages and their doctests
+        run: cargo +stable test -p scirust-stats -p scirust-attention-intent --locked
+      - name: Check the optimized regression paths
+        run: |
+          cargo +stable test -p scirust-stats --release --locked audit_
+          cargo +stable test -p scirust-attention-intent --release --locked --test audit_contracts
+      - name: Lint and document the patched contracts
+        run: |
+          cargo +stable clippy -p scirust-stats -p scirust-attention-intent --all-targets --locked -- -D warnings
+          cargo +stable doc -p scirust-stats -p scirust-attention-intent --no-deps --locked
+      - name: Reproduce the attention failures on the pinned audit baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          base=e1237827f73268bf43b2b971674a697cd186d95e
+          git fetch --no-tags --depth=1 origin "$base"
+          baseline="$RUNNER_TEMP/scirust-audit-baseline"
+          git worktree add --detach "$baseline" "$base"
+          mkdir -p "$baseline/scirust-attention-intent/tests"
+          cp scirust-attention-intent/tests/audit_contracts.rs "$baseline/scirust-attention-intent/tests/"
+          set +e
+          cargo +stable test --manifest-path "$baseline/Cargo.toml" \
+            -p scirust-attention-intent --locked --test audit_contracts \
+            -- --test-threads=1 > "$RUNNER_TEMP/attention-negative-control.log" 2>&1
+          status=$?
+          set -e
+          cat "$RUNNER_TEMP/attention-negative-control.log"
+          test "$status" -eq 101
+          # A compilation failure is not a reproduced regression. Require all
+          # six named runtime test failures and the two passing controls.
+          grep -Fq 'test result: FAILED. 2 passed; 6 failed;' "$RUNNER_TEMP/attention-negative-control.log"
+          for name in \
+            audit_zero_k_heads_returns_error_not_remainder_by_zero_panic \
+            audit_every_zero_dimension_reports_its_tensor_role \
+            audit_k_and_v_head_counts_must_match \
+            audit_value_batch_mismatch_is_not_attributed_to_key \
+            audit_large_dimensions_are_rejected_instead_of_truncated \
+            audit_executability_checks_the_documented_value_dimension
+          do
+            grep -Fq "test $name ... FAILED" "$RUNNER_TEMP/attention-negative-control.log"
+          done
+      - name: Reproduce three statistics failures on the same baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          baseline="$RUNNER_TEMP/scirust-audit-baseline"
+          cp "$baseline/scirust-stats/src/describe.rs" "$RUNNER_TEMP/describe-negative-control.rs"
+          cat >> "$RUNNER_TEMP/describe-negative-control.rs" <<'RS'
+          #[cfg(test)]
+          mod audit_negative_control {
+              use super::*;
+              #[test]
+              fn empty_extrema() { assert!(min(&[]).is_nan()); assert!(max(&[]).is_nan()); }
+              #[test]
+              fn finite_midpoint() { assert_eq!(quantile(&[-f64::MAX, f64::MAX], 0.5), 0.0); }
+              #[test]
+              fn infinite_singleton() { assert_eq!(quantile(&[f64::INFINITY], 0.0), f64::INFINITY); }
+          }
+          RS
+          rustc +stable --edition=2021 --test --crate-name describe_negative_control \
+            "$RUNNER_TEMP/describe-negative-control.rs" -o "$RUNNER_TEMP/describe-negative-control"
+          set +e
+          "$RUNNER_TEMP/describe-negative-control" --test-threads=1 \
+            > "$RUNNER_TEMP/statistics-negative-control.log" 2>&1
+          status=$?
+          set -e
+          cat "$RUNNER_TEMP/statistics-negative-control.log"
+          test "$status" -eq 101
+          grep -Fq 'test result: FAILED. 3 passed; 3 failed;' "$RUNNER_TEMP/statistics-negative-control.log"
+          for name in empty_extrema finite_midpoint infinite_singleton
+          do
+            grep -Fq "test audit_negative_control::$name ... FAILED" "$RUNNER_TEMP/statistics-negative-control.log"
+          done
+      - name: Record workspace and textual risk-candidate inventory
+        shell: bash
+        run: |
+          cargo +stable metadata --no-deps --locked --format-version=1 > "$RUNNER_TEMP/audit-metadata.json"
+          python3 - <<'PY'
+          import collections
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+
+          paths = sorted(p for p in subprocess.check_output(["git", "ls-files", "-z"]).decode().split("\0") if p)
+          rules = {
+              "todo_macro": r"\btodo\s*!\s*[({\[]",
+              "unimplemented_macro": r"\bunimplemented\s*!\s*[({\[]",
+              "todo_fixme_hack_xxx": r"\b(?:TODO|FIXME|HACK|XXX)\b",
+              "unsafe_token": r"\bunsafe\b",
+              "unwrap_call": r"\.unwrap\s*\(",
+              "expect_call": r"\.expect\s*\(",
+          }
+          counts = collections.Counter()
+          samples = {rule: [] for rule in rules}
+          rust_files = rust_lines = 0
+          skipped = []
+          for name in paths:
+              if not name.endswith(".rs"):
+                  continue
+              path = Path(name)
+              if path.is_symlink() or not path.is_file():
+                  skipped.append(name)
+                  continue
+              lines = path.read_text(encoding="utf-8").splitlines()
+              rust_files += 1
+              rust_lines += len(lines)
+              for number, line in enumerate(lines, 1):
+                  for rule, pattern in rules.items():
+                      if re.search(pattern, line):
+                          counts[rule] += 1
+                          if len(samples[rule]) < 20:
+                              samples[rule].append({"path": name, "line": number, "text": line[:180]})
+          metadata = json.loads(Path(os.environ["RUNNER_TEMP"], "audit-metadata.json").read_text())
+          report = {
+              "schema_version": 1,
+              "revision": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+              "workspace_members": len(metadata["workspace_members"]),
+              "tracked_rust_files": rust_files,
+              "tracked_rust_lines": rust_lines,
+              "scope": "All tracked Rust files, including tests, examples, comments, strings, and vendored code. Text matches are review candidates, NOT confirmed bugs or production-path counts.",
+              "matching_lines_by_rule": dict(counts),
+              "samples_per_rule_limit": 20,
+              "samples": samples,
+              "skipped_paths": skipped,
+          }
+          output = Path(os.environ["RUNNER_TEMP"], "scirust-source-audit-inventory.json")
+          output.write_text(json.dumps(report, indent=2, ensure_ascii=True) + "\n")
+          print(json.dumps(report, indent=2, ensure_ascii=True))
+          PY
+      - name: Retain the negative controls and source inventory
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: scirust-audit-contracts-${{ github.sha }}
+          retention-days: 14
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/attention-negative-control.log
+            ${{ runner.temp }}/statistics-negative-control.log
+            ${{ runner.temp }}/scirust-source-audit-inventory.json
