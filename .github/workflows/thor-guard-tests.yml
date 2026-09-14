@@ -1,0 +1,37 @@
+name: Thor GPU guard regressions
+
+on:
+  pull_request:
+    branches: [master, main, develop]
+    paths:
+      - "scripts/thor_gpu_guard.py"
+      - "scripts/test_thor_gpu_guard.py"
+      - ".github/workflows/sciagent-thor-gate.yml"
+      - ".github/workflows/thor-guard-tests.yml"
+  push:
+    branches: [master, main, develop]
+    paths:
+      - "scripts/thor_gpu_guard.py"
+      - "scripts/test_thor_gpu_guard.py"
+      - ".github/workflows/sciagent-thor-gate.yml"
+      - ".github/workflows/thor-guard-tests.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: thor-guard-tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  guard-tests:
+    name: CPU-only GPU reservation regressions
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - name: Run reservation and workflow regression tests without CUDA
+        run: python3 scripts/test_thor_gpu_guard.py -v
