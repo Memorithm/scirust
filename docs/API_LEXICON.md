@@ -250,3 +250,17 @@ When a crate's responsibility changes, update its code/docs first and then
 update the taxonomy to match the reviewed reality. The debt baseline should
 ratchet downward as documentation improves and should not be raised merely to
 make CI green.
+
+## Example coverage and executed evidence
+
+Adjacent summaries and executable examples are separate quality dimensions.
+The [API examples guide](API_EXAMPLES.md) documents the example inventory,
+reviewed two-example source policy and actual `cargo test --doc` execution.
+In addition to the discovery checks above, the workflow now validates that
+policy, runs the observer's regression tests, emits JSON/Markdown example
+reports and executes statistics doctests. None of these steps relaxes the
+existing adjacent-summary baseline.
+
+A closed Rust fence is only an observed candidate, not proof that it compiles
+or runs. `no_run`, `compile_fail`, `ignore` and unknown fence tags are reported
+separately; they cannot silently satisfy the ordinary-example minimum.
