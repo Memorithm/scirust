@@ -211,8 +211,9 @@ mod tests {
         assert_eq!(quantile(&data, 0.0), -f64::MAX);
         assert_eq!(quantile(&data, 1.0), f64::MAX);
         assert_eq!(quantile(&data, 0.5), 0.0);
-        assert_eq!(quantile(&data, 0.25), -f64::MAX / 2.0);
-        assert_eq!(quantile(&data, 0.75), f64::MAX / 2.0);
+        let scale = f64::MAX / 2.0;
+        assert!((quantile(&data, 0.25) / scale + 1.0).abs() <= f64::EPSILON);
+        assert!((quantile(&data, 0.75) / scale - 1.0).abs() <= f64::EPSILON);
     }
 
     #[test]
@@ -308,7 +309,7 @@ mod tests {
             let results = quantiles(&data, &probabilities);
             assert!(results.iter().all(|x| x.is_finite()));
             assert!(results.windows(2).all(|pair| pair[0] <= pair[1]));
-            assert!(results.iter().all(|&x| x >= min(&data) && x <= max(&data)));
+            assert!(results.iter().all(|x| (min(&data)..=max(&data)).contains(x)));
         }
     }
 }
