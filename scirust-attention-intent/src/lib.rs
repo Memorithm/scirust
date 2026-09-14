@@ -138,16 +138,19 @@ impl AttentionExecutionIntent {
     /// equality with the logical dtype. Representable quantized intents remain false.
     #[must_use]
     pub const fn is_executable(&self) -> bool {
-        matches!(
-            self.representation.query_variant,
-            RepresentationVariant::Dense { .. }
-        ) && matches!(
-            self.representation.key_variant,
-            RepresentationVariant::Dense { .. }
-        ) && matches!(
-            self.representation.value_variant,
-            RepresentationVariant::Dense { .. }
-        )
+        self.value_dim == self.head_dim
+            && matches!(
+                self.representation.query_variant,
+                RepresentationVariant::Dense { .. }
+            )
+            && matches!(
+                self.representation.key_variant,
+                RepresentationVariant::Dense { .. }
+            )
+            && matches!(
+                self.representation.value_variant,
+                RepresentationVariant::Dense { .. }
+            )
     }
 
     /// Convenience: map onto the FLAT public API shape for callers that bind
@@ -291,6 +294,8 @@ pub fn derive_attention_intent(
     }
     let logical_dtype = q_type.dtype;
 
+    // Validate every dimension before narrowing it or doing head arithmetic.
+    // In particular, a zero K-head count must not reach the modulo below.
     let q_dims = rank4(&q_type.shape, TensorRole::Query)?;
     let k_dims = rank4(&k_type.shape, TensorRole::Key)?;
     let v_dims = rank4(&v_type.shape, TensorRole::Value)?;
@@ -304,11 +309,25 @@ pub fn derive_attention_intent(
     let v_kv_len = v_dims[2];
     let value_dim = v_dims[3];
 
-    if k_dims[0] != batch || v_dims[0] != batch
+    if k_dims[0] != batch
     {
         return Err(IntentError::InvalidDimension {
             role: TensorRole::Key,
             detail: "batch mismatch",
+        });
+    }
+    if v_dims[0] != batch
+    {
+        return Err(IntentError::InvalidDimension {
+            role: TensorRole::Value,
+            detail: "batch mismatch",
+        });
+    }
+    if v_dims[1] != kv_heads
+    {
+        return Err(IntentError::InvalidDimension {
+            role: TensorRole::Value,
+            detail: "head count mismatch between K and V",
         });
     }
     if k_dims[3] != head_dim
@@ -335,16 +354,6 @@ pub fn derive_attention_intent(
     if q_heads % kv_heads != 0
     {
         return Err(IntentError::InvalidHeadGrouping { q_heads, kv_heads });
-    }
-    for &d in &[batch, q_heads, q_len, head_dim, kv_heads, kv_len]
-    {
-        if d == 0
-        {
-            return Err(IntentError::InvalidDimension {
-                role: TensorRole::Query,
-                detail: "zero dimension",
-            });
-        }
     }
 
     let q_repr = plan.assignment(q).ok_or(IntentError::UnknownNode {
@@ -455,12 +464,22 @@ fn rank4(shape: &Shape, role: TensorRole) -> Result<[u32; 4], IntentError> {
             actual_rank: dims.len(),
         });
     }
-    Ok([
-        dims[0] as u32,
-        dims[1] as u32,
-        dims[2] as u32,
-        dims[3] as u32,
-    ])
+    let mut checked = [0u32; 4];
+    for (output, &dimension) in checked.iter_mut().zip(dims.iter())
+    {
+        if dimension == 0
+        {
+            return Err(IntentError::InvalidDimension {
+                role,
+                detail: "zero dimension",
+            });
+        }
+        *output = u32::try_from(dimension).map_err(|_| IntentError::InvalidDimension {
+            role,
+            detail: "dimension exceeds u32::MAX",
+        })?;
+    }
+    Ok(checked)
 }
 
 fn variant_of(
@@ -560,16 +579,15 @@ mod tests {
     }
 
     #[test]
-    fn insertion_order_does_not_change_the_fingerprint() {
+    fn equivalent_dense_node_roles_have_same_fingerprint() {
         let (graph, q, k, v, plan) = graph_fixture(1, 2, 4, 8);
         let a = derive_attention_intent(&graph, &plan, q, k, v, false)
             .expect("a")
             .workload_fingerprint;
         let b = derive_attention_intent(&graph, &plan, k, v, q, false).expect("b");
-        // The nodes themselves differ; the problem's logical shape via the
-        // fingerprinted record is ordered, so fingerprint equality is per
-        // identical structural assignment, not node id permutation.
-        let _ = b;
+        // Identical logical shapes and dense assignments are invariant under
+        // this role permutation. Compare both results, not only a to zero.
+        assert_eq!(a, b.workload_fingerprint);
         assert_ne!(a, 0);
     }
 
