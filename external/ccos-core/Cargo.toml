@@ -2,7 +2,7 @@
 name = "ccos-core"
 version = "0.4.0-pre"
 edition = "2021"
-license = "LicenseRef-TarekZekriti-Dual"
+license = "PolyForm-Noncommercial-1.0.0"
 build = "build.rs"
 # The `ccos` CLI is the primary binary. Declaring it here keeps a bare
 # `cargo run` (e.g. the CI smoke `cargo run --features llm -- version`)
@@ -206,7 +206,7 @@ members = ["crates/ccos-memory-runtime"]
 
 [workspace.package]
 rust-version = "1.89"
-license = "LicenseRef-TarekZekriti-Dual"
+license = "PolyForm-Noncommercial-1.0.0"
 
 # Model-provider integration tests (§36): compiled only with `llm`, every
 # test #[ignore]d — they run only on explicit request (see the file header).
