@@ -1,9 +1,8 @@
 //! Exact and logarithmic combinatorics.
 //!
 //! Exact counts are computed in `u128` and return `None` on overflow rather
-//! than panicking or silently saturating; the `ln_*` forms never overflow and
-//! are the numeric backbone of the discrete pmfs in [`crate::discrete`] and of
-//! the game-odds calculations in [`crate::lottery`].
+//! than panicking or silently saturating. The approximate `ln_*` forms avoid
+//! floating-point overflow and support [`crate::discrete`] and [`crate::lottery`].
 //!
 //! `binomial` uses the multiplicative recurrence `C(m, i) = C(m−1, i−1)·m/i`
 //! (exact integer division at every step) with gcd pre-reduction, so it stays
@@ -24,6 +23,20 @@ fn gcd(mut a: u128, mut b: u128) -> u128 {
 }
 
 /// Exact factorial `n!` as `u128`; `None` for `n > 34` (`35!` overflows u128).
+///
+/// # Examples
+///
+/// ```
+/// use scirust_stats::comb::factorial;
+/// assert_eq!(factorial(5), Some(120));
+/// assert_eq!(factorial(0), Some(1));
+/// ```
+///
+/// ```
+/// use scirust_stats::comb::factorial;
+/// assert!(factorial(34).is_some());
+/// assert_eq!(factorial(35), None);
+/// ```
 pub fn factorial(n: u64) -> Option<u128> {
     if n > 34
     {
@@ -37,7 +50,24 @@ pub fn factorial(n: u64) -> Option<u128> {
     Some(acc)
 }
 
-/// `ln(n!)` via `ln_gamma(n + 1)`; defined for every `u64`, never overflows.
+/// Approximate `ln(n!)` via `ln_gamma(n + 1)`; finite for every `u64`.
+///
+/// The conversion to `f64` and the log-gamma approximation are not exact.
+/// Subtracting these results can lose small differences; use [`ln_binomial`]
+/// instead of manually subtracting three log-factorials for a coefficient.
+///
+/// # Examples
+///
+/// ```
+/// use scirust_stats::comb::ln_factorial;
+/// assert!((ln_factorial(5) - 120.0_f64.ln()).abs() < 1e-12);
+/// ```
+///
+/// ```
+/// use scirust_stats::comb::ln_factorial;
+/// assert!(ln_factorial(0).abs() < 1e-12);
+/// assert!(ln_factorial(u64::MAX).is_finite());
+/// ```
 pub fn ln_factorial(n: u64) -> f64 {
     ln_gamma(n as f64 + 1.0)
 }
@@ -47,6 +77,20 @@ pub fn ln_factorial(n: u64) -> f64 {
 /// Returns `Some(0)` when `k > n` (the standard convention) and `None` only
 /// when the exact value cannot be represented even after gcd reduction of the
 /// intermediate products.
+///
+/// # Examples
+///
+/// ```
+/// use scirust_stats::comb::binomial;
+/// assert_eq!(binomial(49, 6), Some(13_983_816));
+/// assert_eq!(binomial(49, 43), binomial(49, 6));
+/// ```
+///
+/// ```
+/// use scirust_stats::comb::binomial;
+/// assert_eq!(binomial(5, 7), Some(0));
+/// assert_eq!(binomial(1_000, 500), None);
+/// ```
 pub fn binomial(n: u64, k: u64) -> Option<u128> {
     if k > n
     {
@@ -72,18 +116,65 @@ pub fn binomial(n: u64, k: u64) -> Option<u128> {
     Some(acc)
 }
 
-/// `ln C(n, k)`; `−∞` when `k > n` (an impossible selection has zero count).
+/// Approximate `ln C(n, k)`; `−∞` when `k > n` (an impossible selection).
+///
+/// Uses [`binomial`] when the exact coefficient fits `u128`, avoiding the
+/// subtraction of large, nearly equal log-factorials. The subsequent `f64`
+/// conversion and logarithm are rounded; no bitwise reproducibility is promised.
+/// Coefficients larger than `u128` retain the log-gamma fallback, whose
+/// cancellation error is not bounded by this API. No heap allocation is used.
+///
+/// # Examples
+///
+/// ```
+/// use scirust_stats::comb::ln_binomial;
+/// assert!((ln_binomial(49, 6) - 13_983_816.0_f64.ln()).abs() < 1e-12);
+/// ```
+///
+/// ```
+/// use scirust_stats::comb::ln_binomial;
+/// assert_eq!(ln_binomial(u64::MAX, 0), 0.0);
+/// assert!((ln_binomial(u64::MAX, 1) - (u64::MAX as f64).ln()).abs() < 1e-12);
+/// assert_eq!(ln_binomial(5, 7), f64::NEG_INFINITY);
+/// ```
 pub fn ln_binomial(n: u64, k: u64) -> f64 {
     if k > n
     {
         return f64::NEG_INFINITY;
     }
+    if let Some(count) = binomial(n, k)
+    {
+        // Keep exact endpoint identities independent of transcendental rounding.
+        if count == 1
+        {
+            return 0.0;
+        }
+        return (count as f64).ln();
+    }
     ln_factorial(n) - ln_factorial(k) - ln_factorial(n - k)
 }
 
 /// Exact number of ordered `k`-arrangements `P(n, k) = n!/(n−k)!` as `u128`;
-/// `Some(0)` when `k > n`, `None` on overflow.
+/// `Some(0)` when `k > n`, `None` on result overflow.
+///
+/// # Examples
+///
+/// ```
+/// use scirust_stats::comb::permutations;
+/// assert_eq!(permutations(5, 3), Some(60));
+/// assert_eq!(permutations(3, 5), Some(0));
+/// ```
+///
+/// ```
+/// use scirust_stats::comb::permutations;
+/// assert_eq!(permutations(u64::MAX, 0), Some(1));
+/// assert_eq!(permutations(u64::MAX, 3), None);
+/// ```
 pub fn permutations(n: u64, k: u64) -> Option<u128> {
+    if k == 0
+    {
+        return Some(1);
+    }
     if k > n
     {
         return Some(0);
@@ -99,13 +190,33 @@ pub fn permutations(n: u64, k: u64) -> Option<u128> {
 /// Combinations with repetition ("multichoose"): `C(n + k − 1, k)`.
 ///
 /// The number of size-`k` multisets drawn from `n` distinct items; `Some(1)`
-/// for `k = 0`, `Some(0)` for `n = 0, k > 0`, `None` on overflow.
+/// for `k = 0`, `Some(0)` for `n = 0, k > 0`. Returns `None` if `n + k − 1`
+/// cannot fit `u64`, or if the exact coefficient cannot fit `u128`.
+///
+/// # Examples
+///
+/// ```
+/// use scirust_stats::comb::multichoose;
+/// assert_eq!(multichoose(5, 3), Some(35));
+/// assert_eq!(multichoose(0, 2), Some(0));
+/// ```
+///
+/// ```
+/// use scirust_stats::comb::multichoose;
+/// assert_eq!(multichoose(u64::MAX, 0), Some(1));
+/// assert_eq!(multichoose(u64::MAX, 1), Some(u128::from(u64::MAX)));
+/// assert_eq!(multichoose(u64::MAX, 2), None);
+/// ```
 pub fn multichoose(n: u64, k: u64) -> Option<u128> {
+    if k == 0
+    {
+        return Some(1);
+    }
     if n == 0
     {
-        return Some(u128::from(k == 0));
+        return Some(0);
     }
-    binomial(n + k - 1, k)
+    binomial(n.checked_add(k - 1)?, k)
 }
 
 #[cfg(test)]
@@ -160,5 +271,60 @@ mod tests {
         assert_eq!(multichoose(5, 3), Some(35)); // C(7,3)
         assert_eq!(multichoose(0, 0), Some(1));
         assert_eq!(multichoose(0, 2), Some(0));
+    }
+
+    #[test]
+    fn audit_ln_binomial_large_n_small_k_does_not_cancel() {
+        for n in [1_u64 << 53, u64::MAX]
+        {
+            assert_eq!(ln_binomial(n, 0), 0.0);
+            assert_eq!(ln_binomial(n, n), 0.0);
+            for k in [1, 2]
+            {
+                let expected = (binomial(n, k).unwrap() as f64).ln();
+                let tolerance = 16.0 * f64::EPSILON * expected.abs().max(1.0);
+                assert!((ln_binomial(n, k) - expected).abs() <= tolerance);
+                assert!((ln_binomial(n, n - k) - expected).abs() <= tolerance);
+            }
+        }
+    }
+
+    #[test]
+    fn audit_ln_binomial_matches_small_exact_counts() {
+        for n in 0..=24
+        {
+            for k in 0..=n
+            {
+                let expected = (binomial(n, k).unwrap() as f64).ln();
+                let tolerance = 16.0 * f64::EPSILON * expected.abs().max(1.0);
+                assert!((ln_binomial(n, k) - expected).abs() <= tolerance);
+            }
+            assert_eq!(ln_binomial(n, n + 1), f64::NEG_INFINITY);
+        }
+    }
+
+    #[test]
+    fn audit_ln_binomial_overflow_falls_back_to_log_gamma() {
+        assert_eq!(binomial(1_000, 500), None);
+        // ln(math.comb(1000, 500)), independently evaluated with Decimal precision 80.
+        let expected = 689.467_261_567_851_2;
+        assert!((ln_binomial(1_000, 500) - expected).abs() < 1e-9);
+    }
+
+    #[test]
+    fn audit_permutations_empty_selection_at_u64_boundary() {
+        assert_eq!(permutations(u64::MAX, 0), Some(1));
+        assert_eq!(permutations(u64::MAX, 1), Some(u128::from(u64::MAX)));
+        assert_eq!(permutations(u64::MAX, 3), None);
+    }
+
+    #[test]
+    fn audit_multichoose_checks_parameter_overflow_without_rejecting_boundary() {
+        assert_eq!(multichoose(u64::MAX, 0), Some(1));
+        assert_eq!(multichoose(u64::MAX, 1), Some(u128::from(u64::MAX)));
+        assert_eq!(multichoose(u64::MAX, 2), None);
+        assert_eq!(multichoose(2, u64::MAX), None);
+        assert_eq!(multichoose(1, u64::MAX), Some(1));
+        assert_eq!(multichoose(0, u64::MAX), Some(0));
     }
 }
