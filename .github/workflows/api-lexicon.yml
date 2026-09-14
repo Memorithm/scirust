@@ -6,9 +6,13 @@ on:
       - "**/*.rs"
       - "**/Cargo.toml"
       - "scripts/api-lexicon.py"
+      - "scripts/api-example-audit.py"
+      - "scripts/test_api_example_audit.py"
       - "docs/API_LEXICON.md"
+      - "docs/API_EXAMPLES.md"
       - "docs/api-domains.json"
       - "docs/api-doc-baseline.json"
+      - "docs/api-example-policy.json"
       - ".github/workflows/api-lexicon.yml"
   push:
     branches: [master]
@@ -16,9 +20,13 @@ on:
       - "**/*.rs"
       - "**/Cargo.toml"
       - "scripts/api-lexicon.py"
+      - "scripts/api-example-audit.py"
+      - "scripts/test_api_example_audit.py"
       - "docs/API_LEXICON.md"
+      - "docs/API_EXAMPLES.md"
       - "docs/api-domains.json"
       - "docs/api-doc-baseline.json"
+      - "docs/api-example-policy.json"
       - ".github/workflows/api-lexicon.yml"
 
 permissions:
@@ -36,11 +44,13 @@ jobs:
         with:
           toolchain: stable
 
-      - name: Validate generator, taxonomy and baseline syntax
+      - name: Validate generators, taxonomy and policy syntax
         run: |
-          python3 -m py_compile scripts/api-lexicon.py
+          python3 -m py_compile scripts/api-lexicon.py scripts/api-example-audit.py
+          python3 scripts/test_api_example_audit.py -v
           python3 -m json.tool docs/api-domains.json >/dev/null
           python3 -m json.tool docs/api-doc-baseline.json >/dev/null
+          python3 -m json.tool docs/api-example-policy.json >/dev/null
 
       - name: Generate lexicon, capability index and statistics
         run: |
@@ -57,6 +67,21 @@ jobs:
           test -s api-capability-index.md
           grep -Fq '# SciRust public function lexicon' api-function-lexicon.md
           grep -Fq '# SciRust capability index' api-capability-index.md
+
+      - name: Inventory API examples and enforce reviewed source policy
+        run: |
+          python3 scripts/api-example-audit.py \
+            --index api-function-index.json \
+            --policy docs/api-example-policy.json \
+            --output api-example-audit.json \
+            --markdown api-example-audit.md
+          test -s api-example-audit.json
+          test -s api-example-audit.md
+
+      - name: Execute statistics documentation examples
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo +stable test -p scirust-stats --doc --locked
 
       - name: Smoke test capability search and documentation-debt filters
         run: |
@@ -96,6 +121,14 @@ jobs:
           print(f"- Unclassified represented packages: **{len(unclassified)}**")
           print("- Documentation-debt baseline: **exact match required**")
           print()
+          examples = json.loads(Path("api-example-audit.json").read_text())
+          print("#### API example observations")
+          print()
+          print(f"- With at least one runnable candidate: **{examples['with_runnable_candidates']}**")
+          print(f"- With at least two runnable candidates: **{examples['with_two_runnable_candidates']}**")
+          print("These are source observations, not executed-test coverage.")
+          print("The separate statistics doctest step must succeed for execution evidence.")
+          print()
           print("#### Largest adjacent-rustdoc gaps")
           print()
           print("| Package | Missing summaries | Public callables |")
@@ -114,6 +147,7 @@ jobs:
           PY
 
       - name: Upload generated API discovery artifacts
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: scirust-api-function-lexicon-${{ github.sha }}
@@ -124,3 +158,5 @@ jobs:
             api-function-lexicon.json
             api-function-index.json
             api-capability-index.md
+            api-example-audit.json
+            api-example-audit.md

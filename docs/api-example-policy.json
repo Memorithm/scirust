@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "sources": [
+    {
+      "source": "scirust-stats/src/describe.rs",
+      "min_runnable_examples": 2,
+      "required_symbols": [
+        "mean",
+        "variance",
+        "std_dev",
+        "std_error",
+        "quantile",
+        "quantiles",
+        "median",
+        "min",
+        "max"
+      ]
+    },
+    {
+      "source": "scirust-stats/src/comb.rs",
+      "min_runnable_examples": 2,
+      "required_symbols": [
+        "factorial",
+        "ln_factorial",
+        "binomial",
+        "ln_binomial",
+        "permutations",
+        "multichoose"
+      ]
+    }
+  ]
+}

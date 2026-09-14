@@ -1,7 +1,37 @@
-//! Descriptive statistics over a slice of samples. All functions are pure and
-//! deterministic; variance/standard deviation use the unbiased `n − 1` divisor.
+//! Descriptive statistics over a slice of samples. The input is not mutated;
+//! variance and standard deviation use the unbiased `n − 1` divisor.
 
-/// Arithmetic mean. Returns `NaN` for an empty slice.
+/// Arithmetic mean of the samples in `data`.
+///
+/// Returns `NaN` for an empty slice. Non-finite samples follow floating-point
+/// sum/division semantics; a `NaN` sample propagates. Does not mutate the input.
+/// Runs in `O(n)` time with `O(1)` auxiliary storage.
+///
+/// # Numerical limitations
+///
+/// The current implementation sums before dividing and does not compensate
+/// rounding or intermediate overflow. For example, two `f64::MAX` samples have
+/// a representable mathematical mean but their intermediate sum overflows.
+/// Do not use this routine as an overflow-safe or order-independent reduction.
+///
+/// # Examples
+///
+/// Compute a mean without changing the samples:
+///
+/// ```
+/// use scirust_stats::describe::mean;
+/// let samples = [2.0, 4.0, 6.0];
+/// assert_eq!(mean(&samples), 4.0);
+/// assert_eq!(samples, [2.0, 4.0, 6.0]);
+/// ```
+///
+/// Handle empty or invalid samples explicitly:
+///
+/// ```
+/// use scirust_stats::describe::mean;
+/// assert!(mean(&[]).is_nan());
+/// assert!(mean(&[1.0, f64::NAN]).is_nan());
+/// ```
 pub fn mean(data: &[f64]) -> f64 {
     if data.is_empty()
     {
@@ -10,8 +40,36 @@ pub fn mean(data: &[f64]) -> f64 {
     data.iter().sum::<f64>() / data.len() as f64
 }
 
-/// Unbiased sample variance (divisor `n − 1`). Returns `NaN` for fewer than two
-/// samples. Uses a two-pass formula for numerical stability.
+/// Unbiased sample variance using the `n - 1` divisor.
+///
+/// Returns `NaN` for fewer than two samples or a non-finite sample. Uses a
+/// two-pass calculation with [`mean`]; the input is not modified. Runs in
+/// `O(n)` time with `O(1)` auxiliary storage.
+///
+/// # Numerical limitations
+///
+/// Two passes do not make the reduction universally overflow-safe. The mean,
+/// subtraction, squaring or sum can overflow for finite samples. These
+/// limitations also affect [`std_dev`] and [`std_error`].
+///
+/// # Examples
+///
+/// The squared deviations of `[2, 4, 6]` sum to eight; dividing by two gives four:
+///
+/// ```
+/// use scirust_stats::describe::variance;
+/// assert_eq!(variance(&[2.0, 4.0, 6.0]), 4.0);
+/// assert_eq!(variance(&[7.0, 7.0]), 0.0);
+/// ```
+///
+/// An unbiased sample variance needs at least two samples:
+///
+/// ```
+/// use scirust_stats::describe::variance;
+/// assert!(variance(&[]).is_nan());
+/// assert!(variance(&[7.0]).is_nan());
+/// assert!(variance(&[1.0, f64::INFINITY]).is_nan());
+/// ```
 pub fn variance(data: &[f64]) -> f64 {
     let n = data.len();
     if n < 2
@@ -22,12 +80,54 @@ pub fn variance(data: &[f64]) -> f64 {
     data.iter().map(|x| (x - m) * (x - m)).sum::<f64>() / (n as f64 - 1.0)
 }
 
-/// Unbiased sample standard deviation.
+/// Sample standard deviation: the square root of [`variance`].
+///
+/// Uses the unbiased sample variance, not the population variance. Returns
+/// `NaN` for fewer than two samples or non-finite samples. Inherits the
+/// numerical limitations of [`variance`], including intermediate overflow.
+/// Runs in `O(n)` time with `O(1)` auxiliary storage and leaves `data` unchanged.
+///
+/// # Examples
+///
+/// ```
+/// use scirust_stats::describe::std_dev;
+/// assert_eq!(std_dev(&[2.0, 4.0, 6.0]), 2.0);
+/// assert_eq!(std_dev(&[7.0, 7.0]), 0.0);
+/// ```
+///
+/// ```
+/// use scirust_stats::describe::std_dev;
+/// assert!(std_dev(&[]).is_nan());
+/// assert!(std_dev(&[1.0]).is_nan());
+/// assert!(std_dev(&[1.0, f64::NAN]).is_nan());
+/// ```
 pub fn std_dev(data: &[f64]) -> f64 {
     variance(data).sqrt()
 }
 
-/// Standard error of the mean, `s / √n`.
+/// Estimated standard error of the mean, `s / sqrt(n)`.
+///
+/// Here `s` is [`std_dev`] and `n` is the sample count. This computes the usual
+/// independent-sample estimator; it does not correct dependence between samples.
+/// Returns `NaN` for fewer than two samples or non-finite samples and inherits
+/// [`variance`]'s overflow limitations. Runs in `O(n)` time, uses `O(1)` auxiliary
+/// storage and leaves `data` unchanged.
+///
+/// # Examples
+///
+/// ```
+/// use scirust_stats::describe::std_error;
+/// let expected = 2.0 / 3.0_f64.sqrt();
+/// assert!((std_error(&[2.0, 4.0, 6.0]) - expected).abs() < 1e-12);
+/// assert_eq!(std_error(&[7.0, 7.0]), 0.0);
+/// ```
+///
+/// ```
+/// use scirust_stats::describe::std_error;
+/// assert!(std_error(&[]).is_nan());
+/// assert!(std_error(&[1.0]).is_nan());
+/// assert!(std_error(&[1.0, f64::NAN]).is_nan());
+/// ```
 pub fn std_error(data: &[f64]) -> f64 {
     std_dev(data) / (data.len() as f64).sqrt()
 }
@@ -41,8 +141,28 @@ pub fn std_error(data: &[f64]) -> f64 {
 /// otherwise an infinite bound determines the interior result. Interpolation
 /// between finite bounds avoids overflowing their difference.
 ///
-/// The input is not mutated. Use [`quantiles`] to share one sort across several
-/// probabilities.
+/// The input is not mutated. Uses `O(n log n)` sorting work and `O(n)` auxiliary
+/// storage. Use [`quantiles`] to share one sort across several probabilities.
+///
+/// # Examples
+///
+/// ```
+/// use scirust_stats::describe::quantile;
+/// let data = [4.0, 1.0, 3.0, 2.0];
+/// assert_eq!(quantile(&data, 0.25), 1.75);
+/// assert_eq!(quantile(&data, 0.5), 2.5);
+/// assert_eq!(data, [4.0, 1.0, 3.0, 2.0]);
+/// ```
+///
+/// Clamping is separate from the policy for invalid samples:
+///
+/// ```
+/// use scirust_stats::describe::quantile;
+/// assert_eq!(quantile(&[2.0, 8.0], -1.0), 2.0);
+/// assert_eq!(quantile(&[f64::INFINITY], 0.5), f64::INFINITY);
+/// assert!(quantile(&[1.0, f64::NAN], 0.5).is_nan());
+/// assert!(quantile(&[1.0], f64::NAN).is_nan());
+/// ```
 pub fn quantile(data: &[f64], p: f64) -> f64 {
     if p.is_nan()
     {
@@ -61,7 +181,10 @@ pub fn quantile(data: &[f64], p: f64) -> f64 {
 /// probability affects only its own output; a `NaN` sample affects all outputs.
 /// Empty probabilities produce an empty vector. Neither input is mutated.
 /// For `n` samples and `q` probabilities, this uses one `O(n log n)` sort plus
-/// `O(q)` interpolation work instead of sorting the samples `q` times.
+/// `O(q)` interpolation work and `O(n + q)` storage, instead of sorting the
+/// samples `q` times. No measured speedup is implied by this structural cost.
+///
+/// # Examples
 ///
 /// ```
 /// use scirust_stats::describe::quantiles;
@@ -69,6 +192,17 @@ pub fn quantile(data: &[f64], p: f64) -> f64 {
 ///     quantiles(&[4.0, 1.0, 3.0, 2.0], &[0.0, 0.5, 1.0]),
 ///     vec![1.0, 2.5, 4.0],
 /// );
+/// ```
+///
+/// One invalid probability does not invalidate its neighbors:
+///
+/// ```
+/// use scirust_stats::describe::quantiles;
+/// let results = quantiles(&[2.0, 8.0], &[1.0, f64::NAN, 0.0]);
+/// assert_eq!(results[0], 8.0);
+/// assert!(results[1].is_nan());
+/// assert_eq!(results[2], 2.0);
+/// assert!(quantiles(&[2.0, 8.0], &[]).is_empty());
 /// ```
 pub fn quantiles(data: &[f64], probabilities: &[f64]) -> Vec<f64> {
     if probabilities.is_empty()
@@ -140,17 +274,76 @@ fn quantile_sorted(sorted: &[f64], p: f64) -> f64 {
     }
 }
 
-/// Median (the 0.5 quantile); follows the [`quantile`] non-finite-input policy.
+/// Median (the 0.5 quantile), following [`quantile`]'s non-finite policy.
+///
+/// For an even sample count this interpolates the two central order statistics.
+/// An empty input or any `NaN` sample produces `NaN`. Does not mutate `data`.
+/// Uses `O(n log n)` sorting work and `O(n)` auxiliary storage.
+///
+/// # Examples
+///
+/// ```
+/// use scirust_stats::describe::median;
+/// assert_eq!(median(&[7.0, 1.0, 3.0]), 3.0);
+/// assert_eq!(median(&[1.0, 2.0, 3.0, 4.0]), 2.5);
+/// ```
+///
+/// ```
+/// use scirust_stats::describe::median;
+/// assert_eq!(median(&[-f64::MAX, f64::MAX]), 0.0);
+/// assert!(median(&[]).is_nan());
+/// assert!(median(&[1.0, f64::NAN]).is_nan());
+/// ```
 pub fn median(data: &[f64]) -> f64 {
     quantile(data, 0.5)
 }
 
-/// Minimum, ignoring `NaN`. `NaN` if empty or every sample is `NaN`.
+/// Minimum sample, ignoring individual `NaN` values.
+///
+/// Returns `NaN` if `data` is empty or every sample is `NaN`. Infinite samples
+/// remain eligible extrema. Unlike [`quantile`], a `NaN` does not invalidate
+/// other samples. Runs in `O(n)` time with `O(1)` auxiliary storage and does not
+/// mutate the input.
+///
+/// # Examples
+///
+/// ```
+/// use scirust_stats::describe::min;
+/// assert_eq!(min(&[3.0, -2.0, 7.0]), -2.0);
+/// assert_eq!(min(&[f64::NAN, 3.0, -2.0]), -2.0);
+/// ```
+///
+/// ```
+/// use scirust_stats::describe::min;
+/// assert!(min(&[]).is_nan());
+/// assert!(min(&[f64::NAN]).is_nan());
+/// assert_eq!(min(&[f64::NAN, f64::INFINITY]), f64::INFINITY);
+/// ```
 pub fn min(data: &[f64]) -> f64 {
     data.iter().copied().fold(f64::NAN, f64::min)
 }
 
-/// Maximum, ignoring `NaN`. `NaN` if empty or every sample is `NaN`.
+/// Maximum sample, ignoring individual `NaN` values.
+///
+/// Returns `NaN` if `data` is empty or every sample is `NaN`. Infinite samples
+/// remain eligible extrema. Unlike [`quantile`], a `NaN` does not invalidate
+/// other samples. Runs in `O(n)` time with `O(1)` auxiliary storage and does not
+/// mutate the input.
+///
+/// # Examples
+///
+/// ```
+/// use scirust_stats::describe::max;
+/// assert_eq!(max(&[3.0, -2.0, 7.0]), 7.0);
+/// assert_eq!(max(&[f64::NAN, 3.0, -2.0]), 3.0);
+/// ```
+///
+/// ```
+/// use scirust_stats::describe::max;
+/// assert!(max(&[]).is_nan());
+/// assert!(max(&[f64::NAN]).is_nan());
+/// assert_eq!(max(&[f64::NAN, f64::NEG_INFINITY]), f64::NEG_INFINITY);
+/// ```
 pub fn max(data: &[f64]) -> f64 {
     data.iter().copied().fold(f64::NAN, f64::max)
 }
