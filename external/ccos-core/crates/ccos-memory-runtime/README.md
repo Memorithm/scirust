@@ -42,4 +42,4 @@ See [`INTEGRATION.md`](INTEGRATION.md) — it drives an automated integrator to 
 this crate as a workspace member behind an opt-in `slhav2` feature (default CCOS
 build stays scirust-free).
 
-Licensed under `LicenseRef-CheckupAuto-Dual`.
+Licensed under `PolyForm-Noncommercial-1.0.0`.

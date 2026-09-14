@@ -3,7 +3,7 @@ name = "ccos-memory-runtime"
 version = "0.1.0"
 edition = "2021"
 description = "Neutral cognitive-memory middleware: MemoryProvider trait + self-contained SLHAv2 tile backend. Zero dependencies (no scirust)."
-license = "LicenseRef-CheckupAuto-Dual"
+license = "PolyForm-Noncommercial-1.0.0"
 
 # Intentionally ZERO dependencies. The SLHAv2 tile is a 128-byte ABI decoded with
 # minimal in-crate grouped-INT4 logic, so neither CCOS nor this crate ever
