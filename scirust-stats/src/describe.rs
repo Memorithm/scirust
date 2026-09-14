@@ -309,7 +309,11 @@ mod tests {
             let results = quantiles(&data, &probabilities);
             assert!(results.iter().all(|x| x.is_finite()));
             assert!(results.windows(2).all(|pair| pair[0] <= pair[1]));
-            assert!(results.iter().all(|x| (min(&data)..=max(&data)).contains(x)));
+            assert!(
+                results
+                    .iter()
+                    .all(|x| (min(&data)..=max(&data)).contains(x))
+            );
         }
     }
 }

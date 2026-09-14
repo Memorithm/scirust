@@ -69,8 +69,7 @@ fn audit_k_and_v_head_counts_must_match() {
 
 #[test]
 fn audit_value_batch_mismatch_is_not_attributed_to_key() {
-    let error = derive([[1, 2, 4, 8], [1, 2, 4, 8], [3, 2, 4, 8]])
-        .expect_err("different V batch");
+    let error = derive([[1, 2, 4, 8], [1, 2, 4, 8], [3, 2, 4, 8]]).expect_err("different V batch");
     assert!(matches!(
         error,
         IntentError::InvalidDimension {
@@ -103,15 +102,18 @@ fn audit_large_dimensions_are_rejected_instead_of_truncated() {
 
 #[test]
 fn audit_gqa_dimensions_and_exact_storage_are_preserved() {
-    let intent = derive([[2, 4, 3, 8], [2, 2, 7, 8], [2, 2, 7, 8]])
-        .expect("valid grouped-query metadata");
+    let intent =
+        derive([[2, 4, 3, 8], [2, 2, 7, 8], [2, 2, 7, 8]]).expect("valid grouped-query metadata");
     assert_eq!(intent.batch, 2);
     assert_eq!(intent.q_heads, 4);
     assert_eq!(intent.kv_heads, 2);
     assert_eq!(intent.batch_q_heads, 8);
     assert_eq!(intent.q_len, 3);
     assert_eq!(intent.kv_len, 7);
-    assert_eq!(intent.representation.total_storage_bytes, (192 + 224 + 224) * 4);
+    assert_eq!(
+        intent.representation.total_storage_bytes,
+        (192 + 224 + 224) * 4
+    );
 }
 
 #[test]
