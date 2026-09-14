@@ -1,0 +1,31 @@
+name: Temporary rustls RUSTSEC-2026-0285 update
+
+on:
+  push:
+    branches:
+      - security/rustls-2026-0285
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: security/rustls-2026-0285
+      - name: Update rustls and validate trader live graph
+        run: |
+          rustup toolchain install stable --profile minimal
+          cargo +stable update -p rustls --precise 0.23.45
+          rm .github/workflows/tmp-rustls-2026-0285.yml
+          grep -A2 '^name = "rustls"$' Cargo.lock
+          cargo +stable check -p scirust-trader --locked --no-default-features --features live
+      - name: Commit lockfile update
+        run: |
+          git config user.name "MEMOPERF"
+          git config user.email "contact@checkupauto.fr"
+          git add Cargo.lock .github/workflows/tmp-rustls-2026-0285.yml
+          git commit -m "security: update rustls for RUSTSEC-2026-0285"
+          git push origin HEAD:security/rustls-2026-0285
