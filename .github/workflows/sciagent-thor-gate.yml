@@ -9,6 +9,8 @@ on:
       - "scirust-cuda/**"
       - "scirust-gpu/**"
       - ".github/workflows/sciagent-thor-gate.yml"
+      - "scripts/thor_gpu_guard.py"
+      - "scripts/test_thor_gpu_guard.py"
   push:
     branches: [master, main, develop]
     paths:
@@ -16,6 +18,8 @@ on:
       - "scirust-cuda/**"
       - "scirust-gpu/**"
       - ".github/workflows/sciagent-thor-gate.yml"
+      - "scripts/thor_gpu_guard.py"
+      - "scripts/test_thor_gpu_guard.py"
   workflow_dispatch:
 
 permissions:
@@ -70,12 +74,16 @@ jobs:
           ldconfig -p | grep -E 'libcuda|libnvrtc' || true
       - name: Format
         run: rustup run nightly-2026-07-02 cargo fmt --all -- --check
+      - name: SCIAGENT CUDA clippy
+        run: rustup run nightly-2026-07-02 cargo clippy -p scirust-sciagent --features cuda --all-targets -- -D warnings
+      - name: Test GPU reservation guard without hardware
+        run: python3 scripts/test_thor_gpu_guard.py -v
       - name: Wait for CUDA runtime availability
         id: cuda-runtime
         shell: bash
         run: |
           set -euo pipefail
-          if [[ ! -e /dev/nvidia0 ]] || ! ldconfig -p 2>/dev/null | grep -q 'libcuda\.so'; then
+          if [[ ! -e /dev/nvidia0 ]] || ! ldconfig -p 2>/dev/null | grep 'libcuda\.so' >/dev/null; then
             echo "available=false" >> "$GITHUB_OUTPUT"
             echo "reason=runtime-unexposed" >> "$GITHUB_OUTPUT"
             echo "::notice::CUDA runtime is not exposed on this self-hosted runner; keeping compile/lint checks active and skipping hardware execution."
@@ -162,34 +170,29 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          command -v flock >/dev/null
-          exec 9>"$SCIRUST_THOR_GPU_LOCK"
-          flock -x 9
-          rustup run nightly-2026-07-02 cargo test -p scirust-sciagent --features cuda --test cuda_required -- --nocapture
+          python3 scripts/thor_gpu_guard.py -- \
+            rustup run nightly-2026-07-02 cargo test -p scirust-sciagent --features cuda --test cuda_required -- --nocapture
       - name: Validate CUDA hardware profile
         if: steps.cuda-runtime.outputs.available == 'true'
         shell: bash
         run: |
           set -euo pipefail
-          exec 9>"$SCIRUST_THOR_GPU_LOCK"
-          flock -x 9
-          rustup run nightly-2026-07-02 cargo test -p scirust-gpu --features cuda --test cuda_hardware_capabilities -- --nocapture
+          python3 scripts/thor_gpu_guard.py -- \
+            rustup run nightly-2026-07-02 cargo test -p scirust-gpu --features cuda --test cuda_hardware_capabilities -- --nocapture
       - name: SCIAGENT CUDA parity
         if: steps.cuda-runtime.outputs.available == 'true'
         shell: bash
         run: |
           set -euo pipefail
-          exec 9>"$SCIRUST_THOR_GPU_LOCK"
-          flock -x 9
-          rustup run nightly-2026-07-02 cargo test -p scirust-sciagent --features cuda --test cuda_parity -- --nocapture
+          python3 scripts/thor_gpu_guard.py -- \
+            rustup run nightly-2026-07-02 cargo test -p scirust-sciagent --features cuda --test cuda_parity -- --nocapture
       - name: SCIAGENT I250 decode parity
         if: steps.cuda-runtime.outputs.available == 'true'
         shell: bash
         run: |
           set -euo pipefail
-          exec 9>"$SCIRUST_THOR_GPU_LOCK"
-          flock -x 9
-          rustup run nightly-2026-07-02 cargo test -p scirust-sciagent --features cuda --test cuda_decode_parity -- --nocapture
+          python3 scripts/thor_gpu_guard.py -- \
+            rustup run nightly-2026-07-02 cargo test -p scirust-sciagent --features cuda --test cuda_decode_parity -- --nocapture
       - name: SCIAGENT I250 fourth-token diagnostics
         if: steps.cuda-runtime.outputs.available == 'true'
         env:
@@ -198,11 +201,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          exec 9>"$SCIRUST_THOR_GPU_LOCK"
-          flock -x 9
-          rustup run nightly-2026-07-02 cargo run -p scirust-sciagent --features cuda --release --example cuda_decode_token_trace
-      - name: SCIAGENT CUDA clippy
-        run: rustup run nightly-2026-07-02 cargo clippy -p scirust-sciagent --features cuda --all-targets -- -D warnings
+          python3 scripts/thor_gpu_guard.py -- \
+            rustup run nightly-2026-07-02 cargo run -p scirust-sciagent --features cuda --release --example cuda_decode_token_trace
       - name: SCIAGENT I250 304M decode benchmark
         if: steps.cuda-runtime.outputs.available == 'true'
         env:
@@ -212,18 +212,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          exec 9>"$SCIRUST_THOR_GPU_LOCK"
-          flock -x 9
-          if ! compute_apps="$(nvidia-smi --query-compute-apps=pid,process_name --format=csv,noheader 2>/dev/null)"; then
-            echo "::error::I250 cannot verify that the Thor is idle."
-            exit 1
-          fi
-          if [[ -n "${compute_apps//[[:space:]]/}" ]]; then
-            echo "::error::I250 benchmark requires an idle Thor; unexpected compute processes are active:"
-            printf '%s\n' "$compute_apps"
-            exit 1
-          fi
-          rustup run nightly-2026-07-02 cargo run -p scirust-sciagent --features cuda --release --example cuda_decode_bench
+          python3 scripts/thor_gpu_guard.py -- \
+            rustup run nightly-2026-07-02 cargo run -p scirust-sciagent --features cuda --release --example cuda_decode_bench
       - name: SCIAGENT production sweep
         if: steps.cuda-runtime.outputs.available == 'true'
         env:
@@ -235,18 +225,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          exec 9>"$SCIRUST_THOR_GPU_LOCK"
-          flock -x 9
-          if ! compute_apps="$(nvidia-smi --query-compute-apps=pid,process_name --format=csv,noheader 2>/dev/null)"; then
-            echo "::error::SCIAGENT cannot verify that the Thor is idle."
-            exit 1
-          fi
-          if [[ -n "${compute_apps//[[:space:]]/}" ]]; then
-            echo "::error::SCIAGENT production benchmark requires an idle Thor; unexpected compute processes are active:"
-            printf '%s\n' "$compute_apps"
-            exit 1
-          fi
-          rustup run nightly-2026-07-02 cargo run -p scirust-sciagent --features cuda --release --example cuda_production_bench
+          python3 scripts/thor_gpu_guard.py -- \
+            rustup run nightly-2026-07-02 cargo run -p scirust-sciagent --features cuda --release --example cuda_production_bench
       - name: Report deferred CUDA execution
         if: steps.cuda-runtime.outputs.available != 'true'
         run: |
