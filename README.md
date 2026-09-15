@@ -1,82 +1,23 @@
-<p align="center">
-  <img src="https://github.com/user-attachments/assets/c36c292c-5893-44c2-94d9-3895ec0749e8" alt="SciRust" width="760">
-</p>
-
 # SciRust
 
-[![CI](https://github.com/Memorithm/scirust/actions/workflows/ci.yml/badge.svg)](https://github.com/Memorithm/scirust/actions/workflows/ci.yml)
-[![ARM64](https://github.com/Memorithm/scirust/actions/workflows/native-arm64.yml/badge.svg)](https://github.com/Memorithm/scirust/actions/workflows/native-arm64.yml)
-[![Rust](https://img.shields.io/badge/Rust-1.89%2B-000000?logo=rust)](rust-toolchain.toml)
-[![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue)](LICENSE.md)
+SciRust is a Rust scientific-computing and machine-learning workspace. It combines numerical methods, tensor/autodiff infrastructure, optimization, simulation, signal processing, symbolic tools, domain crates, and optional GPU execution paths.
 
-SciRust is an experimental, pure-Rust workspace for deterministic machine
-learning, scientific computing, simulation, and industrial algorithms. Its
-design priority is inspectability: reference implementations, explicit seeds,
-oracle-based tests, and opt-in hardware backends live in the same repository.
-
-SciRust is a research and engineering project. It is **not** a drop-in
-replacement for PyTorch, a certified safety component, or a validated medical,
-financial, or industrial control product.
-
-## Project status
-
-The repository is under active development and contains more than one hundred
-workspace crates. APIs and crate boundaries may change before a stable release.
-The root package is currently version `0.14.0` and declares Rust `1.89` as its
-minimum supported version.
-
-| Area | Current scope | Maturity |
-|---|---|---|
-| Tensor and autodiff core | Dense tensors, reverse-mode autodiff, neural-network layers, optimizers | Research implementation |
-| Deterministic execution | Seeded examples, fixed-order reductions, inference artifacts and audit utilities | Tested for documented paths; not a universal cross-platform guarantee |
-| CPU acceleration | Scalar and architecture-specific SIMD paths | Available |
-| WGPU | Opt-in canonical tensor adapter and GPU kernels | Experimental |
-| CUDA | Opt-in canonical tensor adapter; requires NVIDIA driver, NVRTC, and a CUDA device at runtime | Experimental; hardware-dependent |
-| Scientific computing | Solvers, symbolic methods, statistics, simulation, signal processing, and domain crates | Scope varies by crate |
-| Industrial and regulated domains | Reference algorithms and deterministic demonstrations | Educational/research use; no certification |
-| SciAgent and RSI | Local model and algorithm-refinement experiments | Experimental |
-
-The status above deliberately describes repository scope rather than claiming
-production readiness. Crate-specific limitations belong in each crate's API
-documentation or README.
-
-## Design principles
-
-- **Rust-first implementation.** Default compute paths do not wrap libtorch or
-  ONNX Runtime. Optional operating-system, BLAS, WGPU, and CUDA integrations are
-  documented where enabled.
-- **Verification over headline metrics.** Numerical code is tested against
-  analytic results, reference implementations, invariants, or CPU oracles where
-  those checks exist.
-- **Determinism is scoped.** Bitwise claims apply only to the exact code path,
-  target, features, toolchain, and test described by the corresponding evidence.
-- **Hardware backends are opt-in.** The default build does not activate WGPU or
-  CUDA.
-- **Unsafe code is localized.** Individual crates state their own unsafe-code
-  policy; the repository does not make a blanket zero-unsafe claim.
+The repository is research-oriented. Capabilities differ in maturity, and a compiled feature is not automatically a validated hardware path. Use the linked documentation and revision-bound evidence when deciding whether a component is suitable for a particular experiment or application.
 
 ## Quick start
 
-### Requirements
+Prerequisites:
 
+- Rust toolchain from [`rust-toolchain.toml`](rust-toolchain.toml)
 - Git
-- Rust installed through [rustup](https://rustup.rs/)
-- the toolchain pinned in [`rust-toolchain.toml`](rust-toolchain.toml)
+- platform build tools required by the crates/features you enable
+
+Clone and run the default smoke path:
 
 ```bash
 git clone https://github.com/Memorithm/scirust.git
 cd scirust
-cargo install --path scirust-cli
-scirust help
-scirust info
-scirust quickstart
-```
-
-Without installing the CLI:
-
-```bash
-cargo run -p scirust-cli -- help
-cargo run -p scirust-cli -- quickstart
+cargo run -p quickstart_v2
 ```
 
 The quickstart trains the repository's small deterministic classifier example.
@@ -173,10 +114,16 @@ and exact command instead.
 
 ## Documentation
 
+- [Documentation hub](docs/README.md)
 - [Quickstart](docs/QUICKSTART.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Command and API reference](docs/REFERENCE.md)
 - [Public function lexicon](docs/API_LEXICON.md)
+- [API example inventory](docs/API_EXAMPLES.md)
+- [Human terminology lexicon](docs/LEXICON.md)
+- [Glossary](docs/GLOSSARY.md)
+- [Public API documentation standard](docs/API_DOCUMENTATION_STANDARD.md)
+- [API documentation progress](docs/API_DOCUMENTATION_PROGRESS.md)
 - [GPU status and usage](docs/GPU.md)
 - [Test protocol](docs/TEST_PROTOCOL.md)
 - [Release process](docs/RELEASING.md)
