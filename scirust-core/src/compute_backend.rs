@@ -156,7 +156,10 @@ impl ComputeBackend for CpuFallback {
             }
             if !sum.is_finite() || sum.abs() > f32::MAX as f64
             {
-                return Err(BackendError::Overflow { idx: i, value: sum as f32 });
+                return Err(BackendError::Overflow {
+                    idx: i,
+                    value: sum as f32,
+                });
             }
             out[i] = sum as f32;
         }
@@ -219,6 +222,9 @@ mod tests {
         let data = vec![1.0, 2.0, 3.0];
         let result = backend.execute_kernel(&kernel, &data);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), BackendError::NanDetected { .. }));
+        assert!(matches!(
+            result.unwrap_err(),
+            BackendError::NanDetected { .. }
+        ));
     }
 }
