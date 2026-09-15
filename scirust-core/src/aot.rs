@@ -4,9 +4,11 @@
 //! The generator emits self-contained Rust source from an ordered layer list and a
 //! little-endian `f32` parameter stream. Parameter bytes are decoded as `f32` values
 //! and rendered into source with fixed decimal formatting. This textual representation
-//! is not a bit-exact serialization of arbitrary IEEE-754 payloads. The generator does
-//! not compile or execute the generated source, validate model quality, or provide a
-//! versioned serialization format.
+//! is not a bit-exact serialization of arbitrary IEEE-754 payloads: finite values can
+//! be rounded by the eight-decimal rendering, and non-finite values are not guaranteed
+//! to become valid standalone Rust expressions. The generator does not compile or
+//! execute the generated source, validate model quality, or provide a versioned
+//! serialization format.
 
 /// Layer kinds understood by the static source generator.
 #[derive(Debug, Clone)]
@@ -33,21 +35,34 @@ pub enum LayerSpec {
 /// vector, with each value encoded as a little-endian `f32`. ReLU layers consume no
 /// bytes. Under the current generator contract, `IN_DIM` is the `in_features` of the
 /// first layer only when that first layer is linear; an empty sequence or a sequence
-/// beginning with ReLU therefore declares `IN_DIM = 0`. `OUT_DIM` is updated to each
-/// linear layer's `out_features` in sequence and therefore ends at the final linear
-/// output width. Parameter values are rendered with eight digits after the decimal
-/// point.
+/// beginning with ReLU therefore declares `IN_DIM = 0`. For a generated model with a
+/// nonzero external input width, callers must therefore place a linear layer first.
+/// A leading ReLU followed by a linear layer with nonzero `in_features` produces a
+/// zero-width input buffer that the generated `forward` method later indexes and can
+/// panic when executed for a nonempty batch. `OUT_DIM` is updated to each linear
+/// layer's `out_features` in sequence and therefore ends at the final linear output
+/// width.
+///
+/// Parameter values are rendered with eight digits after the decimal point. This can
+/// change finite values whose information is not representable at that textual
+/// precision (for example, a sufficiently small nonzero value can render as zero).
+/// Non-finite `f32` values are accepted by the byte decoder, but their formatted text
+/// is not guaranteed to be a compilable Rust numeric expression. The generated source
+/// is therefore not a bit-exact weight serialization format.
 ///
 /// The function only generates source text; it does not invoke `rustc`, execute the
 /// model, validate that adjacent linear layer dimensions are mutually compatible, or
-/// guarantee bit-exact source round-tripping for every `f32` value. Trailing bytes after
-/// the parameters required by `layers` are ignored.
+/// validate the generated source. Trailing bytes after the parameters required by
+/// `layers` are ignored.
 ///
 /// # Panics
 ///
 /// Panics when `weights_bytes` is shorter than the parameter stream declared by the
 /// linear layers. Extremely large caller-supplied dimensions can also overflow the
-/// intermediate byte-count arithmetic before slicing.
+/// intermediate byte-count arithmetic before slicing. Independently, malformed layer
+/// sequences such as a leading ReLU followed by a nonzero-width linear layer can yield
+/// generated code whose `forward` method panics when that code is later compiled and
+/// executed.
 ///
 /// # Examples
 ///
