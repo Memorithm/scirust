@@ -95,15 +95,18 @@ pub fn generate_static_pipeline(layers: &[LayerSpec], weights_bytes: &[u8]) -> S
     // element-wise layers operate over that same width.
     let in_dim = layers
         .iter()
-        .find_map(|layer| match layer {
+        .find_map(|layer| match layer
+        {
             LayerSpec::Linear { in_features, .. } => Some(*in_features),
             LayerSpec::ReLU => None,
         })
         .unwrap_or(0);
 
     let mut out_dim = in_dim;
-    for layer in layers {
-        if let LayerSpec::Linear { out_features, .. } = layer {
+    for layer in layers
+    {
+        if let LayerSpec::Linear { out_features, .. } = layer
+        {
             out_dim = *out_features;
         }
     }
@@ -117,7 +120,8 @@ pub fn generate_static_pipeline(layers: &[LayerSpec], weights_bytes: &[u8]) -> S
     let mut weight_arrays = Vec::new();
     let mut bias_arrays = Vec::new();
 
-    for (i, layer) in layers.iter().enumerate() {
+    for (i, layer) in layers.iter().enumerate()
+    {
         if let LayerSpec::Linear {
             in_features,
             out_features,
@@ -127,7 +131,8 @@ pub fn generate_static_pipeline(layers: &[LayerSpec], weights_bytes: &[u8]) -> S
             let end = current_offset + size * 4;
             let weights_slice = &weights_bytes[current_offset..end];
             let mut f32_weights = Vec::new();
-            for chunk in weights_slice.as_chunks::<4>().0 {
+            for chunk in weights_slice.as_chunks::<4>().0
+            {
                 f32_weights.push(f32::from_le_bytes(*chunk));
             }
 
@@ -138,7 +143,8 @@ pub fn generate_static_pipeline(layers: &[LayerSpec], weights_bytes: &[u8]) -> S
             let bias_end = end + out_features * 4;
             let bias_slice = &weights_bytes[end..bias_end];
             let mut f32_bias = Vec::new();
-            for chunk in bias_slice.as_chunks::<4>().0 {
+            for chunk in bias_slice.as_chunks::<4>().0
+            {
                 f32_bias.push(f32::from_le_bytes(*chunk));
             }
 
@@ -150,9 +156,11 @@ pub fn generate_static_pipeline(layers: &[LayerSpec], weights_bytes: &[u8]) -> S
 
             let mut val_str = String::new();
             val_str.push_str("[\n");
-            for row in 0..*in_features {
+            for row in 0..*in_features
+            {
                 val_str.push_str("            [");
-                for col in 0..*out_features {
+                for col in 0..*out_features
+                {
                     let value = f32_weights[row * out_features + col];
                     val_str.push_str(&rust_f32_literal(value));
                     val_str.push_str(", ");
@@ -163,7 +171,8 @@ pub fn generate_static_pipeline(layers: &[LayerSpec], weights_bytes: &[u8]) -> S
             weight_arrays.push((i, val_str));
 
             let mut bias_str = String::from("[");
-            for &value in &f32_bias {
+            for &value in &f32_bias
+            {
                 bias_str.push_str(&rust_f32_literal(value));
                 bias_str.push_str(", ");
             }
@@ -178,7 +187,8 @@ pub fn generate_static_pipeline(layers: &[LayerSpec], weights_bytes: &[u8]) -> S
     code.push_str("impl StaticModel {\n");
     code.push_str("    pub const fn new() -> Self {\n");
     code.push_str("        Self {\n");
-    for (i, val) in &weight_arrays {
+    for (i, val) in &weight_arrays
+    {
         code.push_str(&format!("            weight_{}: {},\n", i, val));
         let bias = &bias_arrays
             .iter()
@@ -196,12 +206,15 @@ pub fn generate_static_pipeline(layers: &[LayerSpec], weights_bytes: &[u8]) -> S
     let mut buffer_idx = 0;
     code.push_str("        let mut buf0 = *input;\n");
 
-    for (i, layer) in layers.iter().enumerate() {
-        match layer {
+    for (i, layer) in layers.iter().enumerate()
+    {
+        match layer
+        {
             LayerSpec::Linear {
                 in_features,
                 out_features,
-            } => {
+            } =>
+            {
                 let next_buffer_idx = buffer_idx + 1;
                 code.push_str(&format!(
                     "        let mut buf{} = [[0.0f32; {}]; B];\n",
@@ -227,8 +240,9 @@ pub fn generate_static_pipeline(layers: &[LayerSpec], weights_bytes: &[u8]) -> S
                 code.push_str("        }\n");
                 buffer_idx = next_buffer_idx;
                 current_dim = *out_features;
-            }
-            LayerSpec::ReLU => {
+            },
+            LayerSpec::ReLU =>
+            {
                 code.push_str("        for b in 0..B {\n");
                 code.push_str(&format!("            for d in 0..{} {{\n", current_dim));
                 code.push_str(&format!(
@@ -237,7 +251,7 @@ pub fn generate_static_pipeline(layers: &[LayerSpec], weights_bytes: &[u8]) -> S
                 ));
                 code.push_str("            }\n");
                 code.push_str("        }\n");
-            }
+            },
         }
     }
 
