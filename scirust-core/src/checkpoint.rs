@@ -1,67 +1,127 @@
-//! Training checkpoint — save & restore model parameters + optimizer state.
+//! Training checkpoint persistence for model parameters and optimizer state.
 //!
-//! Writes two files per checkpoint:
-//! - `checkpoint.json` — metadata, optimizer state, epoch/step
-//! - `weights.json` — model weights as key → flat f32 arrays
+//! A checkpoint directory contains one `checkpoint.json` file. The file embeds
+//! model weights, optimizer state, epoch/step counters, the SciRust crate version,
+//! and free-form metadata. The writer does **not** create a separate
+//! `weights.json` file.
 //!
-//! # Example
-//!
-//! ```ignore
-//! use scirust_core::checkpoint::{Checkpoint, OptimizerState, save_checkpoint, load_checkpoint};
-//!
-//! let opt_state = OptimizerState {
-//!     learning_rate: 0.001, step: 100, epoch: 5,
-//!     m: HashMap::new(), v: HashMap::new(),
-//!     beta1_t: 0.9f32.powi(100), beta2_t: 0.999f32.powi(100),
-//! };
-//! let weights = HashMap::from([("fc1.weight".into(), vec![0.1f32; 256])]);
-//! save_checkpoint("ckpt_epoch5", &weights, &opt_state, 5, 100).unwrap();
-//! ```
+//! Checkpoint JSON is a persistence representation of the current Rust data
+//! structures; this module does not currently enforce a checkpoint schema
+//! version or reject a checkpoint solely because `scirust_version` differs from
+//! the running crate version.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
-/// Optimizer state snapshot for exact training resumption.
+/// Optimizer state stored in a training checkpoint.
+///
+/// The moment maps use parameter names as keys and flattened `f32` buffers as
+/// values. This type records the state supplied by the caller; it does not
+/// validate that moment-buffer lengths match the corresponding model weights.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct OptimizerState {
-    /// Current learning rate.
+    /// Learning rate at checkpoint time.
     pub learning_rate: f32,
-    /// Global training step.
+    /// Optimizer/global training step recorded in the optimizer state.
     pub step: usize,
-    /// Current epoch.
+    /// Epoch recorded in the optimizer state.
     pub epoch: usize,
-    /// Adam first moment (m) buffers: param_name → flat f32 values.
+    /// Adam first-moment buffers, keyed by parameter name.
     pub m: HashMap<String, Vec<f32>>,
-    /// Adam second moment (v) buffers: param_name → flat f32 values.
+    /// Adam second-moment buffers, keyed by parameter name.
     pub v: HashMap<String, Vec<f32>>,
-    /// beta1^t for Adam bias correction.
+    /// `beta1^t` value used for Adam bias correction.
     pub beta1_t: f32,
-    /// beta2^t for Adam bias correction.
+    /// `beta2^t` value used for Adam bias correction.
     pub beta2_t: f32,
 }
 
-/// Complete checkpoint bundle.
+/// Deserialized contents of one SciRust training checkpoint.
+///
+/// `epoch` and `step` at the top level are stored independently from the same
+/// named fields in [`OptimizerState`]; this module does not require them to be
+/// equal.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Checkpoint {
-    /// SciRust version (from Cargo.toml).
+    /// SciRust crate version recorded by the writer.
     pub scirust_version: String,
-    /// Epoch at checkpoint time.
+    /// Top-level epoch supplied to [`save_checkpoint`].
     pub epoch: usize,
-    /// Global training step.
+    /// Top-level global step supplied to [`save_checkpoint`].
     pub step: usize,
-    /// Optimizer state.
+    /// Serialized optimizer state.
     pub optimizer_state: OptimizerState,
-    /// Model weights: param_name → flat f32 slice.
+    /// Model parameters keyed by name and stored as flattened `f32` buffers.
     pub weights: HashMap<String, Vec<f32>>,
-    /// Free-form metadata (loss, config, etc.).
+    /// Free-form key/value metadata.
     pub metadata: HashMap<String, String>,
 }
 
-/// Save a checkpoint to a directory.
+/// Saves model and optimizer state in `{dir}/checkpoint.json`.
 ///
-/// Creates `{dir}/checkpoint.json` with all data embedded.
+/// The directory is created recursively when necessary. Existing
+/// `checkpoint.json` content is replaced. The write uses [`std::fs::write`]; it
+/// is not an atomic rename/transaction and this function does not fsync the file
+/// or parent directory.
+///
+/// The stored [`Checkpoint::metadata`] map is empty. The top-level `epoch` and
+/// `step` arguments are stored independently from the fields already present in
+/// `opt_state`.
+///
+/// # Errors
+///
+/// Returns [`crate::error::SciRustError::IoError`] when directory creation or
+/// file writing fails. JSON serialization errors are converted through the
+/// crate error type.
+///
+/// # Examples
+///
+/// Save and load a small deterministic checkpoint:
+///
+/// ```
+/// use scirust_core::checkpoint::{load_checkpoint, save_checkpoint, OptimizerState};
+/// use std::collections::HashMap;
+///
+/// let dir = std::env::temp_dir().join(format!("scirust-doc-checkpoint-{}", std::process::id()));
+/// let _ = std::fs::remove_dir_all(&dir);
+/// let weights = HashMap::from([("w".to_owned(), vec![1.0_f32, 2.0])]);
+/// let state = OptimizerState {
+///     learning_rate: 0.01,
+///     step: 7,
+///     epoch: 2,
+///     m: HashMap::new(),
+///     v: HashMap::new(),
+///     beta1_t: 0.9,
+///     beta2_t: 0.999,
+/// };
+/// save_checkpoint(&dir, &weights, &state, 2, 7).unwrap();
+/// let loaded = load_checkpoint(&dir).unwrap();
+/// assert_eq!(loaded.weights["w"], vec![1.0, 2.0]);
+/// assert_eq!(loaded.epoch, 2);
+/// let _ = std::fs::remove_dir_all(&dir);
+/// ```
+///
+/// The top-level counters are independent of the counters inside the optimizer
+/// snapshot:
+///
+/// ```
+/// use scirust_core::checkpoint::{load_checkpoint, save_checkpoint, OptimizerState};
+/// use std::collections::HashMap;
+///
+/// let dir = std::env::temp_dir().join(format!("scirust-doc-checkpoint-counters-{}", std::process::id()));
+/// let _ = std::fs::remove_dir_all(&dir);
+/// let state = OptimizerState {
+///     learning_rate: 0.1, step: 3, epoch: 1,
+///     m: HashMap::new(), v: HashMap::new(), beta1_t: 0.9, beta2_t: 0.999,
+/// };
+/// save_checkpoint(&dir, &HashMap::new(), &state, 9, 99).unwrap();
+/// let loaded = load_checkpoint(&dir).unwrap();
+/// assert_eq!((loaded.epoch, loaded.step), (9, 99));
+/// assert_eq!((loaded.optimizer_state.epoch, loaded.optimizer_state.step), (1, 3));
+/// let _ = std::fs::remove_dir_all(&dir);
+/// ```
 pub fn save_checkpoint(
     dir: impl AsRef<Path>,
     weights: &HashMap<String, Vec<f32>>,
@@ -86,9 +146,47 @@ pub fn save_checkpoint(
     Ok(())
 }
 
-/// Load a checkpoint from a directory. A missing/unreadable file surfaces as
-/// [`crate::error::SciRustError::IoError`]; malformed JSON as
-/// [`crate::error::SciRustError::InvalidFormat`] (via `From<serde_json::Error>`).
+/// Loads and deserializes `{dir}/checkpoint.json`.
+///
+/// The stored `scirust_version` is returned as data and is not currently used as
+/// a compatibility gate.
+///
+/// # Errors
+///
+/// A missing or unreadable file is returned as
+/// [`crate::error::SciRustError::IoError`]. Malformed or incompatible JSON is
+/// returned as [`crate::error::SciRustError::InvalidFormat`] through the crate's
+/// `serde_json::Error` conversion.
+///
+/// # Examples
+///
+/// ```
+/// use scirust_core::checkpoint::{load_checkpoint, save_checkpoint, OptimizerState};
+/// use std::collections::HashMap;
+/// let dir = std::env::temp_dir().join(format!("scirust-doc-load-{}", std::process::id()));
+/// let _ = std::fs::remove_dir_all(&dir);
+/// let state = OptimizerState {
+///     learning_rate: 0.01, step: 1, epoch: 1,
+///     m: HashMap::new(), v: HashMap::new(), beta1_t: 0.9, beta2_t: 0.999,
+/// };
+/// save_checkpoint(&dir, &HashMap::new(), &state, 1, 1).unwrap();
+/// assert_eq!(load_checkpoint(&dir).unwrap().step, 1);
+/// let _ = std::fs::remove_dir_all(&dir);
+/// ```
+///
+/// Malformed JSON is rejected as a format error:
+///
+/// ```
+/// use scirust_core::checkpoint::load_checkpoint;
+/// use scirust_core::error::SciRustError;
+/// let dir = std::env::temp_dir().join(format!("scirust-doc-load-bad-{}", std::process::id()));
+/// let _ = std::fs::remove_dir_all(&dir);
+/// std::fs::create_dir_all(&dir).unwrap();
+/// std::fs::write(dir.join("checkpoint.json"), "{not-json]").unwrap();
+/// let result = load_checkpoint(&dir);
+/// assert!(matches!(result, Err(SciRustError::InvalidFormat { .. })));
+/// let _ = std::fs::remove_dir_all(&dir);
+/// ```
 pub fn load_checkpoint(dir: impl AsRef<Path>) -> crate::error::Result<Checkpoint> {
     let dir = dir.as_ref();
     let json = fs::read_to_string(dir.join("checkpoint.json"))?;
@@ -96,7 +194,45 @@ pub fn load_checkpoint(dir: impl AsRef<Path>) -> crate::error::Result<Checkpoint
     Ok(checkpoint)
 }
 
-/// List all checkpoints in a directory, sorted by epoch.
+/// Lists readable checkpoint subdirectories, sorted by stored epoch.
+///
+/// Only direct child directories containing a readable, valid
+/// `checkpoint.json` are returned. Missing parent directories yield an empty
+/// list. Child checkpoints whose JSON cannot be read or deserialized are
+/// silently skipped. Equal epochs are not otherwise ordered by this contract.
+///
+/// # Errors
+///
+/// Returns [`crate::error::SciRustError::IoError`] if reading the parent
+/// directory or one of its directory entries fails. Errors while reading or
+/// parsing an individual `checkpoint.json` are deliberately skipped.
+///
+/// # Examples
+///
+/// ```
+/// use scirust_core::checkpoint::{list_checkpoints, save_checkpoint, OptimizerState};
+/// use std::collections::HashMap;
+/// let parent = std::env::temp_dir().join(format!("scirust-doc-list-{}", std::process::id()));
+/// let _ = std::fs::remove_dir_all(&parent);
+/// let state = OptimizerState {
+///     learning_rate: 0.01, step: 0, epoch: 0,
+///     m: HashMap::new(), v: HashMap::new(), beta1_t: 0.9, beta2_t: 0.999,
+/// };
+/// save_checkpoint(parent.join("third"), &HashMap::new(), &state, 3, 30).unwrap();
+/// save_checkpoint(parent.join("first"), &HashMap::new(), &state, 1, 10).unwrap();
+/// let epochs: Vec<_> = list_checkpoints(&parent).unwrap().into_iter().map(|x| x.0).collect();
+/// assert_eq!(epochs, vec![1, 3]);
+/// let _ = std::fs::remove_dir_all(&parent);
+/// ```
+///
+/// A missing parent is an empty collection, not an error:
+///
+/// ```
+/// use scirust_core::checkpoint::list_checkpoints;
+/// let parent = std::env::temp_dir().join(format!("scirust-doc-list-missing-{}", std::process::id()));
+/// let _ = std::fs::remove_dir_all(&parent);
+/// assert!(list_checkpoints(&parent).unwrap().is_empty());
+/// ```
 pub fn list_checkpoints(
     parent_dir: impl AsRef<Path>,
 ) -> crate::error::Result<Vec<(usize, std::path::PathBuf)>> {
@@ -167,7 +303,6 @@ mod tests {
 
     #[test]
     fn load_rejects_malformed_json_as_invalid_format() {
-        // Exercises From<serde_json::Error> for SciRustError → InvalidFormat.
         let dir = std::env::temp_dir().join("scirust_ckpt_test_badjson");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
