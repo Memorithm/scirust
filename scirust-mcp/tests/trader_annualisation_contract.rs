@@ -75,7 +75,13 @@ fn nested_market_intervals_cannot_fall_back_to_hourly() {
     let registry = default_registry();
     for name in ["trader_scan_opportunities", "trader_dashboard"]
     {
-        for interval in [json!("unknown"), json!("0m"), json!(null), json!(15), json!(false)]
+        for interval in [
+            json!("unknown"),
+            json!("0m"),
+            json!(null),
+            json!(15),
+            json!(false),
+        ]
         {
             let error = registry
                 .call(
