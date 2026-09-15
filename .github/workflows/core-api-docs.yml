@@ -1,0 +1,41 @@
+name: Core API documentation
+
+on:
+  pull_request:
+    paths:
+      - "scirust-core/**"
+      - "docs/API_DOCUMENTATION_STANDARD.md"
+      - ".github/workflows/core-api-docs.yml"
+  push:
+    branches: [master]
+    paths:
+      - "scirust-core/**"
+      - "docs/API_DOCUMENTATION_STANDARD.md"
+      - ".github/workflows/core-api-docs.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: core-api-docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core-docs:
+    name: scirust-core rustdoc and doctests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      CARGO_INCREMENTAL: 0
+      RUSTFLAGS: -D warnings
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Execute scirust-core doctests
+        run: cargo +stable test -p scirust-core --doc --locked
+      - name: Build scirust-core documentation with warnings denied
+        run: cargo +stable doc -p scirust-core --no-deps --locked
