@@ -10,6 +10,7 @@
 //! This is intentionally a boundary guard, not a second trading engine. Domain
 //! calculations remain in `scirust-trader`.
 
+use scirust_trader::performance_convention::try_crypto_periods_per_year;
 use serde_json::Value;
 
 const MOCK_SYMBOL: &str = "BTC/USDT";
@@ -22,6 +23,7 @@ pub(crate) fn prepare_arguments(name: &str, mut arguments: Value) -> Result<Valu
         return Ok(arguments);
     }
 
+    validate_performance_intervals(name, &arguments)?;
     validate_nested_ohlcv(&arguments, "$")?;
 
     match name
@@ -33,6 +35,59 @@ pub(crate) fn prepare_arguments(name: &str, mut arguments: Value) -> Result<Valu
     }
 
     Ok(arguments)
+}
+
+/// Validate only the interval locations consumed by annualised trading tools.
+///
+/// Omitted fields keep the existing documented defaults. Explicit malformed
+/// fields never take that path. Research envelopes and arbitrary metadata are
+/// not recursively interpreted as market-interval configuration.
+fn validate_performance_intervals(name: &str, arguments: &Value) -> Result<(), String> {
+    if matches!(
+        name,
+        "trader_backtest"
+            | "trader_metrics"
+            | "trader_walkforward"
+            | "trader_monte_carlo"
+            | "trader_portfolio_construct"
+            | "trader_regime"
+            | "trader_optimize"
+    )
+    {
+        validate_optional_interval(arguments.get("interval"), "$.interval")?;
+    }
+
+    if matches!(name, "trader_scan_opportunities" | "trader_dashboard")
+    {
+        if let Some(series) = arguments.get("series")
+        {
+            let series = series
+                .as_array()
+                .ok_or_else(|| invalid("$.series", "must be an array"))?;
+            for (index, item) in series.iter().enumerate()
+            {
+                let path = format!("$.series[{index}]");
+                let item = item
+                    .as_object()
+                    .ok_or_else(|| invalid(&path, "must be a market-series object"))?;
+                validate_optional_interval(item.get("interval"), &format!("{path}.interval"))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Resolve a supplied interval through SciRust's single checked 24/7 contract.
+fn validate_optional_interval(value: Option<&Value>, path: &str) -> Result<(), String> {
+    if let Some(value) = value
+    {
+        let interval = value
+            .as_str()
+            .ok_or_else(|| invalid(path, "must be a string; an explicit value cannot use a default"))?;
+        try_crypto_periods_per_year(interval)
+            .map_err(|error| invalid(path, &error.to_string()))?;
+    }
+    Ok(())
 }
 
 fn validate_nested_ohlcv(value: &Value, path: &str) -> Result<(), String> {
@@ -297,6 +352,37 @@ fn invalid(path: &str, message: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn performance_interval_validation_does_not_reinterpret_research_metadata() {
+        let args = json!({"request": {"metadata": {"interval": "arbitrary research label"}}});
+        assert_eq!(
+            prepare_arguments("trader_research_request", args.clone()).unwrap(),
+            args,
+        );
+    }
+
+    #[test]
+    fn performance_interval_validation_preserves_omitted_defaults() {
+        assert!(prepare_arguments("trader_metrics", json!({})).is_ok());
+        assert!(
+            prepare_arguments("trader_scan_opportunities", json!({"series": [{"symbol": "X"}]}))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn explicit_nested_interval_type_errors_cannot_use_defaults() {
+        for value in [json!(null), json!(15), json!(false), json!({})]
+        {
+            let error = prepare_arguments(
+                "trader_dashboard",
+                json!({"series": [{"symbol": "X", "interval": value}]}),
+            )
+            .unwrap_err();
+            assert!(error.contains("$.series[0].interval"));
+        }
+    }
 
     #[test]
     fn strict_ohlcv_accepts_complete_ordered_rows() {
