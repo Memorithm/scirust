@@ -17,8 +17,9 @@ use serde::{Deserialize, Serialize};
 use crate::agent::Action;
 use crate::indicators;
 use crate::market::Candle;
-use crate::metrics::{PerformanceReport, periods_per_year};
+use crate::metrics::PerformanceReport;
 use crate::orders::{FeeSchedule, Fill, Order, Side, SlippageModel, simulate_fill};
+use crate::performance_convention::{PerformanceConvention, PerformanceConventionError};
 use crate::portfolio::Account;
 use crate::strategy::Strategy;
 use std::collections::BTreeMap;
@@ -127,13 +128,69 @@ struct OpenTrade {
     realized: f32,
 }
 
-/// Run `strategy` over `candles` under `cfg`. Candles must be chronological and
-/// share `cfg.symbol`.
+/// Run `strategy` over chronological `candles` sharing `cfg.symbol`.
+///
+/// This compatibility entry point uses the same checked implementation as
+/// [`try_run_backtest`]. An invalid interval is never replaced with daily bars.
+///
+/// # Panics
+///
+/// Panics when `cfg.interval` cannot define a finite positive 24/7 annualisation.
+/// Use [`try_run_backtest`] for caller-supplied configuration.
+///
+/// # Examples
+///
+/// ```
+/// use scirust_trader::backtest::{BacktestConfig, run_backtest};
+/// use scirust_trader::strategy::Momentum;
+/// let report = run_backtest(&Momentum::default(), &[], &BacktestConfig::default());
+/// assert_eq!(report.performance.periods_per_year, 8760.0);
+/// ```
 pub fn run_backtest(
     strategy: &dyn Strategy,
     candles: &[Candle],
     cfg: &BacktestConfig,
 ) -> BacktestReport {
+    try_run_backtest(strategy, candles, cfg)
+        .expect("invalid backtest interval; use try_run_backtest for untrusted configuration")
+}
+
+/// Validate the interval before allocating simulation state or calling `strategy`.
+///
+/// Uses the 365-day, 24/7 convention with zero per-period Sharpe reference and
+/// Sortino target. The interval is declared metadata: this function does not
+/// infer it from timestamps or certify that candle spacing matches it. Candles
+/// must still be chronological, share `cfg.symbol`, and satisfy the existing
+/// backtest preconditions. Other configuration/data validation is not added here.
+///
+/// # Errors
+///
+/// Returns [`PerformanceConventionError`] for malformed intervals or a resolved
+/// annualisation that is non-finite or non-positive, including on empty input.
+///
+/// # Examples
+///
+/// ```
+/// use scirust_trader::backtest::{BacktestConfig, try_run_backtest};
+/// use scirust_trader::strategy::Momentum;
+/// let config = BacktestConfig { interval: "invalid".into(), ..Default::default() };
+/// assert!(try_run_backtest(&Momentum::default(), &[], &config).is_err());
+/// ```
+///
+/// ```
+/// use scirust_trader::backtest::{BacktestConfig, try_run_backtest};
+/// use scirust_trader::strategy::Momentum;
+/// let config = BacktestConfig { interval: "730d".into(), ..Default::default() };
+/// let report = try_run_backtest(&Momentum::default(), &[], &config)?;
+/// assert_eq!(report.performance.periods_per_year, 0.5);
+/// # Ok::<(), scirust_trader::performance_convention::PerformanceConventionError>(())
+/// ```
+pub fn try_run_backtest(
+    strategy: &dyn Strategy,
+    candles: &[Candle],
+    cfg: &BacktestConfig,
+) -> Result<BacktestReport, PerformanceConventionError> {
+    let convention = PerformanceConvention::for_crypto_interval(&cfg.interval, 0.0, 0.0)?;
     let n = candles.len();
     let mut account = Account::new(cfg.starting_cash);
     // Overwrite the initial curve sample so it stays length-aligned with bars.
@@ -255,10 +312,14 @@ pub fn run_backtest(
         0.0
     };
     let pnls: Vec<f32> = trades.iter().map(|t| t.net_pnl).collect();
-    let performance =
-        PerformanceReport::from_curve(&equity_curve, &pnls, periods_per_year(&cfg.interval), 0.0);
+    let performance = PerformanceReport::from_curve(
+        &equity_curve,
+        &pnls,
+        convention.periods_per_year(),
+        convention.sharpe_reference_return_per_period(),
+    );
 
-    BacktestReport {
+    Ok(BacktestReport {
         strategy: strategy.name(),
         symbol: cfg.symbol.clone(),
         interval: cfg.interval.clone(),
@@ -271,7 +332,7 @@ pub fn run_backtest(
         equity_curve,
         trades,
         performance,
-    }
+    })
 }
 
 /// Translate a signal + sizing into a target signed position quantity.
@@ -500,6 +561,69 @@ mod tests {
         fn evaluate(&self, _candles: &[Candle]) -> Signal {
             Signal::new(Action::Long, 1.0, "test")
         }
+    }
+
+    #[test]
+    fn invalid_interval_is_rejected_before_any_strategy_callback() {
+        struct MustNotRun;
+        impl Strategy for MustNotRun {
+            fn name(&self) -> String {
+                panic!("name must not be called for invalid configuration")
+            }
+
+            fn warmup(&self) -> usize {
+                panic!("warmup must not be called for invalid configuration")
+            }
+
+            fn evaluate(&self, _candles: &[Candle]) -> Signal {
+                panic!("evaluate must not be called for invalid configuration")
+            }
+        }
+
+        for interval in ["", "unknown", "15", "0h", "-1h", "1fortnight"]
+        {
+            let cfg = BacktestConfig {
+                interval: interval.to_string(),
+                ..Default::default()
+            };
+            assert!(try_run_backtest(&MustNotRun, &[], &cfg).is_err());
+            assert!(try_run_backtest(&MustNotRun, &uptrend(10), &cfg).is_err());
+        }
+    }
+
+    #[test]
+    fn checked_backtest_keeps_subannual_frequencies_without_clamping() {
+        let cfg = BacktestConfig {
+            interval: "730d".to_string(),
+            ..Default::default()
+        };
+        let report = try_run_backtest(&AlwaysLong, &[], &cfg).unwrap();
+        assert_eq!(report.performance.periods_per_year, 0.5);
+        assert_eq!(report.final_equity, cfg.starting_cash);
+    }
+
+    #[test]
+    fn checked_and_compatibility_backtests_agree_for_valid_input() {
+        let candles = uptrend(120);
+        let strategy = MaCross::sma(10, 30);
+        let cfg = BacktestConfig::default();
+        let checked = try_run_backtest(&strategy, &candles, &cfg).unwrap();
+        let legacy = run_backtest(&strategy, &candles, &cfg);
+        assert_eq!(checked.equity_curve, legacy.equity_curve);
+        assert_eq!(checked.trades, legacy.trades);
+        assert_eq!(checked.final_equity, legacy.final_equity);
+        assert_eq!(checked.performance.periods_per_year, 8760.0);
+        assert_eq!(checked.performance.sharpe, legacy.performance.sharpe);
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid backtest interval")]
+    fn compatibility_backtest_never_invents_daily_frequency() {
+        let cfg = BacktestConfig {
+            interval: "unknown".to_string(),
+            ..Default::default()
+        };
+        let _ = run_backtest(&AlwaysLong, &[], &cfg);
     }
 
     #[test]
