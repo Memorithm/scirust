@@ -81,11 +81,13 @@ fn validate_performance_intervals(name: &str, arguments: &Value) -> Result<(), S
 fn validate_optional_interval(value: Option<&Value>, path: &str) -> Result<(), String> {
     if let Some(value) = value
     {
-        let interval = value
-            .as_str()
-            .ok_or_else(|| invalid(path, "must be a string; an explicit value cannot use a default"))?;
-        try_crypto_periods_per_year(interval)
-            .map_err(|error| invalid(path, &error.to_string()))?;
+        let interval = value.as_str().ok_or_else(|| {
+            invalid(
+                path,
+                "must be a string; an explicit value cannot use a default",
+            )
+        })?;
+        try_crypto_periods_per_year(interval).map_err(|error| invalid(path, &error.to_string()))?;
     }
     Ok(())
 }
@@ -366,8 +368,11 @@ mod tests {
     fn performance_interval_validation_preserves_omitted_defaults() {
         assert!(prepare_arguments("trader_metrics", json!({})).is_ok());
         assert!(
-            prepare_arguments("trader_scan_opportunities", json!({"series": [{"symbol": "X"}]}))
-                .is_ok()
+            prepare_arguments(
+                "trader_scan_opportunities",
+                json!({"series": [{"symbol": "X"}]})
+            )
+            .is_ok()
         );
     }
 
