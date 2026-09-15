@@ -45,12 +45,16 @@ pub struct GradientAggregator;
 
 impl GradientAggregator {
     fn validate_lengths(grads: &[Vec<f64>]) -> Result<(), GradientLengthMismatch> {
-        let Some(first) = grads.first() else {
+        let Some(first) = grads.first()
+        else
+        {
             return Ok(());
         };
         let expected = first.len();
-        for (worker, gradient) in grads.iter().enumerate().skip(1) {
-            if gradient.len() != expected {
+        for (worker, gradient) in grads.iter().enumerate().skip(1)
+        {
+            if gradient.len() != expected
+            {
                 return Err(GradientLengthMismatch {
                     worker,
                     expected,
@@ -92,12 +96,16 @@ impl GradientAggregator {
     /// ```
     pub fn try_reduce_sum(grads: &[Vec<f64>]) -> Result<Vec<f64>, GradientLengthMismatch> {
         Self::validate_lengths(grads)?;
-        let Some(first) = grads.first() else {
+        let Some(first) = grads.first()
+        else
+        {
             return Ok(Vec::new());
         };
         let mut result = vec![0.0; first.len()];
-        for worker_grads in grads {
-            for (dst, &value) in result.iter_mut().zip(worker_grads) {
+        for worker_grads in grads
+        {
+            for (dst, &value) in result.iter_mut().zip(worker_grads)
+            {
                 *dst += value;
             }
         }
@@ -158,9 +166,11 @@ impl GradientAggregator {
     /// ```
     pub fn try_reduce_mean(grads: &[Vec<f64>]) -> Result<Vec<f64>, GradientLengthMismatch> {
         let mut result = Self::try_reduce_sum(grads)?;
-        if !grads.is_empty() {
+        if !grads.is_empty()
+        {
             let denominator = grads.len() as f64;
-            for value in &mut result {
+            for value in &mut result
+            {
                 *value /= denominator;
             }
         }
@@ -254,7 +264,8 @@ impl DataParallelTrainer {
         F: Fn(&ParallelTape, usize) -> Vec<f64>,
     {
         let mut all_grads = Vec::with_capacity(self.n_workers);
-        for worker in 0..self.n_workers {
+        for worker in 0..self.n_workers
+        {
             all_grads.push(batch_fn(&self.tapes[worker], worker));
         }
         GradientAggregator::try_reduce_mean(&all_grads)
@@ -327,7 +338,8 @@ impl DataParallelTrainer {
         F: Fn(&ParallelTape, usize) -> Vec<f64> + Sync,
     {
         let n = self.n_workers;
-        if n == 0 {
+        if n == 0
+        {
             return Ok(Vec::new());
         }
         let n_threads = n_threads.clamp(1, n);
@@ -335,16 +347,20 @@ impl DataParallelTrainer {
         let next = AtomicUsize::new(0);
 
         std::thread::scope(|scope| {
-            for _ in 0..n_threads {
-                scope.spawn(|| loop {
-                    let worker = next.fetch_add(1, Ordering::Relaxed);
-                    if worker >= n {
-                        break;
+            for _ in 0..n_threads
+            {
+                scope.spawn(|| {
+                    loop
+                    {
+                        let worker = next.fetch_add(1, Ordering::Relaxed);
+                        if worker >= n
+                        {
+                            break;
+                        }
+                        let gradient = batch_fn(&self.tapes[worker], worker);
+                        *slots[worker].lock().expect("data-parallel slot poisoned") =
+                            Some(gradient);
                     }
-                    let gradient = batch_fn(&self.tapes[worker], worker);
-                    *slots[worker]
-                        .lock()
-                        .expect("data-parallel slot poisoned") = Some(gradient);
                 });
             }
         });
@@ -544,9 +560,12 @@ mod tests {
         let mut trainer = DataParallelTrainer::new(2);
         let error = trainer
             .try_train_batch(|_, worker| {
-                if worker == 0 {
+                if worker == 0
+                {
                     vec![1.0, 2.0]
-                } else {
+                }
+                else
+                {
                     vec![3.0]
                 }
             })
@@ -589,7 +608,8 @@ mod tests {
     #[test]
     fn train_batch_threaded_is_thread_count_invariant() {
         let batch = |_tape: &ParallelTape, worker: usize| {
-            let sensitive = match worker % 4 {
+            let sensitive = match worker % 4
+            {
                 0 => 1e16,
                 1 => 1.0,
                 2 => -1e16,
@@ -622,9 +642,7 @@ mod tests {
                 shape: (1, 3),
                 saved: SavedData::None,
             });
-            let xv: Vec<f32> = (0..3)
-                .map(|j| ((worker * 3 + j) as f32).sin())
-                .collect();
+            let xv: Vec<f32> = (0..3).map(|j| ((worker * 3 + j) as f32).sin()).collect();
             let yv: Vec<f32> = xv.iter().map(|value| value * 2.0).collect();
             tape.set_value(x, &xv);
             tape.set_value(y, &yv);
@@ -640,12 +658,12 @@ mod tests {
     #[test]
     fn multi_step_training_is_thread_count_invariant() {
         fn train(threads: usize) -> Vec<f32> {
-            let (in_dim, out_dim, n_workers, steps, lr) =
-                (3usize, 2usize, 4usize, 8usize, 0.05f32);
+            let (in_dim, out_dim, n_workers, steps, lr) = (3usize, 2usize, 4usize, 8usize, 0.05f32);
             let mut weights: Vec<f32> = (0..in_dim * out_dim)
                 .map(|i| (i as f32 * 0.1).sin())
                 .collect();
-            for _ in 0..steps {
+            for _ in 0..steps
+            {
                 let trainer = DataParallelTrainer::new(n_workers);
                 let current = &weights;
                 let grads = trainer.train_batch_threaded(threads, |_parallel_tape, worker| {
@@ -668,7 +686,8 @@ mod tests {
                         .map(|&value| value as f64)
                         .collect()
                 });
-                for (weight, &gradient) in weights.iter_mut().zip(&grads) {
+                for (weight, &gradient) in weights.iter_mut().zip(&grads)
+                {
                     *weight -= lr * gradient as f32;
                 }
             }
