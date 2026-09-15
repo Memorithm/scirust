@@ -1,59 +1,62 @@
-//! **Unified compute-capability registry** — one queryable view over the
-//! workspace's three, previously uncoordinated, hardware-backend abstractions.
+//! Unified, process-global compute-capability registry.
 //!
-//! The ANEE investigation
-//! (`docs/research/ANEE_ADAPTIVE_NUMERICAL_EXECUTION_ENGINE_2026-07-17.md` §3,
-//! confirmed by direct source reading) found that SciRust ships **three
-//! independent hardware-dispatch notions that never talk to each other**:
+//! The registry reports compute paths known to the current process. It is a
+//! diagnostic/provenance surface, not a unified execution dispatcher: CPU SIMD,
+//! portable GPU and CUDA retain their own execution abstractions.
 //!
-//! 1. **CPU SIMD** — `scirust_simd::dispatch::BackendKind` + `detect_backend()`
-//!    (runtime CPUID/feature detection: Scalar/SSE2/AVX2/AVX-512/NEON/SVE/…);
-//! 2. **Portable GPU** — `scirust-gpu`'s `RawComputeBackend` trait and
-//!    `WgpuEngine` (wgpu/Vulkan/Metal/DX12, feature `wgpu`);
-//! 3. **CUDA** — `scirust-cuda`'s feature-gated `CudaChain` (Jetson-class
-//!    bf16 Tensor-core path), surfaced through `scirust-gpu`'s `CudaBackend`.
+//! The first access seeds one CPU SIMD entry from
+//! `scirust_simd::dispatch::detect_backend()`. GPU/CUDA integrations register
+//! their own entries. Availability is deliberately tri-state:
 //!
-//! The program's closing synthesis (`ANEE_PROGRAM_SYNTHESIS_2026-07-18.md` §7)
-//! recommends unifying them as ordinary engineering. This module is that
-//! unification, scoped deliberately:
+//! - `Some(true)`: the path was probed and reported usable;
+//! - `Some(false)`: the path was probed and reported unusable;
+//! - `None`: no usability result has been registered yet.
 //!
-//! * **It is a read-side registry, not a dispatch mega-trait.** Each domain
-//!   keeps its own, well-fitting dispatch abstraction (a slice-kernel vtable
-//!   is not a device handle); what was missing was a single place to ask
-//!   *"what compute paths exist in this process, and are they usable?"* —
-//!   for diagnostics, logs, and benchmark provenance.
-//! * **Dependency direction is respected.** `scirust-core` already depends on
-//!   `scirust-simd`, so the CPU entry is seeded automatically from the real
-//!   detector. `scirust-gpu` depends on `scirust-core` only under its `wgpu`
-//!   feature — so GPU/CUDA entries are *pushed* by `scirust-gpu` (its
-//!   `register_compute_capabilities()`, and automatically by
-//!   `WgpuEngine::new()`) rather than pulled from here, which would create a
-//!   dependency cycle. Configurations where `scirust-gpu` is built without
-//!   `wgpu` (hence without a `scirust-core` dependency) can still register
-//!   manually via [`register_capability`].
-//!
-//! Availability is tri-state ([`Capability::available`]): `Some(true/false)`
-//! after a real probe (an adapter request, a CUDA dynamic-load attempt),
-//! `None` when the path is compiled in but has not been probed — the honesty
-//! policy of `scirust-gpu` (never claim a capability that was not verified),
-//! applied to reporting.
+//! `compiled` is independent of `available`; callers must not treat compilation
+//! as evidence that a GPU/CUDA path executed on physical hardware.
 
 use scirust_simd::dispatch::detect_backend;
 use std::sync::{Mutex, OnceLock};
 
-/// Which of the workspace's compute domains a capability belongs to.
+/// Compute domain represented by a [`Capability`].
+///
+/// # Examples
+///
+/// ```
+/// use scirust_core::compute_capability::ComputeDomain;
+/// assert_eq!(ComputeDomain::CpuSimd.label(), "cpu-simd");
+/// ```
+///
+/// ```
+/// use scirust_core::compute_capability::ComputeDomain;
+/// assert!(ComputeDomain::CpuSimd < ComputeDomain::GpuPortable);
+/// assert!(ComputeDomain::GpuPortable < ComputeDomain::Cuda);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ComputeDomain {
-    /// CPU SIMD tier (`scirust_simd::dispatch::BackendKind`).
+    /// CPU SIMD tier selected by runtime CPU-feature detection.
     CpuSimd,
-    /// Portable GPU compute (`scirust-gpu`, feature `wgpu`).
+    /// Portable GPU compute path registered by the GPU integration.
     GpuPortable,
-    /// CUDA / Tensor-core path (`scirust-cuda` via `scirust-gpu`'s `cuda`).
+    /// CUDA/Tensor-core path registered by the CUDA/GPU integration.
     Cuda,
 }
 
 impl ComputeDomain {
-    /// Stable short label (used in [`capability_summary`]).
+    /// Returns the stable short label used by [`capability_summary`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scirust_core::compute_capability::ComputeDomain;
+    /// assert_eq!(ComputeDomain::GpuPortable.label(), "gpu-portable");
+    /// ```
+    ///
+    /// ```
+    /// use scirust_core::compute_capability::ComputeDomain;
+    /// assert_eq!(ComputeDomain::Cuda.label(), "cuda");
+    /// ```
+    #[must_use]
     pub fn label(self) -> &'static str {
         match self
         {
@@ -64,27 +67,55 @@ impl ComputeDomain {
     }
 }
 
-/// One compute path known to this process.
+/// One compute path known to the current process.
+///
+/// `compiled` states whether the registering integration says the code path is
+/// present. [`available`](Capability::available) records probe status separately;
+/// these fields intentionally do not imply one another.
+///
+/// # Examples
+///
+/// ```
+/// use scirust_core::compute_capability::{Capability, ComputeDomain};
+/// let cap = Capability {
+///     domain: ComputeDomain::GpuPortable,
+///     label: "wgpu".into(),
+///     compiled: true,
+///     available: None,
+///     detail: "not probed yet".into(),
+/// };
+/// assert!(cap.compiled);
+/// assert_eq!(cap.available, None);
+/// ```
+///
+/// ```
+/// use scirust_core::compute_capability::{Capability, ComputeDomain};
+/// let cap = Capability {
+///     domain: ComputeDomain::Cuda,
+///     label: "cuda".into(),
+///     compiled: true,
+///     available: Some(false),
+///     detail: "probe failed".into(),
+/// };
+/// assert_eq!(cap.available, Some(false));
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct Capability {
-    /// The domain it belongs to.
+    /// Domain to which this compute path belongs.
     pub domain: ComputeDomain,
-    /// Stable identifier within the domain (e.g. `"x86_64/AVX-512"`, `"wgpu"`).
+    /// Identifier within the domain, for example `"wgpu"`.
     pub label: String,
-    /// Whether the code path is compiled into this binary.
+    /// Whether the registering integration reports this path compiled in.
     pub compiled: bool,
-    /// Probed usability: `Some(true/false)` after a real probe, `None` if
-    /// compiled in but not yet probed.
+    /// Probe result: usable, unusable, or not yet probed/registered.
     pub available: Option<bool>,
-    /// Free-form provenance/detail (e.g. the wgpu adapter name).
+    /// Free-form diagnostic/provenance detail such as an adapter name.
     pub detail: String,
 }
 
 fn registry() -> &'static Mutex<Vec<Capability>> {
     static REGISTRY: OnceLock<Mutex<Vec<Capability>>> = OnceLock::new();
     REGISTRY.get_or_init(|| {
-        // Seed with the CPU SIMD tier from the real runtime detector — always
-        // present, always probed (detection *is* the probe).
         Mutex::new(vec![Capability {
             domain: ComputeDomain::CpuSimd,
             label: detect_backend().label().to_string(),
@@ -96,10 +127,49 @@ fn registry() -> &'static Mutex<Vec<Capability>> {
     })
 }
 
-/// Register (or update — upsert keyed on `(domain, label)`) a capability.
+/// Registers or replaces a process-global compute capability.
 ///
-/// Idempotent: re-registering the same `(domain, label)` replaces the entry,
-/// so probes can refine an earlier `available: None` announcement.
+/// Entries are keyed by `(domain, label)`. Re-registering the same key replaces
+/// the complete previous entry, allowing a later probe to refine an earlier
+/// `available: None` announcement. Other keys are preserved.
+///
+/// The registry is shared by all callers in the process; this function is not a
+/// per-object configuration method.
+///
+/// # Panics
+///
+/// Panics if the process-global capability-registry mutex has previously been
+/// poisoned by a panic while held.
+///
+/// # Examples
+///
+/// ```
+/// use scirust_core::compute_capability::{register_capability, compute_capabilities, Capability, ComputeDomain};
+/// let label = "doc-example-unprobed";
+/// register_capability(Capability {
+///     domain: ComputeDomain::GpuPortable,
+///     label: label.into(), compiled: true, available: None, detail: "announced".into(),
+/// });
+/// assert!(compute_capabilities().iter().any(|c| c.label == label && c.available.is_none()));
+/// ```
+///
+/// Re-registering the same key is an upsert, not an append:
+///
+/// ```
+/// use scirust_core::compute_capability::{register_capability, compute_capabilities, Capability, ComputeDomain};
+/// let label = "doc-example-upsert";
+/// register_capability(Capability {
+///     domain: ComputeDomain::Cuda, label: label.into(), compiled: true,
+///     available: None, detail: "announced".into(),
+/// });
+/// register_capability(Capability {
+///     domain: ComputeDomain::Cuda, label: label.into(), compiled: true,
+///     available: Some(false), detail: "probed".into(),
+/// });
+/// let matches: Vec<_> = compute_capabilities().into_iter().filter(|c| c.label == label).collect();
+/// assert_eq!(matches.len(), 1);
+/// assert_eq!(matches[0].available, Some(false));
+/// ```
 pub fn register_capability(cap: Capability) {
     let mut reg = registry().lock().expect("capability registry poisoned");
     match reg
@@ -111,8 +181,30 @@ pub fn register_capability(cap: Capability) {
     }
 }
 
-/// Snapshot of every known capability, sorted by `(domain, label)` for
-/// deterministic output.
+/// Returns a cloned snapshot sorted by `(domain, label)`.
+///
+/// Mutating the returned vector or its entries does not modify the global
+/// registry. The CPU SIMD capability is seeded on first registry access and is
+/// therefore present in every successful snapshot.
+///
+/// # Panics
+///
+/// Panics if the process-global capability-registry mutex is poisoned.
+///
+/// # Examples
+///
+/// ```
+/// use scirust_core::compute_capability::{compute_capabilities, ComputeDomain};
+/// let caps = compute_capabilities();
+/// assert!(caps.iter().any(|c| c.domain == ComputeDomain::CpuSimd && c.available == Some(true)));
+/// ```
+///
+/// ```
+/// use scirust_core::compute_capability::compute_capabilities;
+/// let caps = compute_capabilities();
+/// assert!(caps.windows(2).all(|pair| (pair[0].domain, &pair[0].label) <= (pair[1].domain, &pair[1].label)));
+/// ```
+#[must_use]
 pub fn compute_capabilities() -> Vec<Capability> {
     let reg = registry().lock().expect("capability registry poisoned");
     let mut out = reg.clone();
@@ -120,8 +212,34 @@ pub fn compute_capabilities() -> Vec<Capability> {
     out
 }
 
-/// One-line summary for logs, e.g.
-/// `cpu-simd:x86_64/AVX-512=yes | gpu-portable:wgpu=unprobed`.
+/// Formats all known capabilities as a deterministic one-line summary.
+///
+/// Each entry has `domain:label=status`, where status is `yes`, `no`, or
+/// `unprobed` according to [`Capability::available`]. Entries follow the same
+/// `(domain, label)` order as [`compute_capabilities`]. The summary reports
+/// registered state only; it does not itself probe GPU/CUDA hardware.
+///
+/// # Panics
+///
+/// Panics if [`compute_capabilities`] cannot acquire the poisoned registry mutex.
+///
+/// # Examples
+///
+/// ```
+/// use scirust_core::compute_capability::capability_summary;
+/// let summary = capability_summary();
+/// assert!(summary.contains("cpu-simd:"));
+/// ```
+///
+/// ```
+/// use scirust_core::compute_capability::{capability_summary, register_capability, Capability, ComputeDomain};
+/// register_capability(Capability {
+///     domain: ComputeDomain::GpuPortable, label: "doc-summary".into(), compiled: true,
+///     available: None, detail: String::new(),
+/// });
+/// assert!(capability_summary().contains("gpu-portable:doc-summary=unprobed"));
+/// ```
+#[must_use]
 pub fn capability_summary() -> String {
     compute_capabilities()
         .iter()
@@ -159,8 +277,6 @@ mod tests {
 
     #[test]
     fn register_is_an_upsert_keyed_on_domain_and_label() {
-        // Unique label so this test is independent of execution order of the
-        // other tests sharing the process-global registry.
         let label = "test-upsert-gpu";
         register_capability(Capability {
             domain: ComputeDomain::GpuPortable,
