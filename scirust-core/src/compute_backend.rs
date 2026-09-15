@@ -117,7 +117,10 @@ pub trait ComputeBackend {
     ///
     /// ```
     /// use scirust_core::compute_backend::{BackendError, ComputeBackend, CpuFallback};
-    /// let error = CpuFallback.execute_kernel(&[1.0, f32::NAN], &[1.0]).unwrap_err();
+    /// let error = match CpuFallback.execute_kernel(&[1.0, f32::NAN], &[1.0]) {
+    ///     Err(error) => error,
+    ///     Ok(_) => panic!("non-finite kernel unexpectedly accepted"),
+    /// };
     /// assert!(matches!(error, BackendError::NanDetected { .. }));
     /// ```
     fn execute_kernel(&self, kernel: &[f32], data: &[f32]) -> BackendResult<Vec<f32>>;
