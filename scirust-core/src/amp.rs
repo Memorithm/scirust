@@ -62,7 +62,8 @@ impl MixedPrecisionEnv {
     /// ```
     #[must_use]
     pub fn new(kind: MixedPrecisionKind, loss_scale: LossScale) -> Self {
-        let current_scale = match loss_scale {
+        let current_scale = match loss_scale
+        {
             LossScale::Fixed(s) => s,
             LossScale::Dynamic => 65_536.0,
         };
@@ -94,7 +95,8 @@ impl MixedPrecisionEnv {
     /// ```
     #[must_use]
     pub fn cast_to(&self, data: &[f32]) -> Vec<f32> {
-        match self.kind {
+        match self.kind
+        {
             MixedPrecisionKind::FP16 => data.iter().map(|&x| fp32_to_fp16(x)).collect(),
             MixedPrecisionKind::BF16 => data.iter().map(|&x| fp32_to_bf16(x)).collect(),
         }
@@ -189,13 +191,18 @@ impl MixedPrecisionEnv {
     /// amp.update_scale(true); assert_eq!(amp.current_scale, 8.0);
     /// ```
     pub fn update_scale(&mut self, overflow: bool) {
-        if let LossScale::Dynamic = self.loss_scale {
-            if overflow {
+        if let LossScale::Dynamic = self.loss_scale
+        {
+            if overflow
+            {
                 self.current_scale *= self.backoff_factor;
                 self.growth_steps = 0;
-            } else {
+            }
+            else
+            {
                 self.growth_steps += 1;
-                if self.growth_steps >= self.growth_interval {
+                if self.growth_steps >= self.growth_interval
+                {
                     self.current_scale =
                         (self.current_scale * self.growth_factor).min(self.max_scale);
                     self.growth_steps = 0;
