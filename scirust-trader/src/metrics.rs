@@ -14,25 +14,35 @@
 //!   per-period stdev by `sqrt(ppy)`. Pick `ppy` from the bar timeframe — see
 //!   [`periods_per_year`].
 
+use crate::performance_convention::try_crypto_periods_per_year;
 use serde::{Deserialize, Serialize};
 
-/// Number of bars in a trading year for a given interval string (e.g. "1m",
-/// "1h", "1d"). Crypto trades 24/7/365, so a day has 1440 one-minute bars and a
-/// year has 365 days. Falls back to `365.0` (daily) for anything unrecognised.
+/// Resolve bars per 365-day, 24/7 year without a fallback or a minimum-one clamp.
+///
+/// Supported units and normalization are those of
+/// [`try_crypto_periods_per_year`]. This compatibility wrapper keeps the existing
+/// return type; use the fallible parser for caller-supplied intervals.
+///
+/// # Panics
+///
+/// Panics for malformed intervals or a non-finite/non-positive annualisation.
+/// Unknown input is not reinterpreted as daily data.
+///
+/// # Examples
+///
+/// ```
+/// use scirust_trader::metrics::periods_per_year;
+/// assert_eq!(periods_per_year("1h"), 8760.0);
+/// assert_eq!(periods_per_year("730d"), 0.5);
+/// ```
+///
+/// ```
+/// use scirust_trader::performance_convention::try_crypto_periods_per_year;
+/// assert!(try_crypto_periods_per_year("unknown").is_err());
+/// ```
 pub fn periods_per_year(interval: &str) -> f32 {
-    let s = interval.trim().to_lowercase();
-    let (num, unit) = s.split_at(s.find(|c: char| c.is_alphabetic()).unwrap_or(s.len()));
-    let n: f32 = num.parse().unwrap_or(1.0);
-    let per_day = match unit
-    {
-        "m" | "min" => 1440.0 / n,
-        "h" | "hr" => 24.0 / n,
-        "d" | "day" => 1.0 / n,
-        "w" | "week" => 1.0 / (7.0 * n),
-        "s" | "sec" => 86_400.0 / n,
-        _ => 1.0,
-    };
-    (per_day * 365.0).max(1.0)
+    try_crypto_periods_per_year(interval)
+        .expect("invalid metric interval; use try_crypto_periods_per_year for untrusted input")
 }
 
 /// Arithmetic mean (forward reduction). `NaN`-free inputs assumed.
@@ -535,6 +545,28 @@ mod tests {
         assert!(approx(periods_per_year("1m"), 1440.0 * 365.0, 1.0));
         assert!(approx(periods_per_year("15m"), 96.0 * 365.0, 1.0));
         assert!(approx(periods_per_year("4h"), 6.0 * 365.0, 1.0));
+    }
+
+    #[test]
+    fn ppy_preserves_frequencies_below_one_per_year() {
+        assert_eq!(periods_per_year("730d"), 0.5);
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid metric interval")]
+    fn ppy_rejects_unknown_intervals_instead_of_falling_back() {
+        let _ = periods_per_year("unknown");
+    }
+
+    #[test]
+    fn ppy_uses_the_shared_checked_contract_for_all_supported_units() {
+        for interval in ["1s", "15min", " 4HR ", "0.5day", "1w", "730d"]
+        {
+            assert_eq!(
+                periods_per_year(interval),
+                try_crypto_periods_per_year(interval).unwrap(),
+            );
+        }
     }
 
     #[test]
