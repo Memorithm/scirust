@@ -88,6 +88,7 @@ pub mod orders;
 pub mod pairs;
 pub mod patterns;
 pub mod performance_convention;
+pub mod performance_report;
 pub mod portfolio;
 pub mod portfolio_opt;
 pub mod proof;
