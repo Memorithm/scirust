@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "tracking_issue": 1431,
+  "policy": {
+    "nontrivial_callable_ordinary_examples": 2,
+    "rustdoc_warnings_denied": true,
+    "doctest_execution_required": true,
+    "exceptions_registry": "docs/API_DOC_EXCEPTIONS.md"
+  },
+  "merged_reviewed_scopes": [
+    {
+      "package": "scirust-stats",
+      "sources": [
+        "scirust-stats/src/describe.rs",
+        "scirust-stats/src/comb.rs"
+      ],
+      "integration_pr": 1432
+    }
+  ],
+  "current_scope": {
+    "package": "scirust-core",
+    "source": "scirust-core/src/compute_backend.rs",
+    "status": "awaiting_exact_head_ci"
+  },
+  "next_priority_packages": [
+    "scirust-core",
+    "scirust-sciagent",
+    "scirust-trader",
+    "scirust-variational",
+    "scirust-gpu",
+    "scirust-tensor-compile"
+  ],
+  "notes": [
+    "Source-level public-callable discovery is not effective-reachability proof.",
+    "Example presence is not execution evidence until the corresponding doctest succeeds.",
+    "Documentation debt baselines must not be lowered merely to make CI pass."
+  ]
+}
