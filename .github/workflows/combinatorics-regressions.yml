@@ -1,0 +1,82 @@
+name: Combinatorics boundary regressions
+on:
+  pull_request:
+    paths:
+      - 'scirust-stats/**'
+      - 'scirust-special/**'
+      - '.github/workflows/combinatorics-regressions.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'scirust-stats/**'
+      - 'scirust-special/**'
+      - '.github/workflows/combinatorics-regressions.yml'
+permissions:
+  contents: read
+jobs:
+  numeric-regressions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: stable
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: nightly-2026-07-02
+          components: miri,rustfmt
+      - name: Test debug, release and documented examples
+        shell: bash
+        env:
+          RUSTFLAGS: '-D warnings'
+          RUSTDOCFLAGS: '-D warnings'
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          git rev-parse HEAD | tee evidence/checkout.txt
+          cargo +nightly-2026-07-02 fmt --all -- --check
+          cargo +stable test -p scirust-stats --locked 2>&1 | tee evidence/stats-debug.log
+          cargo +stable test -p scirust-stats --locked --release 2>&1 | tee evidence/stats-release.log
+          cargo +stable test -p scirust-stats --locked --doc 2>&1 | tee evidence/stats-doc.log
+      - name: Miri without suppressing floating-point perturbations
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +nightly-2026-07-02 miri test -p scirust-stats --locked --lib comb::tests 2>&1 | tee evidence/comb-miri.log
+          for seed in 0 1 7 42; do
+            MIRIFLAGS="-Zmiri-seed=$seed" cargo +nightly-2026-07-02 miri test -p scirust-stats --locked --lib discrete::tests::hypergeometric_matches_exact_6_of_49 -- --exact 2>&1 | tee "evidence/hypergeometric-miri-$seed.log"
+          done
+      - name: Require the original implementation to fail a named runtime assertion
+        shell: bash
+        run: |
+          set -euo pipefail
+          base=e5fee8165ccc6ad9f4b1e6f2a50845ab99c34c18
+          baseline="$RUNNER_TEMP/comb-negative"
+          git worktree add --detach "$baseline" "$base"
+          mkdir -p "$baseline/scirust-stats/tests"
+          cat > "$baseline/scirust-stats/tests/audit_comb_negative.rs" <<'RS'
+          #[test]
+          fn ln_binomial_large_n_small_k_does_not_cancel() {
+              let actual = scirust_stats::comb::ln_binomial(u64::MAX, 1);
+              let expected = (u64::MAX as f64).ln();
+              assert!((actual - expected).abs() < 1e-12, "actual={actual}, expected={expected}");
+          }
+          RS
+          set +e
+          (cd "$baseline" && CARGO_TARGET_DIR="$RUNNER_TEMP/comb-negative-target" cargo +stable test -p scirust-stats --locked --test audit_comb_negative -- --exact ln_binomial_large_n_small_k_does_not_cancel) > evidence/negative.log 2>&1
+          status=$?
+          set -e
+          cat evidence/negative.log
+          test "$status" -eq 101
+          grep -F 'test ln_binomial_large_n_small_k_does_not_cancel ... FAILED' evidence/negative.log
+          grep -F 'test result: FAILED. 0 passed; 1 failed;' evidence/negative.log
+      - name: Publish revision-bound validation logs, including failures
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: combinatorics-regressions-${{ github.sha }}
+          path: evidence/
+          if-no-files-found: error
