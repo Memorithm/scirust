@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "tracking_issue": 1431,
+  "current": {
+    "package": "scirust-core",
+    "sources": ["scirust-core/src/compute_backend.rs"],
+    "classification": "DOC",
+    "runtime_change_intended": false,
+    "required_checks": [
+      "cargo test -p scirust-core --doc --locked",
+      "cargo doc -p scirust-core --no-deps --locked",
+      "normal applicable repository CI"
+    ]
+  },
+  "merged_scopes": [
+    {
+      "package": "scirust-stats",
+      "sources": [
+        "scirust-stats/src/describe.rs",
+        "scirust-stats/src/comb.rs"
+      ],
+      "pr": 1432
+    }
+  ]
+}
