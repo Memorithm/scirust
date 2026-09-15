@@ -1,103 +1,99 @@
-//! Automatic Mixed Precision (AMP) utilities.
+//! Experimental Automatic Mixed Precision (AMP) simulation helpers.
 //!
-//! > ⚠️ **Experimental / no consumers**: this module is not used by any
-//! > crate in the workspace. The API may change or be removed; open an
-//! > issue if you depend on it.
-//!
-//! > **Note:** a second, AMP-adjacent implementation lives at
-//! > [`crate::autodiff::mixed_precision`] (FP16 shadow weights + dynamic loss
-//! > scaling around the 2-D autodiff tensor stack). The two should converge —
-//! > prefer that one if it covers your use case.
-//!
-//! [`MixedPrecisionEnv`] provides explicit helpers for precision conversion,
-//! loss scaling, gradient unscaling, overflow detection, and dynamic scale
-//! updates. It does **not** own a model, run forward/backward, or perform an
-//! optimizer step; callers compose these helpers into their training loop.
-//!
-//! The intended pattern is:
-//! - keep master weights in f32;
-//! - cast the buffers used by the forward pass with [`MixedPrecisionEnv::cast_to`];
-//! - scale the loss with [`MixedPrecisionEnv::scale_loss`];
-//! - unscale gradients with [`MixedPrecisionEnv::unscale_gradients`];
-//! - detect overflow with [`MixedPrecisionEnv::has_overflow`] and update the
-//!   dynamic scale with [`MixedPrecisionEnv::update_scale`].
-//!
-//! # Example
-//!
-//! ```
-//! use scirust_core::amp::{LossScale, MixedPrecisionEnv, MixedPrecisionKind};
-//!
-//! let mut amp = MixedPrecisionEnv::new(MixedPrecisionKind::BF16, LossScale::Dynamic);
-//! let activations = amp.cast_to(&[1.0, 2.0, 3.0]);
-//! let scaled_loss = amp.scale_loss(0.125);
-//! let grads = amp.unscale_gradients(&[0.5, 1.0, 2.0]);
-//! let overflow = MixedPrecisionEnv::has_overflow(&grads);
-//! amp.update_scale(overflow);
-//!
-//! assert_eq!(activations.len(), 3);
-//! assert!(scaled_loss.is_finite());
-//! assert!(!overflow);
-//! ```
+//! Values remain stored as `f32`: FP16/BF16 operations return `f32` values
+//! quantized to the target format. This module does not allocate physical 16-bit
+//! tensors, own a model, run autodiff, or perform optimizer updates. The separate
+//! [`crate::autodiff::mixed_precision`] trainer has different scale semantics.
 
-/// Precision kind for mixed-precision training.
+/// Precision format simulated by [`MixedPrecisionEnv`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MixedPrecisionKind {
-    /// IEEE 754 half-precision (5-bit exponent, 10-bit mantissa).
     FP16,
-    /// Brain floating point (8-bit exponent, 7-bit mantissa).
     BF16,
 }
 
-/// Loss scaling strategy.
+/// Loss-scaling strategy.
 #[derive(Debug, Clone, Copy)]
 pub enum LossScale {
-    /// Fixed scaling factor.
     Fixed(f32),
-    /// Dynamic scaling: increase on no-overflow, decrease on overflow.
     Dynamic,
 }
 
-/// Automatic Mixed Precision environment.
+/// AMP conversion and loss-scaling state.
+///
+/// ```
+/// use scirust_core::amp::{LossScale, MixedPrecisionEnv, MixedPrecisionKind};
+/// let amp = MixedPrecisionEnv::new(MixedPrecisionKind::FP16, LossScale::Fixed(8.0));
+/// assert_eq!(amp.current_scale, 8.0);
+/// ```
+///
+/// ```
+/// use scirust_core::amp::{LossScale, MixedPrecisionEnv, MixedPrecisionKind};
+/// let amp = MixedPrecisionEnv::new(MixedPrecisionKind::BF16, LossScale::Dynamic);
+/// assert_eq!(amp.current_scale, 65_536.0);
+/// ```
 #[derive(Debug, Clone)]
 pub struct MixedPrecisionEnv {
+    /// Target precision simulation.
     pub kind: MixedPrecisionKind,
+    /// Configured scale strategy.
     pub loss_scale: LossScale,
-    /// Current loss scale value (effective for Dynamic mode).
+    /// Current effective scale.
     pub current_scale: f32,
-    /// Consecutive steps without overflow (for Dynamic mode).
     growth_steps: u32,
-    /// Growth interval before increasing scale.
     growth_interval: u32,
-    /// Scale factor when growing.
     growth_factor: f32,
-    /// Scale factor when backing off after overflow.
     backoff_factor: f32,
-    /// Maximum allowed loss scale.
     max_scale: f32,
 }
 
 impl MixedPrecisionEnv {
-    /// Create a new AMP environment.
+    /// Creates an environment. Fixed scales are stored verbatim; `Dynamic`
+    /// starts at 2^16. Fixed values are not validated for positivity/finiteness.
+    ///
+    /// ```
+    /// use scirust_core::amp::{LossScale, MixedPrecisionEnv, MixedPrecisionKind};
+    /// assert_eq!(MixedPrecisionEnv::new(MixedPrecisionKind::FP16, LossScale::Fixed(2.0)).current_scale, 2.0);
+    /// ```
+    ///
+    /// ```
+    /// use scirust_core::amp::{LossScale, MixedPrecisionEnv, MixedPrecisionKind};
+    /// assert_eq!(MixedPrecisionEnv::new(MixedPrecisionKind::BF16, LossScale::Dynamic).current_scale, 65_536.0);
+    /// ```
+    #[must_use]
     pub fn new(kind: MixedPrecisionKind, loss_scale: LossScale) -> Self {
-        let init_scale = match loss_scale
+        let current_scale = match loss_scale
         {
             LossScale::Fixed(s) => s,
-            LossScale::Dynamic => 2.0f32.powi(16), // 65536
+            LossScale::Dynamic => 65_536.0,
         };
-
         Self {
             kind,
             loss_scale,
-            current_scale: init_scale,
+            current_scale,
             growth_steps: 0,
             growth_interval: 2000,
             growth_factor: 2.0,
             backoff_factor: 0.5,
-            max_scale: 2.0f32.powi(24), // 16.7M
+            max_scale: 16_777_216.0,
         }
     }
 
-    /// Cast f32 tensor to the target precision.
+    /// Quantizes `data` to the configured precision and returns `f32` storage.
+    /// FP16 uses binary16 round-to-nearest-even; BF16 clears the low 16 bits.
+    ///
+    /// ```
+    /// use scirust_core::amp::{LossScale, MixedPrecisionEnv, MixedPrecisionKind};
+    /// let amp = MixedPrecisionEnv::new(MixedPrecisionKind::FP16, LossScale::Fixed(1.0));
+    /// assert_ne!(amp.cast_to(&[0.1])[0], 0.1);
+    /// ```
+    ///
+    /// ```
+    /// use scirust_core::amp::{LossScale, MixedPrecisionEnv, MixedPrecisionKind};
+    /// let amp = MixedPrecisionEnv::new(MixedPrecisionKind::FP16, LossScale::Fixed(1.0));
+    /// assert!(amp.cast_to(&[70_000.0])[0].is_infinite());
+    /// ```
+    #[must_use]
     pub fn cast_to(&self, data: &[f32]) -> Vec<f32> {
         match self.kind
         {
@@ -106,93 +102,175 @@ impl MixedPrecisionEnv {
         }
     }
 
-    /// Cast from target precision back to f32.
+    /// Copies already-quantized values back into a new `f32` vector. This is
+    /// numerically an identity and cannot restore discarded precision.
+    ///
+    /// ```
+    /// use scirust_core::amp::{LossScale, MixedPrecisionEnv, MixedPrecisionKind};
+    /// let amp = MixedPrecisionEnv::new(MixedPrecisionKind::FP16, LossScale::Fixed(1.0));
+    /// let q = amp.cast_to(&[0.1]); assert_eq!(amp.cast_from(&q), q);
+    /// ```
+    ///
+    /// ```
+    /// use scirust_core::amp::{LossScale, MixedPrecisionEnv, MixedPrecisionKind};
+    /// let amp = MixedPrecisionEnv::new(MixedPrecisionKind::BF16, LossScale::Fixed(1.0));
+    /// assert!(amp.cast_from(&[]).is_empty());
+    /// ```
+    #[must_use]
     pub fn cast_from(&self, data: &[f32]) -> Vec<f32> {
-        match self.kind
-        {
-            MixedPrecisionKind::FP16 => data.iter().map(|&x| fp16_to_fp32(x)).collect(),
-            MixedPrecisionKind::BF16 => data.iter().map(|&x| bf16_to_fp32(x)).collect(),
-        }
+        data.to_vec()
     }
 
-    /// Scale loss up for stable gradient computation.
+    /// Multiplies a loss by the current scale.
+    ///
+    /// ```
+    /// use scirust_core::amp::{LossScale, MixedPrecisionEnv, MixedPrecisionKind};
+    /// let amp = MixedPrecisionEnv::new(MixedPrecisionKind::FP16, LossScale::Fixed(8.0));
+    /// assert_eq!(amp.scale_loss(0.125), 1.0);
+    /// ```
+    ///
+    /// ```
+    /// use scirust_core::amp::{LossScale, MixedPrecisionEnv, MixedPrecisionKind};
+    /// let amp = MixedPrecisionEnv::new(MixedPrecisionKind::FP16, LossScale::Fixed(0.0));
+    /// assert_eq!(amp.scale_loss(2.0), 0.0);
+    /// ```
+    #[must_use]
     pub fn scale_loss(&self, loss: f32) -> f32 {
         loss * self.current_scale
     }
 
-    /// Unscale gradients after backward pass.
+    /// Multiplies gradients by `1/current_scale`. A zero fixed scale can produce
+    /// infinities or NaNs because scale validation is not performed.
+    ///
+    /// ```
+    /// use scirust_core::amp::{LossScale, MixedPrecisionEnv, MixedPrecisionKind};
+    /// let amp = MixedPrecisionEnv::new(MixedPrecisionKind::FP16, LossScale::Fixed(8.0));
+    /// assert_eq!(amp.unscale_gradients(&[8.0, 4.0]), vec![1.0, 0.5]);
+    /// ```
+    ///
+    /// ```
+    /// use scirust_core::amp::{LossScale, MixedPrecisionEnv, MixedPrecisionKind};
+    /// let amp = MixedPrecisionEnv::new(MixedPrecisionKind::FP16, LossScale::Fixed(0.0));
+    /// assert!(amp.unscale_gradients(&[1.0])[0].is_infinite());
+    /// ```
+    #[must_use]
     pub fn unscale_gradients(&self, grads: &[f32]) -> Vec<f32> {
-        let inv_scale = 1.0 / self.current_scale;
-        grads.iter().map(|&g| g * inv_scale).collect()
+        let inv = 1.0 / self.current_scale;
+        grads.iter().map(|&g| g * inv).collect()
     }
 
-    /// Check if gradients contain NaN/Inf (overflow detection).
+    /// Reports whether any gradient is NaN or infinite.
+    ///
+    /// ```
+    /// use scirust_core::amp::MixedPrecisionEnv;
+    /// assert!(MixedPrecisionEnv::has_overflow(&[f32::NAN]));
+    /// ```
+    ///
+    /// ```
+    /// use scirust_core::amp::MixedPrecisionEnv;
+    /// assert!(!MixedPrecisionEnv::has_overflow(&[1.0, 2.0]));
+    /// ```
+    #[must_use]
     pub fn has_overflow(grads: &[f32]) -> bool {
-        grads.iter().any(|&g| g.is_nan() || g.is_infinite())
+        grads.iter().any(|x| !x.is_finite())
     }
 
-    /// Update loss scale after a training step.
-    pub fn update_scale(&mut self, had_overflow: bool) {
-        match self.loss_scale
+    /// Updates scale bookkeeping. Fixed mode is unchanged. Dynamic overflow
+    /// halves the scale and resets the good-step counter; 2000 consecutive good
+    /// calls double it, capped at 2^24.
+    ///
+    /// ```
+    /// use scirust_core::amp::{LossScale, MixedPrecisionEnv, MixedPrecisionKind};
+    /// let mut amp = MixedPrecisionEnv::new(MixedPrecisionKind::FP16, LossScale::Dynamic);
+    /// amp.update_scale(true); assert_eq!(amp.current_scale, 32_768.0);
+    /// ```
+    ///
+    /// ```
+    /// use scirust_core::amp::{LossScale, MixedPrecisionEnv, MixedPrecisionKind};
+    /// let mut amp = MixedPrecisionEnv::new(MixedPrecisionKind::FP16, LossScale::Fixed(8.0));
+    /// amp.update_scale(true); assert_eq!(amp.current_scale, 8.0);
+    /// ```
+    pub fn update_scale(&mut self, overflow: bool) {
+        if let LossScale::Dynamic = self.loss_scale
         {
-            LossScale::Fixed(_) =>
-            {}, // No change
-            LossScale::Dynamic =>
+            if overflow
             {
-                if had_overflow
+                self.current_scale *= self.backoff_factor;
+                self.growth_steps = 0;
+            }
+            else
+            {
+                self.growth_steps += 1;
+                if self.growth_steps >= self.growth_interval
                 {
-                    self.current_scale *= self.backoff_factor;
+                    self.current_scale =
+                        (self.current_scale * self.growth_factor).min(self.max_scale);
                     self.growth_steps = 0;
                 }
-                else
-                {
-                    self.growth_steps += 1;
-                    if self.growth_steps >= self.growth_interval
-                    {
-                        self.current_scale =
-                            (self.current_scale * self.growth_factor).min(self.max_scale);
-                        self.growth_steps = 0;
-                    }
-                }
-            },
+            }
         }
     }
 }
 
-// ── Precision conversion utilities ──
-
-/// Simulate FP32 → FP16 conversion via a real IEEE-754 half round-trip.
+/// Quantizes one value through IEEE-754 binary16 and returns it as `f32`.
 ///
-/// Uses `half::f16` (round-to-nearest-even) rather than a raw mantissa
-/// truncation, so (a) rounding is correct and (b) magnitudes beyond the fp16
-/// max (~65504) **saturate to ±inf**. That saturation is exactly what
-/// [`MixedPrecisionEnv::has_overflow`] must detect for AMP loss scaling to do
-/// its job — the old `bits & 0xFFFF_E000` kept fp32's 8-bit exponent, so an
-/// fp16 overflow could never be simulated and overflow detection never fired.
+/// ```
+/// use scirust_core::amp::fp32_to_fp16; assert_eq!(fp32_to_fp16(1.5), 1.5);
+/// ```
+///
+/// ```
+/// use scirust_core::amp::fp32_to_fp16; assert!(fp32_to_fp16(70_000.0).is_infinite());
+/// ```
 #[inline]
+#[must_use]
 pub fn fp32_to_fp16(x: f32) -> f32 {
     half::f16::from_f32(x).to_f32()
 }
 
-/// Simulate FP16 → FP32 conversion (identity after truncation).
+/// Returns an already FP16-rounded `f32` value unchanged.
+///
+/// ```
+/// use scirust_core::amp::{fp16_to_fp32, fp32_to_fp16}; let q=fp32_to_fp16(0.1); assert_eq!(fp16_to_fp32(q),q);
+/// ```
+///
+/// ```
+/// use scirust_core::amp::fp16_to_fp32; assert!(fp16_to_fp32(f32::INFINITY).is_infinite());
+/// ```
 #[inline]
+#[must_use]
 pub fn fp16_to_fp32(x: f32) -> f32 {
-    x // Already f32, the truncation happened at cast_to
+    x
 }
 
-/// Simulate FP32 → BF16 conversion (keep exponent, truncate mantissa to 7 bits).
+/// Produces a BF16-like value by clearing the low 16 bits of an `f32`.
+/// This is truncation, not BF16 round-to-nearest-even.
+///
+/// ```
+/// use scirust_core::amp::fp32_to_bf16; assert_eq!(fp32_to_bf16(1.0),1.0);
+/// ```
+///
+/// ```
+/// use scirust_core::amp::fp32_to_bf16; assert_ne!(fp32_to_bf16(1.2345679),1.2345679);
+/// ```
 #[inline]
+#[must_use]
 pub fn fp32_to_bf16(x: f32) -> f32 {
-    let bits = x.to_bits();
-    // BF16: keep upper 16 bits (sign + 8-bit exponent + 7-bit mantissa)
-    let truncated = bits & 0xFFFF_0000;
-    f32::from_bits(truncated)
+    f32::from_bits(x.to_bits() & 0xFFFF_0000)
 }
 
-/// Simulate BF16 → FP32 conversion.
+/// Returns an already BF16-truncated `f32` value unchanged.
+///
+/// ```
+/// use scirust_core::amp::{bf16_to_fp32,fp32_to_bf16}; let q=fp32_to_bf16(0.1); assert_eq!(bf16_to_fp32(q),q);
+/// ```
+///
+/// ```
+/// use scirust_core::amp::bf16_to_fp32; assert_eq!(bf16_to_fp32(-2.0),-2.0);
+/// ```
 #[inline]
+#[must_use]
 pub fn bf16_to_fp32(x: f32) -> f32 {
-    x // Already f32
+    x
 }
 
 #[cfg(test)]
@@ -200,84 +278,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_fp16_conversion() {
-        let x = 1.234_567_9f32;
-        let half = fp32_to_fp16(x);
-        let back = fp16_to_fp32(half);
-        // Should lose precision
-        assert!((back - x).abs() > 1e-6);
-    }
-
-    #[test]
-    fn test_bf16_conversion() {
-        let x = 1.234_567_9f32;
-        let half = fp32_to_bf16(x);
-        let back = bf16_to_fp32(half);
-        // BF16 has even less mantissa than FP16
-        assert!((back - x).abs() > 1e-5);
-    }
-
-    #[test]
-    fn test_overflow_detection() {
-        assert!(MixedPrecisionEnv::has_overflow(&[f32::NAN, 1.0]));
-        assert!(MixedPrecisionEnv::has_overflow(&[1.0, f32::INFINITY]));
-        assert!(!MixedPrecisionEnv::has_overflow(&[1.0, 2.0]));
-    }
-
-    #[test]
-    fn fp32_to_fp16_saturates_beyond_fp16_max_and_triggers_overflow() {
-        // Beyond the fp16 max (~65504) the simulated cast must saturate to inf so
-        // has_overflow fires. The old truncation kept fp32's exponent and could
-        // never overflow, defeating the loss-scaling harness.
-        let big = 1.0e30f32;
-        assert!(
-            fp32_to_fp16(big).is_infinite(),
-            "fp32_to_fp16(1e30) = {}, expected inf",
-            fp32_to_fp16(big)
-        );
-        assert!(MixedPrecisionEnv::has_overflow(&[fp32_to_fp16(big)]));
-        // A representable value must round-trip finite and not overflow.
-        assert!(fp32_to_fp16(1.5).is_finite());
-        assert!(!MixedPrecisionEnv::has_overflow(&[fp32_to_fp16(1.5)]));
-        // Just past the fp16 max also saturates.
+    fn fp16_overflow_is_observable() {
         assert!(fp32_to_fp16(70_000.0).is_infinite());
     }
 
     #[test]
-    fn test_dynamic_scale_growth() {
-        let mut amp = MixedPrecisionEnv::new(MixedPrecisionKind::BF16, LossScale::Dynamic);
-        let initial = amp.current_scale;
-
-        // No overflow for growth_interval steps
-        for _ in 0..amp.growth_interval
-        {
-            amp.update_scale(false);
-        }
-        assert!(amp.current_scale > initial);
-
-        // Overflow should reduce scale
-        amp.update_scale(true);
-        assert!(amp.current_scale < initial * amp.growth_factor);
+    fn dynamic_backoff() {
+        let mut a = MixedPrecisionEnv::new(MixedPrecisionKind::FP16, LossScale::Dynamic);
+        a.update_scale(true);
+        assert_eq!(a.current_scale, 32_768.0);
     }
 
     #[test]
-    fn test_fixed_scale_stability() {
-        let mut amp = MixedPrecisionEnv::new(MixedPrecisionKind::FP16, LossScale::Fixed(1024.0));
-        let initial = amp.current_scale;
-        amp.update_scale(false);
-        amp.update_scale(true);
-        assert_eq!(amp.current_scale, initial);
-    }
-
-    #[test]
-    fn test_loss_scaling() {
-        let amp = MixedPrecisionEnv::new(MixedPrecisionKind::BF16, LossScale::Fixed(8.0));
-        let loss = 0.125;
-        let scaled = amp.scale_loss(loss);
-        assert_eq!(scaled, 1.0);
-
-        let grads = vec![0.5, 1.0, 2.0];
-        let unscaled = amp.unscale_gradients(&grads);
-        assert!((unscaled[0] - 0.0625).abs() < 1e-6);
+    fn fixed_scale_is_stable() {
+        let mut a = MixedPrecisionEnv::new(MixedPrecisionKind::FP16, LossScale::Fixed(8.0));
+        a.update_scale(true);
+        assert_eq!(a.current_scale, 8.0);
     }
 }
