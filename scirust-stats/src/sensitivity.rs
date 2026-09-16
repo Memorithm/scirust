@@ -45,7 +45,7 @@ pub fn morris_effects(
     let dimensions = inputs.first().map_or(0, Vec::len);
     if !(1..=32).contains(&dimensions)
         || inputs.len() != outputs.len()
-        || inputs.len() % (dimensions + 1) != 0
+        || !inputs.len().is_multiple_of(dimensions + 1)
         || !(2..=10_000).contains(&(inputs.len() / (dimensions + 1)))
         || inputs.iter().any(|row| row.len() != dimensions)
     {
