@@ -50,6 +50,8 @@ jobs:
       TOKENIZERS_PARALLELISM: "false"
       HF_HUB_ENABLE_HF_TRANSFER: "1"
       ELASTIC_CACHE_COMMIT: 1960d8fc6231205a1ae4ebba3898d475e339f7e1
+      TORCH_VERSION: "2.10.0+cu130"
+      TORCH_INDEX: https://download.pytorch.org/whl/cu130
 
     steps:
       - name: Initialize shared cache paths after runner assignment
@@ -72,20 +74,37 @@ jobs:
           uname -m
           free -h
           df -h .
-          nvidia-smi || true
+          nvidia-smi
           python3 - <<'PY'
-          import torch
-          print("torch", torch.__version__)
-          print("cuda_available", torch.cuda.is_available())
-          if torch.cuda.is_available():
-              print("cuda_device", torch.cuda.get_device_name())
+          import platform
+          print("python_arch", platform.machine())
+          try:
+              import torch
+          except Exception as exc:
+              print("system_torch_unavailable", repr(exc))
+          else:
+              print("system_torch", torch.__version__)
+              print("system_cuda_available", torch.cuda.is_available())
+              print("system_torch_cuda", torch.version.cuda)
           PY
 
-      - name: Create isolated Python environment
+      - name: Create isolated CUDA Python environment
         run: |
           rm -rf .venv-dream-real
-          python3 -m venv --system-site-packages .venv-dream-real
+          python3 -m venv .venv-dream-real
           .venv-dream-real/bin/python -m pip install --upgrade pip
+          .venv-dream-real/bin/python -m pip install \
+            --index-url "$TORCH_INDEX" \
+            "torch==$TORCH_VERSION"
+          .venv-dream-real/bin/python - <<'PY'
+          import torch
+          print("torch", torch.__version__)
+          print("torch_cuda", torch.version.cuda)
+          print("cuda_available", torch.cuda.is_available())
+          if not torch.cuda.is_available():
+              raise SystemExit("CUDA-enabled PyTorch did not expose the Thor GPU")
+          print("cuda_device", torch.cuda.get_device_name())
+          PY
           .venv-dream-real/bin/python -m pip install \
             "transformers==4.49.0" \
             "accelerate==0.34.2" \
