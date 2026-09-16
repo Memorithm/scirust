@@ -32,9 +32,14 @@ pub enum ParallelTapeAccessError {
 
 impl fmt::Display for ParallelTapeAccessError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NodeOutOfBounds { index, node_count } => {
-                write!(f, "ParallelTape node index {index} is out of bounds for {node_count} nodes")
+        match self
+        {
+            Self::NodeOutOfBounds { index, node_count } =>
+            {
+                write!(
+                    f,
+                    "ParallelTape node index {index} is out of bounds for {node_count} nodes"
+                )
             },
             Self::ValueLengthMismatch {
                 index,
@@ -83,7 +88,8 @@ impl ParallelTape {
     /// ```
     pub fn try_value(&self, idx: usize) -> Result<Tensor, ParallelTapeAccessError> {
         let node_count = self.num_nodes();
-        if idx >= node_count {
+        if idx >= node_count
+        {
             return Err(ParallelTapeAccessError::NodeOutOfBounds {
                 index: idx,
                 node_count,
@@ -104,7 +110,8 @@ impl ParallelTape {
     /// Panics if the internal node-count or gradient `RwLock` is poisoned.
     pub fn try_grad(&self, idx: usize) -> Result<f64, ParallelTapeAccessError> {
         let node_count = self.num_nodes();
-        if idx >= node_count {
+        if idx >= node_count
+        {
             return Err(ParallelTapeAccessError::NodeOutOfBounds {
                 index: idx,
                 node_count,
@@ -130,14 +137,11 @@ impl ParallelTape {
     /// Panics if an internal `RwLock` is poisoned. Lock poisoning remains a
     /// compatibility-level fail-loud contract; this method does not recover from
     /// potentially inconsistent shared state.
-    pub fn try_set_value(
-        &self,
-        idx: usize,
-        data: &[f32],
-    ) -> Result<(), ParallelTapeAccessError> {
+    pub fn try_set_value(&self, idx: usize, data: &[f32]) -> Result<(), ParallelTapeAccessError> {
         let current = self.try_value(idx)?;
         let expected = current.data.len();
-        if data.len() != expected {
+        if data.len() != expected
+        {
             return Err(ParallelTapeAccessError::ValueLengthMismatch {
                 index: idx,
                 expected,
