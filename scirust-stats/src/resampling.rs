@@ -56,8 +56,38 @@ pub(crate) fn checked_mean(values: &[f64]) -> Result<f64, ResearchStatsError> {
     {
         return Err(ResearchStatsError::NonFinite);
     }
-    let n = values.len() as f64;
-    let result = values.iter().map(|x| x / n).sum::<f64>();
+
+    // Scale before summation so finite large values cannot overflow while
+    // subnormal values are not individually divided by n and rounded to zero.
+    // Neumaier compensation also retains small normalized contributions across
+    // cancellation better than a plain sum.  Since every normalized term has
+    // magnitude <= 1 and this crate bounds callers to small finite vectors,
+    // the normalized accumulation itself remains finite.
+    let scale = values.iter().map(|value| value.abs()).fold(0.0_f64, f64::max);
+    if scale == 0.0
+    {
+        return Ok(0.0);
+    }
+
+    let mut sum = 0.0_f64;
+    let mut correction = 0.0_f64;
+    for &value in values
+    {
+        let normalized = value / scale;
+        let next = sum + normalized;
+        if sum.abs() >= normalized.abs()
+        {
+            correction += (sum - next) + normalized;
+        }
+        else
+        {
+            correction += (normalized - next) + sum;
+        }
+        sum = next;
+    }
+
+    let normalized_mean = (sum + correction) / values.len() as f64;
+    let result = normalized_mean * scale;
     if !result.is_finite()
     {
         return Err(ResearchStatsError::NonFinite);
@@ -116,16 +146,14 @@ pub fn paired_mean_percentile(
     let mut rng = SplitMix64::new(seed);
     let n = contrasts.len();
     let mut means = Vec::with_capacity(resamples);
+    let mut sample = vec![0.0; n];
     for _ in 0..resamples
     {
-        let mean = (0..n)
-            .map(|_| contrasts[uniform_index(&mut rng, n)] / n as f64)
-            .sum::<f64>();
-        if !mean.is_finite()
+        for value in &mut sample
         {
-            return Err(ResearchStatsError::NonFinite);
+            *value = contrasts[uniform_index(&mut rng, n)];
         }
-        means.push(mean);
+        means.push(checked_mean(&sample)?);
     }
     let tail = (1.0 - confidence) / 2.0;
     let bounds = describe::quantiles(&means, &[tail, 1.0 - tail]);
@@ -209,6 +237,17 @@ mod tests {
         assert_eq!(
             result,
             paired_mean_percentile(&[0.0, 2.0], 10_000, 0.95, 19).unwrap()
+        );
+    }
+
+    #[test]
+    fn preserves_subnormal_constant_mean_and_interval() {
+        let contrasts = vec![1.0e-320; 10_000];
+        assert_eq!(checked_mean(&contrasts).unwrap(), 1.0e-320);
+        let result = paired_mean_percentile(&contrasts, 100, 0.95, 23).unwrap();
+        assert_eq!(
+            (result.estimate, result.lower, result.upper),
+            (1.0e-320, 1.0e-320, 1.0e-320)
         );
     }
 
