@@ -28,7 +28,7 @@
     "scirust-codetrans": 22,
     "scirust-compute": 49,
     "scirust-control": 1,
-    "scirust-core": 481,
+    "scirust-core": 472,
     "scirust-cuda": 60,
     "scirust-digest": 8,
     "scirust-discovery": 18,
@@ -150,5 +150,5 @@
     "scirust-water": 0
   },
   "schema_version": 1,
-  "total_undocumented": 2379
+  "total_undocumented": 2370
 }
