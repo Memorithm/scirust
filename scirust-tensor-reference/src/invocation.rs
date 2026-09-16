@@ -57,7 +57,9 @@ pub(crate) fn validate(
         | ReferenceOpcode::Mul
         | ReferenceOpcode::Div
         | ReferenceOpcode::ShapeCopy
-        | ReferenceOpcode::Permute =>
+        | ReferenceOpcode::Permute
+        | ReferenceOpcode::MatMul
+        | ReferenceOpcode::BatchMatMul =>
         {},
         ReferenceOpcode::Exp | ReferenceOpcode::Log =>
         {
@@ -65,9 +67,7 @@ pub(crate) fn validate(
         },
         ReferenceOpcode::ReluGrad
         | ReferenceOpcode::BroadcastTo
-        | ReferenceOpcode::ReduceSumTo
-        | ReferenceOpcode::MatMul
-        | ReferenceOpcode::BatchMatMul =>
+        | ReferenceOpcode::ReduceSumTo =>
         {
             return Err(ReferenceExecutionError::UnsupportedOpcode { opcode });
         },
@@ -78,6 +78,10 @@ pub(crate) fn validate(
         (opcode, prepared.attributes()),
         (ReferenceOpcode::Scale, PreparedAttributes::Scale { .. })
             | (ReferenceOpcode::Permute, PreparedAttributes::Permute { .. })
+            | (
+                ReferenceOpcode::MatMul | ReferenceOpcode::BatchMatMul,
+                PreparedAttributes::MatrixProduct { .. }
+            )
             | (
                 ReferenceOpcode::Relu
                     | ReferenceOpcode::ZerosLike
