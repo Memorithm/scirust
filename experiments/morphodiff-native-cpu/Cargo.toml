@@ -1,0 +1,14 @@
+[package]
+name = "morphodiff-native-cpu"
+version = "0.1.0"
+edition = "2024"
+publish = false
+rust-version = "1.95"
+
+# Kept outside the root SciRust workspace because current Cranelift requires a
+# newer Rust compiler than SciRust's production MSRV (1.89).
+[workspace]
+
+[dependencies]
+cranelift = { version = "=0.135.2", features = ["frontend", "jit", "module", "native"] }
+scirust-tensor-ir = { path = "../../scirust-tensor-ir" }
