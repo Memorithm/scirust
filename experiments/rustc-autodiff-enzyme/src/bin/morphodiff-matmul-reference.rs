@@ -104,7 +104,7 @@ fn validate_correctness(fixture: &MatrixFixture) -> Result<(), Box<dyn Error>> {
     }
     for (index, (&got, &want)) in actual.iter().zip(&expected).enumerate() {
         let tolerance = 5.0e-4 * (1.0 + want.abs());
-        if (got - want).abs() > tolerance {
+        if !got.is_finite() || !want.is_finite() || (got - want).abs() > tolerance {
             return Err(format!(
                 "MorphoDiff MatMul gradient gate failed at A[{index}]: {got} vs {want}"
             )
