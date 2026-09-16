@@ -113,9 +113,13 @@ jobs:
       SCIRUST_RESIDENT_BENCH_TOP_KS: "50"
       SCIRUST_RESIDENT_BENCH_REPEATS: "7"
       SCIRUST_RESIDENT_BENCH_WARMUP: "3"
-      SCIRUST_THOR_GPU_LOCK: ${{ runner.temp }}/scirust-thor-gpu.lock
       CARGO_INCREMENTAL: "0"
     steps:
+      - name: Initialize GPU lock path after runner assignment
+        env:
+          SCIRUST_THOR_GPU_LOCK: ${{ runner.temp }}/scirust-thor-gpu.lock
+        run: |
+          printf 'SCIRUST_THOR_GPU_LOCK=%s\n' "$SCIRUST_THOR_GPU_LOCK" >> "$GITHUB_ENV"
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           fetch-depth: 1

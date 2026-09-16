@@ -169,7 +169,10 @@ jobs:
           ldconfig -p | grep -E 'libcuda|libnvrtc' || echo "no libcuda/libnvrtc entry in the loader cache"
       - name: Report deferred CUDA execution
         if: steps.cuda-device.outputs.available != 'true'
-        run: echo "Native ARM64 CUDA runtime execution deferred: ${{ steps.cuda-device.outputs.reason }}"
+        env:
+          CUDA_DEFER_REASON: ${{ steps.cuda-device.outputs.reason }}
+        run: |
+          echo "Native ARM64 CUDA runtime execution deferred: $CUDA_DEFER_REASON"
       - name: Test the canonical Reference kernels on CUDA
         if: steps.cuda-device.outputs.available == 'true'
         env:

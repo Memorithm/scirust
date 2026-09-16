@@ -46,11 +46,16 @@ jobs:
       PYTHONUNBUFFERED: "1"
       TOKENIZERS_PARALLELISM: "false"
       HF_HUB_ENABLE_HF_TRANSFER: "1"
-      HF_HOME: ${{ runner.tool_cache }}/huggingface
-      PIP_CACHE_DIR: ${{ runner.tool_cache }}/pip
       ELASTIC_CACHE_COMMIT: 1960d8fc6231205a1ae4ebba3898d475e339f7e1
 
     steps:
+      - name: Initialize shared cache paths after runner assignment
+        env:
+          HF_HOME: ${{ runner.tool_cache }}/huggingface
+          PIP_CACHE_DIR: ${{ runner.tool_cache }}/pip
+        run: |
+          printf 'HF_HOME=%s\n' "$HF_HOME" >> "$GITHUB_ENV"
+          printf 'PIP_CACHE_DIR=%s\n' "$PIP_CACHE_DIR" >> "$GITHUB_ENV"
       - name: Check out SciRust
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
