@@ -176,7 +176,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: dream-real-cache-policy-${{ github.sha }}
-          if-no-files-found: warn
+          name: dream-real-cache-policy-${{ github.event.pull_request.head.sha || github.sha }}
+          if-no-files-found: error
           retention-days: 14
           path: ci-dream-real/artifacts/dream-real/
