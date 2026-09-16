@@ -31,15 +31,15 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
-          def replace_once(path: str, old: str, new: str) -> None:
+          def replace_exact(path: str, old: str, new: str, expected: int = 1) -> None:
               p = Path(path)
               text = p.read_text()
               count = text.count(old)
-              if count != 1:
-                  raise SystemExit(f"{path}: expected one replacement target, found {count}")
-              p.write_text(text.replace(old, new, 1))
+              if count != expected:
+                  raise SystemExit(f"{path}: expected {expected} replacement target(s), found {count}")
+              p.write_text(text.replace(old, new))
 
-          replace_once(
+          replace_exact(
               "scirust-tensor-compile/src/lowering.rs",
               """pub enum UnaryKernel {
               Relu,
@@ -58,7 +58,7 @@ jobs:
           }""",
           )
 
-          replace_once(
+          replace_exact(
               "scirust-tensor-compile/src/lowering.rs",
               """        Operation::ZerosLike => uniform_unary(node, UnaryKernel::ZerosLike, instruction, operands),
                   Operation::Scale { factor } => uniform_unary(""",
@@ -67,7 +67,7 @@ jobs:
                   Operation::Scale { factor } => uniform_unary(""",
           )
 
-          replace_once(
+          replace_exact(
               "scirust-tensor-reference/src/generator.rs",
               """            UnaryKernel::ZerosLike => Ok((ReferenceOpcode::ZerosLike, AttributeSource::None)),
                       UnaryKernel::Scale { factor } => Ok((""",
@@ -76,7 +76,7 @@ jobs:
                       UnaryKernel::Scale { factor } => Ok((""",
           )
 
-          replace_once(
+          replace_exact(
               "scirust-tensor-reference/src/invocation.rs",
               """        ReferenceOpcode::Relu
                   | ReferenceOpcode::ZerosLike
@@ -86,7 +86,7 @@ jobs:
                   | ReferenceOpcode::OnesLike
                   | ReferenceOpcode::Scale""",
           )
-          replace_once(
+          replace_exact(
               "scirust-tensor-reference/src/invocation.rs",
               """        ReferenceOpcode::ReluGrad
                   | ReferenceOpcode::OnesLike
@@ -94,7 +94,7 @@ jobs:
               """        ReferenceOpcode::ReluGrad
                   | ReferenceOpcode::BroadcastTo""",
           )
-          replace_once(
+          replace_exact(
               "scirust-tensor-reference/src/invocation.rs",
               """                ReferenceOpcode::Relu
                               | ReferenceOpcode::ZerosLike
@@ -105,15 +105,16 @@ jobs:
                               | ReferenceOpcode::Add""",
           )
 
-          replace_once(
+          replace_exact(
               "scirust-tensor-reference/src/interpreter.rs",
               """            ReferenceOpcode::ReluGrad
                       | ReferenceOpcode::OnesLike
                       | ReferenceOpcode::BroadcastTo""",
               """            ReferenceOpcode::ReluGrad
                       | ReferenceOpcode::BroadcastTo""",
+              expected=2,
           )
-          replace_once(
+          replace_exact(
               "scirust-tensor-reference/src/interpreter.rs",
               """            ReferenceOpcode::Relu
                       | ReferenceOpcode::ZerosLike
@@ -123,7 +124,7 @@ jobs:
                       | ReferenceOpcode::OnesLike
                       | ReferenceOpcode::Scale""",
           )
-          replace_once(
+          replace_exact(
               "scirust-tensor-reference/src/interpreter.rs",
               """                ReferenceOpcode::Relu
                           | ReferenceOpcode::ZerosLike
@@ -133,7 +134,7 @@ jobs:
                           | ReferenceOpcode::OnesLike
                           | ReferenceOpcode::Add""",
           )
-          replace_once(
+          replace_exact(
               "scirust-tensor-reference/src/interpreter.rs",
               """            ReferenceOpcode::ZerosLike =>
                       {
@@ -153,16 +154,8 @@ jobs:
                       },
                       ReferenceOpcode::Scale =>""",
           )
-          replace_once(
-              "scirust-tensor-reference/src/interpreter.rs",
-              """            ReferenceOpcode::ReluGrad
-                      | ReferenceOpcode::OnesLike
-                      | ReferenceOpcode::BroadcastTo""",
-              """            ReferenceOpcode::ReluGrad
-                      | ReferenceOpcode::BroadcastTo""",
-          )
 
-          replace_once(
+          replace_exact(
               "scirust-tensor-reference/src/tests.rs",
               """#[test]
           fn add_generates_the_add_opcode_with_two_operands() {""",
@@ -181,12 +174,12 @@ jobs:
           fn add_generates_the_add_opcode_with_two_operands() {""",
           )
 
-          replace_once(
+          replace_exact(
               "scirust-tensor-runtime/tests/reference_cpu_plan.rs",
               "// The nine supported opcodes",
               "// The ten supported opcodes",
           )
-          replace_once(
+          replace_exact(
               "scirust-tensor-runtime/tests/reference_cpu_plan.rs",
               """#[test]
           fn executes_scale() {""",
