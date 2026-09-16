@@ -34,15 +34,18 @@ capability failure, not a failure of production MorphoDiff.
 ## Why the benchmark is split
 
 The Enzyme lane and the MorphoDiff lane intentionally live in separate
-executables. A combined fat-LTO executable caused the current rustc-distributed
-Enzyme pass to abort inside its LLVM type analysis when it was asked to process
-the much larger SciRust Tensor/Runtime/GPU dependency graph. The minimal Enzyme
-crate avoids turning that upstream implementation limitation into benchmark
-noise and gives Enzyme the small native workload it is supposed to differentiate.
+executables. A combined fat-LTO executable caused the rustc-distributed Enzyme
+pass to abort inside LLVM type analysis when it was asked to process the much
+larger SciRust Tensor/Runtime/GPU dependency graph. The minimal Enzyme crate
+avoids turning that upstream implementation limitation into benchmark noise and
+gives Enzyme the native workload it is supposed to differentiate.
 
-Both lanes run on the same CI runner, use F32, evaluate the same Rosenbrock
-partial derivative `df/dx`, and must independently pass the same analytic
-correctness oracle before timing.
+The lanes share explicit workload contracts and must pass analytic correctness
+oracles before timing. Two contracts are currently exercised:
+
+1. scalar Rosenbrock `df/dx` in F32;
+2. 16x16 matrix objective `L(A,B) = sum(A @ B)`, differentiated with respect to
+   `A` while `B` remains constant.
 
 ## Validate the two lanes
 
@@ -64,14 +67,18 @@ cargo +nightly test --release -p morphodiff-enzyme-native
 ```bash
 RUSTFLAGS="-Zautodiff=Enable" \
 MORPHODIFF_BENCH_ITERS=100000 \
+MORPHODIFF_MATMUL_ITERS=2000 \
 cargo +nightly run --release -p morphodiff-enzyme-native
 ```
 
-This crate has no SciRust dependencies. It reports Enzyme's compiled native
-F32 derivative runtime after validating six Rosenbrock points against the
-analytic derivative.
+The native crate has no SciRust dependencies. It reports Enzyme's compiled F32
+Rosenbrock derivative and the reverse-mode MatMul objective gradient. The MatMul
+lane uses `Duplicated` for `A`, `Const` for `B` and `Active` for the scalar
+result. Because duplicated reverse shadows accumulate by contract, the benchmark
+zeroes the preallocated `dA` shadow before each differentiated call and names the
+reported metric accordingly.
 
-## MorphoDiff reference lanes
+## MorphoDiff scalar reference lanes
 
 ```bash
 MORPHODIFF_BENCH_ITERS=100000 \
@@ -82,21 +89,43 @@ cargo +nightly run --release --bin morphodiff-reference
 This executable builds Rosenbrock as canonical Tensor IR and checks MorphoDiff in
 two independent execution paths:
 
-1. `MorphoDiff::grad` through `Core2ReferenceSession`, including the explicit
-   `OnesLike` gradient seed;
+1. `MorphoDiff::grad` through `Core2ReferenceSession`;
 2. `MorphoDiff::vjp` with an explicit cotangent of one through
-   `ReferenceJitSession<CpuComputeAdapter>`, which performs optimization,
-   logical lowering, reference-kernel generation and backend preparation once
-   before repeated execution.
+   `ReferenceJitSession<CpuComputeAdapter>`.
 
 It reports source/transformed/generated node counts, prepared kernel/dispatch
-counts, MorphoDiff transformation time and both reference execution timings.
+counts, transformation time and both reference execution timings.
 
-Neither MorphoDiff execution number is presented as a native-code speed verdict
-against Enzyme. The executable prints
-`runtime_speed_verdict=not-comparable-until-native-codegen` explicitly. A direct
-runtime ratio becomes meaningful only after a native MorphoDiff CPU codegen lane
-is available.
+## MorphoDiff MatMul reference lane
+
+```bash
+MORPHODIFF_MATMUL_ITERS=2000 \
+MORPHODIFF_MATMUL_TRANSFORM_ITERS=1000 \
+cargo +nightly run --release --bin morphodiff-matmul-reference
+```
+
+This fixture uses the exact same mathematical workload as the Enzyme matrix
+lane: F32 16x16 `sum(A @ B)` with gradients requested only for `A`. MorphoDiff's
+all-one cotangent for the matrix output is mathematically equivalent to the
+scalar sum objective. The transformed graph is optimized and prepared once by
+`ReferenceJitSession<CpuComputeAdapter>` before repeated execution.
+
+The fixture records source/transformed/generated Tensor-IR nodes, compiled
+Reference kernel count, dispatch count, AD transform time and prepared execution
+time. It validates every element of `dA` against the analytic row-repeated column
+sum of `B` before timing.
+
+## Interpreting runtime numbers
+
+The current Enzyme MatMul lane is native LLVM-generated code. The current
+MorphoDiff MatMul lane is a prepared Reference CPU lane: transformation,
+optimization, lowering and kernel preparation are outside the timed execution,
+but it is not yet dedicated native MorphoDiff CPU code generation.
+
+For that reason the CI may display both timings, but no winner or speed ratio is
+claimed. The MorphoDiff executable prints `native_speed_verdict=not-yet-comparable`.
+A direct runtime performance contest starts only after a native CPU codegen lane
+uses the same workload, data, derivative semantics and measurement boundary.
 
 ## Benchmark policy
 
@@ -110,6 +139,5 @@ compiler/LLVM IR. Measurements therefore remain separated into:
 Correctness gates always precede timing. The canonical protocol and benchmark
 ladder are documented in `../../docs/MORPHODIFF.md`.
 
-The next fixtures after scalar Rosenbrock are elementwise tensor chains,
-MatMul/BatchMatMul and an attention microkernel. FLAT-ATTENTION enters the suite
-after those smaller fixtures establish reproducible parity.
+After MatMul/BatchMatMul parity, the next research fixtures are an attention
+microkernel and then FLAT-ATTENTION differentiable kernels.
