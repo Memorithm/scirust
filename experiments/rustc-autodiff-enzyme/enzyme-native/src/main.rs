@@ -86,7 +86,7 @@ fn validate_rosenbrock_correctness() -> Result<(), Box<dyn Error>> {
         let expected = analytic_dx_f32(x, y);
         let actual = enzyme_dx_f32(x, y);
         let tolerance = 2.0e-4 * (1.0 + expected.abs());
-        if (actual - expected).abs() > tolerance {
+        if !actual.is_finite() || !expected.is_finite() || (actual - expected).abs() > tolerance {
             return Err(format!(
                 "Enzyme correctness gate failed at ({x}, {y}): {actual} vs {expected}"
             )
@@ -103,7 +103,10 @@ fn validate_matmul_correctness() -> Result<(), Box<dyn Error>> {
     let primal = enzyme_matmul_grad_a(&a, &b, &mut actual);
     let expected_primal = matmul_sum(&a, &b);
     let primal_tolerance = 2.0e-4 * (1.0 + expected_primal.abs());
-    if (primal - expected_primal).abs() > primal_tolerance {
+    if !primal.is_finite()
+        || !expected_primal.is_finite()
+        || (primal - expected_primal).abs() > primal_tolerance
+    {
         return Err(format!(
             "Enzyme MatMul primal gate failed: {primal} vs {expected_primal}"
         )
@@ -112,7 +115,7 @@ fn validate_matmul_correctness() -> Result<(), Box<dyn Error>> {
 
     for (index, (&got, &want)) in actual.iter().zip(&expected).enumerate() {
         let tolerance = 5.0e-4 * (1.0 + want.abs());
-        if (got - want).abs() > tolerance {
+        if !got.is_finite() || !want.is_finite() || (got - want).abs() > tolerance {
             return Err(format!(
                 "Enzyme MatMul gradient gate failed at A[{index}]: {got} vs {want}"
             )
