@@ -1,0 +1,88 @@
+name: MorphoDiff native CPU
+
+on:
+  pull_request:
+    paths:
+      - "experiments/morphodiff-native-cpu/**"
+      - "experiments/rustc-autodiff-enzyme/enzyme-native/**"
+      - "scirust-tensor-ir/**"
+      - ".github/workflows/morphodiff-native-cpu.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-cpu:
+    name: Native MorphoDiff vs Enzyme
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CARGO_INCREMENTAL: "0"
+      RUST_BACKTRACE: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Install current nightly
+        run: rustup toolchain install nightly --profile minimal
+
+      - name: Install official Enzyme component
+        run: rustup +nightly component add enzyme
+
+      - name: Test native MorphoDiff JIT
+        run: cargo +nightly test --release --manifest-path experiments/morphodiff-native-cpu/Cargo.toml
+
+      - name: Benchmark native MorphoDiff
+        env:
+          MORPHODIFF_NATIVE_ITERS: "1000000"
+          MORPHODIFF_NATIVE_TRANSFORM_ITERS: "2000"
+          MORPHODIFF_NATIVE_COMPILE_ITERS: "50"
+        run: |
+          cargo +nightly run --release \
+            --manifest-path experiments/morphodiff-native-cpu/Cargo.toml \
+            | tee /tmp/morphodiff-native.txt
+
+      - name: Test isolated Enzyme native oracle
+        working-directory: experiments/rustc-autodiff-enzyme
+        env:
+          RUSTFLAGS: "-Zautodiff=Enable"
+        run: cargo +nightly test --release -p morphodiff-enzyme-native
+
+      - name: Benchmark Enzyme with matched call boundary
+        working-directory: experiments/rustc-autodiff-enzyme
+        env:
+          RUSTFLAGS: "-Zautodiff=Enable"
+          MORPHODIFF_BENCH_ITERS: "1000000"
+        run: |
+          cargo +nightly run --release -p morphodiff-enzyme-native \
+            | tee /tmp/enzyme-native.txt
+
+      - name: Report direct native runtime ratio
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def metric(path, key):
+              for line in Path(path).read_text().splitlines():
+                  if line.startswith(key + "="):
+                      return float(line.split("=", 1)[1])
+              raise SystemExit(f"missing {key} in {path}")
+
+          morpho = metric(
+              "/tmp/morphodiff-native.txt",
+              "morphodiff_native_runtime_ns_per_derivative",
+          )
+          enzyme = metric(
+              "/tmp/enzyme-native.txt",
+              "enzyme_native_runtime_ns_per_derivative",
+          )
+          ratio = morpho / enzyme
+          print("comparison=morphodiff-native-vs-enzyme-native")
+          print("measurement_class=single-run-ci-reference")
+          print("call_boundary=non-inlined-extern-c-function-pointer")
+          print(f"morphodiff_native_ns={morpho:.3f}")
+          print(f"enzyme_native_ns={enzyme:.3f}")
+          print(f"morphodiff_over_enzyme_runtime_ratio={ratio:.6f}")
+          print("performance_gate=informational-only")
+          PY
