@@ -37,13 +37,20 @@ jobs:
           cargo +nightly --version
           rustup +nightly component list --installed | grep '^enzyme-'
 
-      - name: Test isolated benchmark workspace
+      - name: Test MorphoDiff reference crate without Enzyme pass
         working-directory: experiments/rustc-autodiff-enzyme
-        run: cargo +nightly test --workspace --release
+        run: cargo +nightly test --release -p scirust-autodiff-enzyme-probe
+
+      - name: Test isolated Enzyme native crate
+        working-directory: experiments/rustc-autodiff-enzyme
+        env:
+          RUSTFLAGS: "-Zautodiff=Enable"
+        run: cargo +nightly test --release -p morphodiff-enzyme-native
 
       - name: Run isolated Enzyme native benchmark
         working-directory: experiments/rustc-autodiff-enzyme
         env:
+          RUSTFLAGS: "-Zautodiff=Enable"
           MORPHODIFF_BENCH_ITERS: "20000"
         run: cargo +nightly run --release -p morphodiff-enzyme-native
 
