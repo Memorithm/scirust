@@ -1,0 +1,62 @@
+name: MorphoDiff Enzyme oracle
+
+on:
+  pull_request:
+    paths:
+      - "experiments/rustc-autodiff-enzyme/**"
+      - "scirust-tensor-ir/**"
+      - "scirust-tensor-core/**"
+      - "scirust-tensor-runtime/**"
+      - ".github/workflows/morphodiff-enzyme.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  enzyme-oracle:
+    name: Enzyme parity and MorphoDiff reference benchmark
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CARGO_INCREMENTAL: "0"
+      RUST_BACKTRACE: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Install current nightly
+        run: rustup toolchain install nightly --profile minimal
+
+      - name: Install official Enzyme component
+        run: rustup +nightly component add enzyme
+
+      - name: Show toolchain metadata
+        run: |
+          rustc +nightly --version --verbose
+          cargo +nightly --version
+          rustup +nightly component list --installed | grep '^enzyme-'
+
+      - name: Test MorphoDiff reference crate without Enzyme pass
+        working-directory: experiments/rustc-autodiff-enzyme
+        run: cargo +nightly test --release -p scirust-autodiff-enzyme-probe
+
+      - name: Test isolated Enzyme native crate
+        working-directory: experiments/rustc-autodiff-enzyme
+        env:
+          RUSTFLAGS: "-Zautodiff=Enable"
+        run: cargo +nightly test --release -p morphodiff-enzyme-native
+
+      - name: Run isolated Enzyme native benchmark
+        working-directory: experiments/rustc-autodiff-enzyme
+        env:
+          RUSTFLAGS: "-Zautodiff=Enable"
+          MORPHODIFF_BENCH_ITERS: "20000"
+        run: cargo +nightly run --release -p morphodiff-enzyme-native
+
+      - name: Run MorphoDiff reference benchmark
+        working-directory: experiments/rustc-autodiff-enzyme
+        env:
+          MORPHODIFF_BENCH_ITERS: "20000"
+          MORPHODIFF_TRANSFORM_ITERS: "1000"
+        run: cargo +nightly run --release --bin morphodiff-reference
