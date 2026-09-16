@@ -166,6 +166,12 @@ pub enum BinaryKernel {
 pub enum KernelFamily {
     ElementwiseUnary(UnaryKernel),
     ElementwiseBinary(BinaryKernel),
+    /// Rank-2 row-major matrix product `[M,K] @ [K,N] -> [M,N]`.
+    MatMul,
+    /// Row-major matrix product over an identical batch prefix.
+    ///
+    /// `[B...,M,K] @ [B...,K,N] -> [B...,M,N]` with rank at least three.
+    BatchMatMul,
     /// Copy preserving the linear element order into a differently shaped
     /// destination — the lowering of `Reshape`.
     ///
@@ -320,7 +326,7 @@ impl LoweredPlan {
         &self.bindings
     }
 
-    /// Plan outputs, in the order declared by the canonical plan.
+    /// Plan outputs, in the order declared by [`ExecutionPlan::outputs`].
     pub fn outputs(&self) -> &[LoweredOutput] {
         &self.outputs
     }
@@ -389,6 +395,10 @@ pub enum LoweringError {
         expected: TensorType,
         actual: TensorType,
     },
+    /// MatMul does not satisfy `[M,K] @ [K,N] -> [M,N]` with one dtype.
+    InvalidMatMul { node: NodeId },
+    /// BatchMatMul does not preserve one identical batch prefix and matrix contract.
+    InvalidBatchMatMul { node: NodeId },
     /// Reshape dtype, element count or declared target shape is inconsistent.
     InvalidReshape { node: NodeId },
     /// Transpose permutation or resulting shape is inconsistent.
@@ -500,6 +510,16 @@ impl fmt::Display for LoweringError {
                     node.get()
                 )
             },
+            Self::InvalidMatMul { node } => write!(
+                formatter,
+                "node {} declares an inconsistent rank-2 MatMul",
+                node.get()
+            ),
+            Self::InvalidBatchMatMul { node } => write!(
+                formatter,
+                "node {} declares an inconsistent BatchMatMul",
+                node.get()
+            ),
             Self::InvalidReshape { node } =>
             {
                 write!(
@@ -846,6 +866,9 @@ fn kernel_family(
             operands,
         ),
 
+        Operation::MatMul => matrix_product(node, instruction, operands, false),
+        Operation::BatchMatMul => matrix_product(node, instruction, operands, true),
+
         Operation::Reshape { shape } =>
         {
             let source = operands.first().ok_or(LoweringError::ArityMismatch {
@@ -884,12 +907,90 @@ fn kernel_family(
             })
         },
 
-        // `MatMul`, `Input`, `Constant` and any operation added later to the
-        // non-exhaustive IR enum are rejected explicitly. No fallback.
+        // Inputs/constants are handled before this function. Any operation added
+        // later to the non-exhaustive IR enum is rejected explicitly: no fallback.
         operation => Err(LoweringError::UnsupportedOperation {
             node,
             operation: operation.clone(),
         }),
+    }
+}
+
+fn matrix_product(
+    node: NodeId,
+    instruction: &Instruction,
+    operands: &[TensorType],
+    batched: bool,
+) -> Result<KernelFamily, LoweringError> {
+    let lhs = operands.first().ok_or(LoweringError::ArityMismatch {
+        node,
+        expected: 2,
+        actual: operands.len(),
+    })?;
+    let rhs = operands.get(1).ok_or(LoweringError::ArityMismatch {
+        node,
+        expected: 2,
+        actual: operands.len(),
+    })?;
+
+    if lhs.dtype != instruction.output.dtype
+    {
+        return Err(LoweringError::OperandTypeMismatch {
+            node,
+            expected: instruction.output.clone(),
+            actual: lhs.clone(),
+        });
+    }
+    if rhs.dtype != instruction.output.dtype
+    {
+        return Err(LoweringError::OperandTypeMismatch {
+            node,
+            expected: instruction.output.clone(),
+            actual: rhs.clone(),
+        });
+    }
+
+    let lhs_dims = lhs.shape.dims();
+    let rhs_dims = rhs.shape.dims();
+    let out_dims = instruction.output.shape.dims();
+
+    if !batched
+    {
+        let valid = lhs_dims.len() == 2
+            && rhs_dims.len() == 2
+            && out_dims.len() == 2
+            && lhs_dims.get(1) == rhs_dims.first()
+            && out_dims.first() == lhs_dims.first()
+            && out_dims.get(1) == rhs_dims.get(1);
+        return if valid
+        {
+            Ok(KernelFamily::MatMul)
+        }
+        else
+        {
+            Err(LoweringError::InvalidMatMul { node })
+        };
+    }
+
+    if lhs_dims.len() < 3 || rhs_dims.len() != lhs_dims.len() || out_dims.len() != lhs_dims.len()
+    {
+        return Err(LoweringError::InvalidBatchMatMul { node });
+    }
+
+    let matrix_axis = lhs_dims.len() - 2;
+    let valid = lhs_dims[..matrix_axis] == rhs_dims[..matrix_axis]
+        && lhs_dims[..matrix_axis] == out_dims[..matrix_axis]
+        && lhs_dims.get(matrix_axis + 1) == rhs_dims.get(matrix_axis)
+        && out_dims.get(matrix_axis) == lhs_dims.get(matrix_axis)
+        && out_dims.get(matrix_axis + 1) == rhs_dims.get(matrix_axis + 1);
+
+    if valid
+    {
+        Ok(KernelFamily::BatchMatMul)
+    }
+    else
+    {
+        Err(LoweringError::InvalidBatchMatMul { node })
     }
 }
 
@@ -1106,7 +1207,6 @@ mod tests {
             ]
         );
 
-        // Read order mirrors `Instruction::inputs` exactly.
         assert_eq!(
             add.arguments[0].source,
             KernelArgumentSource::ExternalInput(LogicalBindingId::new(0))
@@ -1276,41 +1376,103 @@ mod tests {
     }
 
     #[test]
-    fn matmul_is_rejected_as_unsupported() {
+    fn matmul_lowers_to_matrix_product_family() {
         let mut graph = Graph::new();
-        let lhs = graph.add_input("lhs", matrix()).unwrap();
-        let rhs = graph.add_input("rhs", matrix()).unwrap();
+        let lhs = graph.add_input("lhs", typed(vec![2, 3])).unwrap();
+        let rhs = graph.add_input("rhs", typed(vec![3, 4])).unwrap();
         let product = graph
-            .add_node(Operation::MatMul, vec![lhs, rhs], matrix())
+            .add_node(Operation::MatMul, vec![lhs, rhs], typed(vec![2, 4]))
             .unwrap();
         graph.set_outputs(vec![product]).unwrap();
 
         let plan = compile(&graph);
+        let lowered = lower(&plan).unwrap();
+        let instruction = lowered.instruction_for(product).unwrap();
+        assert_eq!(
+            lowered.kernel(instruction.kernel).unwrap().family(),
+            &KernelFamily::MatMul
+        );
+        assert_eq!(instruction.arguments.len(), 3);
+        assert_eq!(instruction.dispatch.extent, Shape::new(vec![2, 4]));
+        assert_eq!(instruction.dispatch.elements, 8);
+    }
+
+    #[test]
+    fn batch_matmul_lowers_to_batched_matrix_product_family() {
+        let mut graph = Graph::new();
+        let lhs = graph.add_input("lhs", typed(vec![5, 2, 3])).unwrap();
+        let rhs = graph.add_input("rhs", typed(vec![5, 3, 4])).unwrap();
+        let product = graph
+            .add_node(
+                Operation::BatchMatMul,
+                vec![lhs, rhs],
+                typed(vec![5, 2, 4]),
+            )
+            .unwrap();
+        graph.set_outputs(vec![product]).unwrap();
+
+        let lowered = lower(&compile(&graph)).unwrap();
+        let instruction = lowered.instruction_for(product).unwrap();
+        assert_eq!(
+            lowered.kernel(instruction.kernel).unwrap().family(),
+            &KernelFamily::BatchMatMul
+        );
+        assert_eq!(instruction.dispatch.elements, 40);
+    }
+
+    #[test]
+    fn invalid_matmul_shape_is_rejected() {
+        let mut graph = Graph::new();
+        let lhs = graph.add_input("lhs", typed(vec![2, 3])).unwrap();
+        let rhs = graph.add_input("rhs", typed(vec![3, 4])).unwrap();
+        let product = graph
+            .add_node(Operation::MatMul, vec![lhs, rhs], typed(vec![2, 5]))
+            .unwrap();
+        graph.set_outputs(vec![product]).unwrap();
 
         assert_eq!(
-            lower(&plan),
-            Err(LoweringError::UnsupportedOperation {
-                node: NodeId::new(2),
-                operation: Operation::MatMul,
+            lower(&compile(&graph)),
+            Err(LoweringError::InvalidMatMul {
+                node: NodeId::new(2)
+            })
+        );
+    }
+
+    #[test]
+    fn invalid_batch_prefix_is_rejected() {
+        let mut graph = Graph::new();
+        let lhs = graph.add_input("lhs", typed(vec![2, 2, 3])).unwrap();
+        let rhs = graph.add_input("rhs", typed(vec![3, 3, 4])).unwrap();
+        let product = graph
+            .add_node(
+                Operation::BatchMatMul,
+                vec![lhs, rhs],
+                typed(vec![2, 2, 4]),
+            )
+            .unwrap();
+        graph.set_outputs(vec![product]).unwrap();
+
+        assert_eq!(
+            lower(&compile(&graph)),
+            Err(LoweringError::InvalidBatchMatMul {
+                node: NodeId::new(2)
             })
         );
     }
 
     #[test]
     fn an_unsupported_operation_has_no_silent_fallback() {
-        // The plan mixes supported operations with one unsupported operation.
-        // Lowering must fail entirely rather than skip, no-op or partially emit.
         let mut graph = Graph::new();
         let lhs = graph.add_input("lhs", matrix()).unwrap();
         let rhs = graph.add_input("rhs", matrix()).unwrap();
         let sum = graph
             .add_node(Operation::Add, vec![lhs, rhs], matrix())
             .unwrap();
-        let product = graph
-            .add_node(Operation::MatMul, vec![sum, rhs], matrix())
+        let stopped = graph
+            .add_node(Operation::StopGradient, vec![sum], matrix())
             .unwrap();
         let activated = graph
-            .add_node(Operation::Relu, vec![product], matrix())
+            .add_node(Operation::Relu, vec![stopped], matrix())
             .unwrap();
         graph.set_outputs(vec![activated]).unwrap();
 
@@ -1352,9 +1514,6 @@ mod tests {
         assert_eq!(plan.stats().eliminated_nodes, 2);
 
         let lowered = lower(&plan).unwrap();
-
-        // Node 3 survives while nodes 1 and 2 are gone: identifiers are not
-        // positions, and nothing may index by `NodeId::get`.
         assert_eq!(lowered.instructions().len(), 1);
         assert_eq!(lowered.instructions()[0].node, NodeId::new(3));
         assert_eq!(
@@ -1382,8 +1541,6 @@ mod tests {
             .add_node(Operation::Exp, vec![input], matrix())
             .unwrap();
 
-        // Declared in reverse construction order, and an external input is an
-        // output too.
         graph.set_outputs(vec![second, first, input]).unwrap();
 
         let plan = compile(&graph);
@@ -1398,7 +1555,6 @@ mod tests {
             vec![second, first, input]
         );
 
-        // An output that is an external input carries no kernel.
         assert_eq!(
             lowered.outputs()[2].source,
             KernelArgumentSource::ExternalInput(LogicalBindingId::new(0))
@@ -1497,8 +1653,6 @@ mod tests {
                 factor: Scalar::f32(0.5),
             })
         );
-
-        // The factor is not an external binding.
         assert_eq!(lowered.bindings().len(), 1);
         assert_eq!(lowered.instructions()[0].arguments.len(), 2);
     }
@@ -1531,8 +1685,6 @@ mod tests {
         assert_eq!(instruction.dispatch.extent, Shape::new(vec![6]));
         assert_eq!(instruction.dispatch.elements, 6);
         assert_eq!(instruction.arguments.len(), 2);
-
-        // The result is written into the distinct slot the memory plan reserved.
         assert_eq!(
             instruction.arguments[1].source,
             KernelArgumentSource::Buffer(BufferSlot::new(0))
@@ -1544,7 +1696,6 @@ mod tests {
         let mut graph = Graph::new();
 
         let input = graph.add_input("x", typed(vec![2, 3])).unwrap();
-        // Six elements cannot be reshaped into three.
         let reshaped = graph
             .add_node(
                 Operation::Reshape {
@@ -1572,8 +1723,6 @@ mod tests {
         let mut graph = Graph::new();
 
         let input = graph.add_input("x", typed(vec![2, 3])).unwrap();
-        // The element count matches, but the declared output shape does not
-        // match the shape carried by the operation.
         let reshaped = graph
             .add_node(
                 Operation::Reshape {
@@ -1659,8 +1808,6 @@ mod tests {
         let mut graph = Graph::new();
 
         let input = graph.add_input("x", typed(vec![2, 3])).unwrap();
-        // Under `output.shape[i] == input.shape[permutation[i]]` the result must
-        // be `[3, 2]`, not `[2, 3]`.
         let transposed = graph
             .add_node(
                 Operation::Transpose {
@@ -1687,8 +1834,6 @@ mod tests {
     fn operand_type_mismatch_is_rejected() {
         let mut graph = Graph::new();
 
-        // `Graph::validate` checks arity and reference direction only, so this
-        // inconsistent graph reaches the lowerer.
         let lhs = graph.add_input("lhs", typed(vec![2, 2])).unwrap();
         let rhs = graph.add_input("rhs", typed(vec![3, 3])).unwrap();
         let sum = graph
@@ -1733,7 +1878,6 @@ mod tests {
         assert_eq!(add.arguments[0].access, KernelArgumentAccess::Read);
         assert_eq!(add.arguments[1].access, KernelArgumentAccess::Read);
 
-        // No supported family ever needs read-write access.
         assert!(
             add.arguments
                 .iter()
