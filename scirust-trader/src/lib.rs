@@ -52,6 +52,7 @@ pub mod advanced_indicators;
 pub mod agent;
 pub mod arbitrage;
 pub mod backtest;
+pub mod backtest_performance;
 pub mod basis;
 pub mod basket_rebalance;
 pub mod certify;
