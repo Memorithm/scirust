@@ -283,27 +283,32 @@ agent_operating_protocol:
     representation-format, or merge decision. Read-only diagnosis is allowed.
 
 research_engine_statistics_bridge_2026_09_16:
-  status: implemented_non_final_pending_exact_head_ci_and_integration
+  status: implemented_non_final_pending_exact_head_ci_and_final_dependency_pin
   contract: scirust-research-stats-json/v1
   numerical_owner: Memorithm/scirust
   protocol_and_report_owner: Memorithm/TDI
   source_pull_request: https://github.com/Memorithm/scirust/pull/1452
-  source_revision: 052da3e48a5bd95f3ef252a2c5ecbb5cfcf5132c
-  consumer_pull_request: https://github.com/Memorithm/TDI/pull/296
-  consumer_revision: c32119958f817d5a9f89eeb7834060e00760da66
+  source_revision: fdd4cf626e9171c935af05f6344e62c41766a365
+  merged_consumer_pull_request: https://github.com/Memorithm/TDI/pull/296
+  merged_consumer_revision: 29294e801234e858e122bf32ed694acbb3190d54
+  current_consumer_dependency_pin: 06c9eaef248c0f40b7d363c16a7b4c1c1c54a5a0
+  sensitivity_consumer_pull_request: https://github.com/Memorithm/TDI/pull/387
+  sensitivity_consumer_revision: 54dff997ede3b948b420ab0c021af2933334ad63
   implemented:
-    - bounded_paired_mean_percentile_bootstrap_and_Holm_adjustment
-    - bounded_Morris_elementary_effects_and_Saltelli_2010_first_total_Sobol
-    - TDI_declared_equal_weight_units_paired_repeats_exclusions_and_provenance_reports
-    - actual_Hub_Rust_counter_catalogue_SciRust_process_CLI_consumer
+    - paired_mean_percentile_bootstrap_with_compensated_mean_and_Holm_adjustment
+    - bounded_Morris_effects_and_Saltelli_2010_first_total_Sobol
+    - explicit_TDI_units_paired_repeats_exclusions_and_provenance
+    - deterministic_SALib_1_5_2_sampling_and_declared_ablation_plans
+    - actual_Hub_analytic_batches_with_frozen_response_component_and_coordinate_binding
+    - actual_Rust_SciRust_process_consumption_and_independent_SALib_SciPy_references
   local_evidence:
-    - 139_SciRust_unit_property_tests_and_35_doctests_pass
-    - SciRust_stats_all_target_clippy_and_pinned_nightly_formatter_pass
+    - SciRust_stats_Rust_1_89_tests_docs_clippy_and_pinned_formatter_pass
     - independent_SciPy_1_18_1_and_SALib_1_5_2_synthetic_differentials_pass
-    - six_TDI_protocol_analysis_and_actual_consumer_tests_pass
-  limitations:
-    - final_consumer_source_pin_must_follow_reviewed_and_CI_qualified_upstream_revision
-    - no_universal_bootstrap_coverage_or_cross_platform_bitwise_claim
-    - no_hardware_performance_or_ML_maturity_score_increase
-    - source_revision_declaration_is_not_a_reproducible_build_attestation
-    - all_frozen_TDI_stage_and_protected_payload_boundaries_remain_in_force
+    - fourteen_TDI_sensitivity_paired_analysis_and_real_Hub_test_methods_pass
+    - altered_Hub_coordinates_and_response_function_are_executed_then_rejected_by_collection
+  qualification_limits:
+    - merged_TDI_296_does_not_establish_final_integration_qualification
+    - final_SciRust_merge_pin_and_each_consumer_exact_head_gates_are_still_required
+    - queued_pending_or_unrelated_SHA_checks_are_not_success_evidence
+    - source_declarations_and_observed_binary_hashes_are_not_build_attestations
+    - no_final_research_model_hardware_performance_or_ML_maturity_promotion
