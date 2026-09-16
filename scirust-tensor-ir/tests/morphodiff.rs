@@ -14,11 +14,7 @@ fn public_morphodiff_vjp_differentiates_matmul() {
     let lhs = graph.add_input("lhs", matrix_type(2, 3)).unwrap();
     let rhs = graph.add_input("rhs", matrix_type(3, 4)).unwrap();
     let output = graph
-        .add_node(
-            Operation::MatMul,
-            vec![lhs, rhs],
-            matrix_type(2, 4),
-        )
+        .add_node(Operation::MatMul, vec![lhs, rhs], matrix_type(2, 4))
         .unwrap();
     graph.set_outputs(vec![output]).unwrap();
 
