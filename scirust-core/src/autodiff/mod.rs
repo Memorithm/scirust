@@ -3,6 +3,7 @@ pub mod mixed_precision;
 pub mod nd;
 pub mod optim;
 pub mod parallel;
+pub mod parallel_access;
 pub mod reverse;
 pub mod scheduler;
 #[cfg(test)]
