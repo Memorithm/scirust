@@ -1,0 +1,36 @@
+name: Research statistics reference qualification
+on:
+  pull_request:
+    paths: ['scirust-stats/**', 'scirust-special/**', 'Cargo.*', 'scripts/check-research-stats-reference.py', 'scripts/requirements-research-stats.txt', 'docs/RESEARCH_STATISTICS.md', '.github/workflows/research-stats.yml']
+  push:
+    branches: [master]
+    paths: ['scirust-stats/**', 'scirust-special/**', 'Cargo.*', 'scripts/check-research-stats-reference.py', 'scripts/requirements-research-stats.txt', 'docs/RESEARCH_STATISTICS.md', '.github/workflows/research-stats.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: research-stats-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  reference:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '2'
+      RUSTFLAGS: '-C debuginfo=0'
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: 1.89.0
+          components: clippy
+      - run: cargo test --locked -p scirust-stats
+      - run: cargo clippy --locked -p scirust-stats --all-targets -- -D warnings
+      - run: cargo build --locked -p scirust-stats --example research_stats
+      - name: Independent pinned Python references
+        run: |
+          python3 -m venv .research-reference
+          .research-reference/bin/pip install -r scripts/requirements-research-stats.txt
+          .research-reference/bin/python scripts/check-research-stats-reference.py --worker target/debug/examples/research_stats
