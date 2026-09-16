@@ -1,7 +1,7 @@
 schema_version: 1
 kind: scirust_ecosystem_agent_roadmap
 status: active
-last_updated: "2026-08-31"
+last_updated: "2026-09-16"
 repository: Memorithm/scirust
 intended_consumer: autonomous_coding_agent
 visibility_note: >-
@@ -281,3 +281,29 @@ agent_operating_protocol:
     If this roadmap cannot be fetched or read, an autonomous agent must not make
     a major architecture, shared-contract, cross-repository promotion,
     representation-format, or merge decision. Read-only diagnosis is allowed.
+
+research_engine_statistics_bridge_2026_09_16:
+  status: implemented_non_final_pending_exact_head_ci_and_integration
+  contract: scirust-research-stats-json/v1
+  numerical_owner: Memorithm/scirust
+  protocol_and_report_owner: Memorithm/TDI
+  source_pull_request: https://github.com/Memorithm/scirust/pull/1452
+  source_revision: 052da3e48a5bd95f3ef252a2c5ecbb5cfcf5132c
+  consumer_pull_request: https://github.com/Memorithm/TDI/pull/296
+  consumer_revision: c32119958f817d5a9f89eeb7834060e00760da66
+  implemented:
+    - bounded_paired_mean_percentile_bootstrap_and_Holm_adjustment
+    - bounded_Morris_elementary_effects_and_Saltelli_2010_first_total_Sobol
+    - TDI_declared_equal_weight_units_paired_repeats_exclusions_and_provenance_reports
+    - actual_Hub_Rust_counter_catalogue_SciRust_process_CLI_consumer
+  local_evidence:
+    - 139_SciRust_unit_property_tests_and_35_doctests_pass
+    - SciRust_stats_all_target_clippy_and_pinned_nightly_formatter_pass
+    - independent_SciPy_1_18_1_and_SALib_1_5_2_synthetic_differentials_pass
+    - six_TDI_protocol_analysis_and_actual_consumer_tests_pass
+  limitations:
+    - final_consumer_source_pin_must_follow_reviewed_and_CI_qualified_upstream_revision
+    - no_universal_bootstrap_coverage_or_cross_platform_bitwise_claim
+    - no_hardware_performance_or_ML_maturity_score_increase
+    - source_revision_declaration_is_not_a_reproducible_build_attestation
+    - all_frozen_TDI_stage_and_protected_payload_boundaries_remain_in_force
