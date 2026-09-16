@@ -207,6 +207,7 @@ fn opcode_for_family(
             UnaryKernel::Exp => Ok((ReferenceOpcode::Exp, AttributeSource::None)),
             UnaryKernel::Log => Ok((ReferenceOpcode::Log, AttributeSource::None)),
             UnaryKernel::ZerosLike => Ok((ReferenceOpcode::ZerosLike, AttributeSource::None)),
+            UnaryKernel::OnesLike => Ok((ReferenceOpcode::OnesLike, AttributeSource::None)),
             UnaryKernel::Scale { factor } => Ok((
                 ReferenceOpcode::Scale,
                 AttributeSource::Scale {

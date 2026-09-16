@@ -146,6 +146,7 @@ pub enum UnaryKernel {
     Exp,
     Log,
     ZerosLike,
+    OnesLike,
     Scale { factor: Scalar },
 }
 
@@ -837,6 +838,7 @@ fn kernel_family(
         Operation::Exp => uniform_unary(node, UnaryKernel::Exp, instruction, operands),
         Operation::Log => uniform_unary(node, UnaryKernel::Log, instruction, operands),
         Operation::ZerosLike => uniform_unary(node, UnaryKernel::ZerosLike, instruction, operands),
+        Operation::OnesLike => uniform_unary(node, UnaryKernel::OnesLike, instruction, operands),
         Operation::Scale { factor } => uniform_unary(
             node,
             UnaryKernel::Scale { factor: *factor },
