@@ -102,7 +102,7 @@ fn run_binary(op: Operation, dims: Vec<usize>, left: &[f32], right: &[f32]) -> V
 }
 
 // ---------------------------------------------------------------------------
-// The nine supported opcodes
+// Reference opcodes
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -1066,27 +1066,24 @@ fn a_non_f32_input_is_rejected() {
 }
 
 #[test]
-fn matmul_is_rejected_by_the_lowerer() {
-    let ty = f32_type(vec![2, 2]);
+fn matmul_executes_through_graph_session() {
     let mut graph = Graph::new();
-    let lhs = graph.add_input("a", ty.clone()).unwrap();
-    let rhs = graph.add_input("b", ty.clone()).unwrap();
+    let lhs = graph.add_input("a", f32_type(vec![2, 3])).unwrap();
+    let rhs = graph.add_input("b", f32_type(vec![3, 2])).unwrap();
     let product = graph
-        .add_node(Operation::MatMul, vec![lhs, rhs], ty)
+        .add_node(Operation::MatMul, vec![lhs, rhs], f32_type(vec![2, 2]))
         .unwrap();
     graph.set_outputs(vec![product]).unwrap();
 
-    assert_eq!(
-        try_session(&graph, &GraphConstants::new()).err(),
-        Some(GraphSessionPreparationError::CompilerPipeline {
-            source: CompilerPipelineError::Lowering(CompilerIrLoweringError::Lowering(
-                LoweringError::UnsupportedOperation {
-                    node: product,
-                    operation: Operation::MatMul,
-                },
-            )),
-        })
-    );
+    let session = try_session(&graph, &GraphConstants::new()).expect("MatMul must prepare");
+    let left = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+    let right = [7.0f32, 8.0, 9.0, 10.0, 11.0, 12.0];
+    let mut inputs = GraphInputs::new();
+    inputs.bind(lhs, &left).bind(rhs, &right);
+
+    let outputs = session.execute(&inputs).expect("MatMul must execute");
+    assert_eq!(outputs.len(), 1);
+    assert_eq!(outputs.into_values()[0].values, vec![58.0, 64.0, 139.0, 154.0]);
 }
 
 #[test]
