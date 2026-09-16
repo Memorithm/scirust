@@ -5,7 +5,7 @@ use std::error::Error;
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
-const DEFAULT_RUNTIME_ITERS: usize = 100_000;
+const DEFAULT_RUNTIME_ITERS: usize = 1_000_000;
 
 #[autodiff_forward(rosenbrock_forward_x_f32, Dual, Const, Dual)]
 fn rosenbrock_f32(x: f32, y: f32) -> f32 {
@@ -14,7 +14,12 @@ fn rosenbrock_f32(x: f32, y: f32) -> f32 {
     one_minus_x * one_minus_x + 100.0 * residual * residual
 }
 
-fn enzyme_dx_f32(x: f32, y: f32) -> f32 {
+/// Keep the runtime benchmark at the same non-inlined C-ABI call boundary used
+/// by the Cranelift MorphoDiff lane. Otherwise LLVM could inline Enzyme's tiny
+/// derivative into the timing loop while a JIT function pointer cannot be
+/// inlined, which would bias a scalar microbenchmark.
+#[inline(never)]
+extern "C" fn enzyme_dx_f32(x: f32, y: f32) -> f32 {
     let (_value, derivative) = rosenbrock_forward_x_f32(x, 1.0, y);
     derivative
 }
@@ -48,10 +53,11 @@ fn validate_correctness() -> Result<(), Box<dyn Error>> {
 }
 
 fn bench(iterations: usize) -> Duration {
+    let entry: extern "C" fn(f32, f32) -> f32 = black_box(enzyme_dx_f32);
     let start = Instant::now();
     let mut sink = 0.0f32;
     for _ in 0..iterations {
-        sink = black_box(sink + enzyme_dx_f32(black_box(3.0), black_box(1.0)));
+        sink = black_box(sink + entry(black_box(3.0), black_box(1.0)));
     }
     black_box(sink);
     start.elapsed()
@@ -73,12 +79,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     let iterations = env_iterations("MORPHODIFF_BENCH_ITERS", DEFAULT_RUNTIME_ITERS);
     validate_correctness()?;
 
-    for _ in 0..1_000 {
-        black_box(enzyme_dx_f32(3.0, 1.0));
+    let entry: extern "C" fn(f32, f32) -> f32 = black_box(enzyme_dx_f32);
+    for _ in 0..10_000 {
+        black_box(entry(black_box(3.0), black_box(1.0)));
     }
 
     let elapsed = bench(iterations);
-    println!("benchmark=morphodiff-enzyme-native-v1");
+    println!("benchmark=morphodiff-enzyme-native-v2");
+    println!("call_boundary=non-inlined-extern-c-function-pointer");
     println!("dtype=f32");
     println!("correctness_gate=passed");
     println!("runtime_iterations={iterations}");
