@@ -10,3 +10,6 @@ publish = false
 
 [dependencies]
 scirust-autodiff = { path = "../../scirust-autodiff" }
+scirust-tensor-core = { path = "../../scirust-tensor-core" }
+scirust-tensor-ir = { path = "../../scirust-tensor-ir" }
+scirust-tensor-runtime = { path = "../../scirust-tensor-runtime" }
