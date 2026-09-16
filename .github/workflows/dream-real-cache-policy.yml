@@ -41,6 +41,9 @@ jobs:
       - internal
 
     timeout-minutes: 360
+    defaults:
+      run:
+        working-directory: ci-dream-real
 
     env:
       PYTHONUNBUFFERED: "1"
@@ -50,6 +53,7 @@ jobs:
 
     steps:
       - name: Initialize shared cache paths after runner assignment
+        working-directory: ${{ github.workspace }}
         env:
           HF_HOME: ${{ runner.tool_cache }}/huggingface
           PIP_CACHE_DIR: ${{ runner.tool_cache }}/pip
@@ -60,6 +64,7 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           persist-credentials: false
+          path: ci-dream-real
 
       - name: Report native GPU environment
         run: |
@@ -110,7 +115,7 @@ jobs:
 
       - name: Run real Dream held-out smoke benchmark
         env:
-          PYTHONPATH: ${{ github.workspace }}/.external/elastic-cache/dream
+          PYTHONPATH: ${{ github.workspace }}/ci-dream-real/.external/elastic-cache/dream
         run: |
           mkdir -p artifacts/dream-real
           .venv-dream-real/bin/python \
@@ -154,4 +159,4 @@ jobs:
           name: dream-real-cache-policy-${{ github.sha }}
           if-no-files-found: warn
           retention-days: 14
-          path: artifacts/dream-real/
+          path: ci-dream-real/artifacts/dream-real/

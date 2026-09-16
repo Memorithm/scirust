@@ -66,6 +66,9 @@ jobs:
       - jetson-thor
       - internal
     timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: ci-native-arm64
     env:
       RUST_BACKTRACE: 1
       CARGO_INCREMENTAL: 0
@@ -74,6 +77,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          path: ci-native-arm64
       - name: Display native runner information
         run: |
           uname -a
@@ -97,6 +102,7 @@ jobs:
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
         with:
           shared-key: native-arm64-jetson-thor
+          workspaces: ci-native-arm64 -> target
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Test fractional calculus
