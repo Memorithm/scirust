@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - research/morphodiff-oneslike
+  pull_request:
+    branches:
+      - master
 
 permissions:
   contents: write
