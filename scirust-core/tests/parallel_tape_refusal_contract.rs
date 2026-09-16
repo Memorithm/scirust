@@ -50,11 +50,11 @@ fn flash_attention_backward_is_refused_not_silently_zeroed() {
 #[should_panic(expected = "Conv2dTranspose backward is not available on ParallelTape")]
 fn conv2d_transpose_backward_is_refused_not_silently_zeroed() {
     let tape = ParallelTape::new();
-    let input = input(&tape);
+    let input_node = input(&tape);
     let weight = input(&tape);
     let output = tape.alloc_node(Node {
         op: Op::Conv2dTransposeForward {
-            input,
+            input: input_node,
             weight,
             bias: None,
             batch: 1,
