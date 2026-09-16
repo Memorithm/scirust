@@ -1,4 +1,4 @@
-//! Fallible public accessors for [`ParallelTape`](super::parallel::ParallelTape).
+//! Fallible public accessors for [`ParallelTape`].
 //!
 //! The historical `ParallelTape` compatibility methods intentionally keep their
 //! panic behavior. This module adds typed index/shape validation without changing
@@ -73,13 +73,13 @@ impl ParallelTape {
     /// use scirust_core::autodiff::parallel_access::ParallelTapeAccessError;
     ///
     /// let tape = ParallelTape::new();
-    /// assert_eq!(
+    /// assert!(matches!(
     ///     tape.try_value(0),
     ///     Err(ParallelTapeAccessError::NodeOutOfBounds {
     ///         index: 0,
     ///         node_count: 0,
     ///     })
-    /// );
+    /// ));
     /// ```
     pub fn try_value(&self, idx: usize) -> Result<Tensor, ParallelTapeAccessError> {
         let node_count = self.num_nodes();
@@ -164,13 +164,13 @@ mod tests {
         });
 
         assert_eq!(tape.num_nodes(), 1);
-        assert_eq!(
+        assert!(matches!(
             tape.try_value(1),
             Err(ParallelTapeAccessError::NodeOutOfBounds {
                 index: 1,
                 node_count: 1,
             })
-        );
+        ));
         assert_eq!(
             tape.try_set_value(x, &[1.0]),
             Err(ParallelTapeAccessError::ValueLengthMismatch {
