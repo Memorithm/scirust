@@ -7,8 +7,8 @@
 use alloc::{vec, vec::Vec};
 
 use crate::{
-    AutodiffError, GradGraph, Graph, JvpGraph, NodeId, VjpGraph, grad, jvp,
-    validate_semantics, value_and_grad, vjp,
+    AutodiffError, GradGraph, Graph, JvpGraph, NodeId, VjpGraph, grad, jvp, validate_semantics,
+    value_and_grad, vjp,
 };
 
 /// Stable engine name used by diagnostics and benchmark reports.
@@ -72,8 +72,10 @@ impl MorphoDiff {
     ) -> Result<MorphoDiffProgram, AutodiffError> {
         let source_nodes = source.nodes().len();
 
-        let (graph, primal_output, derivative_outputs, seed_inputs) = match mode {
-            MorphoDiffMode::ForwardJvp => {
+        let (graph, primal_output, derivative_outputs, seed_inputs) = match mode
+        {
+            MorphoDiffMode::ForwardJvp =>
+            {
                 let JvpGraph {
                     graph,
                     primal_output,
@@ -81,8 +83,9 @@ impl MorphoDiff {
                     tangent_inputs,
                 } = jvp(source, output, wrt)?;
                 (graph, primal_output, vec![tangent_output], tangent_inputs)
-            }
-            MorphoDiffMode::ReverseVjp => {
+            },
+            MorphoDiffMode::ReverseVjp =>
+            {
                 let VjpGraph {
                     graph,
                     primal_output,
@@ -90,23 +93,25 @@ impl MorphoDiff {
                     gradients,
                 } = vjp(source, output, wrt)?;
                 (graph, primal_output, gradients, vec![cotangent_input])
-            }
-            MorphoDiffMode::ReverseGrad => {
+            },
+            MorphoDiffMode::ReverseGrad =>
+            {
                 let GradGraph {
                     graph,
                     primal_output,
                     gradients,
                 } = grad(source, output, wrt)?;
                 (graph, primal_output, gradients, Vec::new())
-            }
-            MorphoDiffMode::ReverseValueAndGrad => {
+            },
+            MorphoDiffMode::ReverseValueAndGrad =>
+            {
                 let GradGraph {
                     graph,
                     primal_output,
                     gradients,
                 } = value_and_grad(source, output, wrt)?;
                 (graph, primal_output, gradients, Vec::new())
-            }
+            },
         };
 
         graph.validate()?;
@@ -178,12 +183,7 @@ impl MorphoDiff {
         output: NodeId,
         wrt: &[NodeId],
     ) -> Result<MorphoDiffProgram, AutodiffError> {
-        Self::transform(
-            source,
-            output,
-            wrt,
-            MorphoDiffMode::ReverseValueAndGrad,
-        )
+        Self::transform(source, output, wrt, MorphoDiffMode::ReverseValueAndGrad)
     }
 }
 
@@ -248,7 +248,10 @@ mod tests {
         assert_eq!(program.mode, MorphoDiffMode::ReverseGrad);
         assert!(program.seed_inputs.is_empty());
         assert_eq!(program.derivative_outputs.len(), 1);
-        assert_eq!(program.graph.outputs(), program.derivative_outputs.as_slice());
+        assert_eq!(
+            program.graph.outputs(),
+            program.derivative_outputs.as_slice()
+        );
     }
 
     #[test]
@@ -258,6 +261,9 @@ mod tests {
 
         assert_eq!(program.mode, MorphoDiffMode::ReverseValueAndGrad);
         assert_eq!(program.graph.outputs()[0], program.primal_output);
-        assert_eq!(&program.graph.outputs()[1..], program.derivative_outputs.as_slice());
+        assert_eq!(
+            &program.graph.outputs()[1..],
+            program.derivative_outputs.as_slice()
+        );
     }
 }
