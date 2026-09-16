@@ -34,7 +34,8 @@ pub fn try_run_backtest_with_convention(
 ) -> Result<BacktestReport, PerformanceConventionError> {
     let interval_convention = PerformanceConvention::for_crypto_interval(&cfg.interval, 0.0, 0.0)?;
     let expected_periods = interval_convention.periods_per_year();
-    if !annualisation_matches(expected_periods, convention.periods_per_year()) {
+    if !annualisation_matches(expected_periods, convention.periods_per_year())
+    {
         return Err(PerformanceConventionError::InvalidPeriodsPerYear(
             convention.periods_per_year(),
         ));
@@ -79,13 +80,18 @@ mod tests {
         let report =
             try_run_backtest_with_convention(&Momentum::default(), &[], &cfg, supplied).unwrap();
 
-        assert_eq!(report.performance.periods_per_year, expected.periods_per_year());
+        assert_eq!(
+            report.performance.periods_per_year,
+            expected.periods_per_year()
+        );
     }
 
     #[test]
     fn convention_must_match_declared_interval_annualisation() {
         let cfg = BacktestConfig::default();
         let convention = PerformanceConvention::for_crypto_interval("1d", 0.0, 0.0).unwrap();
-        assert!(try_run_backtest_with_convention(&Momentum::default(), &[], &cfg, convention).is_err());
+        assert!(
+            try_run_backtest_with_convention(&Momentum::default(), &[], &cfg, convention).is_err()
+        );
     }
 }
