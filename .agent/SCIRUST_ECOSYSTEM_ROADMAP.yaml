@@ -288,7 +288,7 @@ research_engine_statistics_bridge_2026_09_16:
   numerical_owner: Memorithm/scirust
   protocol_and_report_owner: Memorithm/TDI
   source_pull_request: https://github.com/Memorithm/scirust/pull/1452
-  source_revision: fdd4cf626e9171c935af05f6344e62c41766a365
+  source_revision: 7981120d9b703a5d82796608e7565e3763d8c611
   merged_consumer_pull_request: https://github.com/Memorithm/TDI/pull/296
   merged_consumer_revision: 29294e801234e858e122bf32ed694acbb3190d54
   current_consumer_dependency_pin: 06c9eaef248c0f40b7d363c16a7b4c1c1c54a5a0
@@ -312,3 +312,25 @@ research_engine_statistics_bridge_2026_09_16:
     - queued_pending_or_unrelated_SHA_checks_are_not_success_evidence
     - source_declarations_and_observed_binary_hashes_are_not_build_attestations
     - no_final_research_model_hardware_performance_or_ML_maturity_promotion
+
+research_engine_integrated_consumer_2026_09_16:
+  status: implemented_public_software_candidate_not_release_qualified
+  consumer_pull_request: https://github.com/Memorithm/TDI/pull/413
+  consumer_revision: cabb0b5ab2c6ad2c45121134bbeffa4c822ef028
+  public_software_evidence: 70_actual_process_integration_tests_passed_locally
+  source_build_attestation: false
+  hardware_execution_performed: false
+  final_or_blocked_model_authorization: false
+  exact_head_ci: pending
+  authority: no_existing_stage_default_backend_or_maturity_promotion
+  current_consumer_dependency_pin: 06c9eaef248c0f40b7d363c16a7b4c1c1c54a5a0
+  source_pull_request: https://github.com/Memorithm/scirust/pull/1452
+  current_source_head: 7981120d9b703a5d82796608e7565e3763d8c611
+  source_ci_observation:
+    success: 7
+    queued: 36
+    failure: 1
+    failed_job: 104986183960
+    failure_diagnostic: CUBLAS_STATUS_NOT_INITIALIZED_at_cublasLtMatmulAlgoGetHeuristic
+  integration_scope: paired_statistics_sensitivity_and_actual_report_exports
+  next: qualify_upstream_then_pin_actual_merge_SHA_and_requalify_TDI
