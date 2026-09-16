@@ -62,6 +62,7 @@ jobs:
         run: |
           printf 'HF_HOME=%s\n' "$HF_HOME" >> "$GITHUB_ENV"
           printf 'PIP_CACHE_DIR=%s\n' "$PIP_CACHE_DIR" >> "$GITHUB_ENV"
+
       - name: Check out SciRust
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
@@ -129,8 +130,12 @@ jobs:
           .venv-dream-real/bin/python \
             experiments/elastic-cache-policy/real/dream/patch_elastic_cache.py \
             .external/elastic-cache
+          .venv-dream-real/bin/python \
+            experiments/elastic-cache-policy/real/dream/patch_thor_rope_compat.py \
+            .external/elastic-cache
           .venv-dream-real/bin/python -m py_compile \
             .external/elastic-cache/dream/model/modeling_dream.py \
+            experiments/elastic-cache-policy/real/dream/patch_thor_rope_compat.py \
             experiments/elastic-cache-policy/real/dream/benchmark_real_dream.py
 
       - name: Run real Dream held-out smoke benchmark
