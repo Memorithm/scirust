@@ -189,12 +189,13 @@ enum AttributeSource {
 
 /// Maps a lowered kernel family to its Reference opcode and attribute source.
 ///
-/// `MatMul` never reaches this function: `scirust_tensor_compile`'s lowering
-/// phase rejects it before a `LoweredPlan` can exist. Any kernel family this
-/// match does not recognise — including one a future, currently
-/// non-exhaustive addition to `KernelFamily`, `UnaryKernel` or `BinaryKernel`
-/// might introduce — is rejected explicitly; there is no wildcard fallback
-/// that treats an unrecognised family as any existing opcode.
+/// Matrix products carry their complete shape contract in the logical kernel's
+/// operand/result tensor types, so the stable Reference opcodes need no extra
+/// attribute payload. Any kernel family this match does not recognise —
+/// including one a future, currently non-exhaustive addition to `KernelFamily`,
+/// `UnaryKernel` or `BinaryKernel` might introduce — is rejected explicitly;
+/// there is no wildcard fallback that treats an unrecognised family as any
+/// existing opcode.
 fn opcode_for_family(
     family: &KernelFamily,
     kernel: LogicalKernelId,
@@ -225,6 +226,8 @@ fn opcode_for_family(
             BinaryKernel::Div => Ok((ReferenceOpcode::Div, AttributeSource::None)),
             _ => Err(ReferenceGenerationError::UnsupportedKernelFamily { kernel }),
         },
+        KernelFamily::MatMul => Ok((ReferenceOpcode::MatMul, AttributeSource::None)),
+        KernelFamily::BatchMatMul => Ok((ReferenceOpcode::BatchMatMul, AttributeSource::None)),
         KernelFamily::ShapeCopy => Ok((ReferenceOpcode::ShapeCopy, AttributeSource::None)),
         KernelFamily::Permute { permutation } => Ok((
             ReferenceOpcode::Permute,
