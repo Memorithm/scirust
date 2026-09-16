@@ -1,0 +1,233 @@
+name: MorphoDiff OnesLike bootstrap
+
+on:
+  push:
+    branches:
+      - research/morphodiff-oneslike
+
+permissions:
+  contents: write
+
+concurrency:
+  group: morphodiff-oneslike-bootstrap
+  cancel-in-progress: false
+
+jobs:
+  patch-test-commit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: research/morphodiff-oneslike
+          fetch-depth: 0
+
+      - name: Apply strict OnesLike pipeline patch
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected one replacement target, found {count}")
+              p.write_text(text.replace(old, new, 1))
+
+          replace_once(
+              "scirust-tensor-compile/src/lowering.rs",
+              """pub enum UnaryKernel {
+              Relu,
+              Exp,
+              Log,
+              ZerosLike,
+              Scale { factor: Scalar },
+          }""",
+              """pub enum UnaryKernel {
+              Relu,
+              Exp,
+              Log,
+              ZerosLike,
+              OnesLike,
+              Scale { factor: Scalar },
+          }""",
+          )
+
+          replace_once(
+              "scirust-tensor-compile/src/lowering.rs",
+              """        Operation::ZerosLike => uniform_unary(node, UnaryKernel::ZerosLike, instruction, operands),
+                  Operation::Scale { factor } => uniform_unary(""",
+              """        Operation::ZerosLike => uniform_unary(node, UnaryKernel::ZerosLike, instruction, operands),
+                  Operation::OnesLike => uniform_unary(node, UnaryKernel::OnesLike, instruction, operands),
+                  Operation::Scale { factor } => uniform_unary(""",
+          )
+
+          replace_once(
+              "scirust-tensor-reference/src/generator.rs",
+              """            UnaryKernel::ZerosLike => Ok((ReferenceOpcode::ZerosLike, AttributeSource::None)),
+                      UnaryKernel::Scale { factor } => Ok((""",
+              """            UnaryKernel::ZerosLike => Ok((ReferenceOpcode::ZerosLike, AttributeSource::None)),
+                      UnaryKernel::OnesLike => Ok((ReferenceOpcode::OnesLike, AttributeSource::None)),
+                      UnaryKernel::Scale { factor } => Ok((""",
+          )
+
+          replace_once(
+              "scirust-tensor-reference/src/invocation.rs",
+              """        ReferenceOpcode::Relu
+                  | ReferenceOpcode::ZerosLike
+                  | ReferenceOpcode::Scale""",
+              """        ReferenceOpcode::Relu
+                  | ReferenceOpcode::ZerosLike
+                  | ReferenceOpcode::OnesLike
+                  | ReferenceOpcode::Scale""",
+          )
+          replace_once(
+              "scirust-tensor-reference/src/invocation.rs",
+              """        ReferenceOpcode::ReluGrad
+                  | ReferenceOpcode::OnesLike
+                  | ReferenceOpcode::BroadcastTo""",
+              """        ReferenceOpcode::ReluGrad
+                  | ReferenceOpcode::BroadcastTo""",
+          )
+          replace_once(
+              "scirust-tensor-reference/src/invocation.rs",
+              """                ReferenceOpcode::Relu
+                              | ReferenceOpcode::ZerosLike
+                              | ReferenceOpcode::Add""",
+              """                ReferenceOpcode::Relu
+                              | ReferenceOpcode::ZerosLike
+                              | ReferenceOpcode::OnesLike
+                              | ReferenceOpcode::Add""",
+          )
+
+          replace_once(
+              "scirust-tensor-reference/src/interpreter.rs",
+              """            ReferenceOpcode::ReluGrad
+                      | ReferenceOpcode::OnesLike
+                      | ReferenceOpcode::BroadcastTo""",
+              """            ReferenceOpcode::ReluGrad
+                      | ReferenceOpcode::BroadcastTo""",
+          )
+          replace_once(
+              "scirust-tensor-reference/src/interpreter.rs",
+              """            ReferenceOpcode::Relu
+                      | ReferenceOpcode::ZerosLike
+                      | ReferenceOpcode::Scale""",
+              """            ReferenceOpcode::Relu
+                      | ReferenceOpcode::ZerosLike
+                      | ReferenceOpcode::OnesLike
+                      | ReferenceOpcode::Scale""",
+          )
+          replace_once(
+              "scirust-tensor-reference/src/interpreter.rs",
+              """                ReferenceOpcode::Relu
+                          | ReferenceOpcode::ZerosLike
+                          | ReferenceOpcode::Add""",
+              """                ReferenceOpcode::Relu
+                          | ReferenceOpcode::ZerosLike
+                          | ReferenceOpcode::OnesLike
+                          | ReferenceOpcode::Add""",
+          )
+          replace_once(
+              "scirust-tensor-reference/src/interpreter.rs",
+              """            ReferenceOpcode::ZerosLike =>
+                      {
+                          let _ = first_operand(operands)?;
+                          output.fill(0.0);
+                      },
+                      ReferenceOpcode::Scale =>""",
+              """            ReferenceOpcode::ZerosLike =>
+                      {
+                          let _ = first_operand(operands)?;
+                          output.fill(0.0);
+                      },
+                      ReferenceOpcode::OnesLike =>
+                      {
+                          let _ = first_operand(operands)?;
+                          output.fill(1.0);
+                      },
+                      ReferenceOpcode::Scale =>""",
+          )
+          replace_once(
+              "scirust-tensor-reference/src/interpreter.rs",
+              """            ReferenceOpcode::ReluGrad
+                      | ReferenceOpcode::OnesLike
+                      | ReferenceOpcode::BroadcastTo""",
+              """            ReferenceOpcode::ReluGrad
+                      | ReferenceOpcode::BroadcastTo""",
+          )
+
+          replace_once(
+              "scirust-tensor-reference/src/tests.rs",
+              """#[test]
+          fn add_generates_the_add_opcode_with_two_operands() {""",
+              """#[test]
+          fn ones_like_generates_the_v1_1_ones_like_opcode() {
+              let plan = single_unary_plan(Operation::OnesLike, f32_type(vec![4]));
+              let artifact = only_artifact(&plan);
+
+              assert_eq!(artifact.opcode(), ReferenceOpcode::OnesLike);
+              assert_eq!(artifact.operands().len(), 1);
+              assert_eq!(artifact.attributes(), &ReferenceAttributes::None);
+              assert_eq!(artifact.version(), REFERENCE_FORMAT_VERSION);
+          }
+
+          #[test]
+          fn add_generates_the_add_opcode_with_two_operands() {""",
+          )
+
+          replace_once(
+              "scirust-tensor-runtime/tests/reference_cpu_plan.rs",
+              "// The nine supported opcodes",
+              "// The ten supported opcodes",
+          )
+          replace_once(
+              "scirust-tensor-runtime/tests/reference_cpu_plan.rs",
+              """#[test]
+          fn executes_scale() {""",
+              """#[test]
+          fn executes_ones_like_as_positive_one_for_every_input_class() {
+              let plan = unary_plan(Operation::OnesLike, vec![5]);
+              let input = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -0.0, 7.5];
+              let output = run_unary(&plan, &input);
+
+              assert_eq!(output, vec![1.0; input.len()]);
+              assert_eq!(bits(&output), vec![1.0f32.to_bits(); input.len()]);
+          }
+
+          #[test]
+          fn executes_scale() {""",
+          )
+          PY
+
+      - name: Format patched sources
+        run: cargo fmt --all
+
+      - name: Check patch cleanliness
+        run: git diff --check
+
+      - name: Test tensor compile lowering
+        run: cargo test -p scirust-tensor-compile
+
+      - name: Test Reference generator and interpreter
+        run: cargo test -p scirust-tensor-reference
+
+      - name: Test Reference CPU plan runtime
+        run: cargo test -p scirust-tensor-runtime --test reference_cpu_plan
+
+      - name: Commit validated patch and remove bootstrap workflow
+        run: |
+          rm .github/workflows/morphodiff-oneslike-bootstrap.yml
+          git config user.name "MEMOPERF"
+          git config user.email "contact@checkupauto.fr"
+          git add scirust-tensor-compile/src/lowering.rs \
+                  scirust-tensor-reference/src/generator.rs \
+                  scirust-tensor-reference/src/invocation.rs \
+                  scirust-tensor-reference/src/interpreter.rs \
+                  scirust-tensor-reference/src/tests.rs \
+                  scirust-tensor-runtime/tests/reference_cpu_plan.rs \
+                  .github/workflows/morphodiff-oneslike-bootstrap.yml
+          git commit -m "feat(morphodiff): lower and execute OnesLike natively"
+          git push origin HEAD:research/morphodiff-oneslike
