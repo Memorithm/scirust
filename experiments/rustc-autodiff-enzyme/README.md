@@ -18,9 +18,18 @@ rustup toolchain install nightly --profile minimal
 rustup +nightly component add enzyme
 ```
 
-The local `.cargo/config.toml` passes `-Zautodiff=Enable`. If the installed
-nightly does not provide a compatible Enzyme component, that is an experimental
-toolchain capability failure, not a failure of production MorphoDiff.
+Do **not** enable the AutoDiff compiler pass globally for this workspace. The
+current distributed Enzyme pass is invoked only for the isolated native oracle:
+
+```bash
+RUSTFLAGS="-Zautodiff=Enable" \
+cargo +nightly test --release -p morphodiff-enzyme-native
+```
+
+Keeping that flag scoped is part of the benchmark contract: the MorphoDiff lane
+must not be compiled under Enzyme's LLVM pass. If the installed nightly does not
+provide a compatible Enzyme component, that is an experimental toolchain
+capability failure, not a failure of production MorphoDiff.
 
 ## Why the benchmark is split
 
@@ -35,15 +44,25 @@ Both lanes run on the same CI runner, use F32, evaluate the same Rosenbrock
 partial derivative `df/dx`, and must independently pass the same analytic
 correctness oracle before timing.
 
-## Validate the workspace
+## Validate the two lanes
+
+MorphoDiff reference code, without the Enzyme compiler pass:
 
 ```bash
-cargo +nightly test --workspace --release
+cargo +nightly test --release -p scirust-autodiff-enzyme-probe
+```
+
+Enzyme native oracle, with the pass scoped to that crate:
+
+```bash
+RUSTFLAGS="-Zautodiff=Enable" \
+cargo +nightly test --release -p morphodiff-enzyme-native
 ```
 
 ## Enzyme native lane
 
 ```bash
+RUSTFLAGS="-Zautodiff=Enable" \
 MORPHODIFF_BENCH_ITERS=100000 \
 cargo +nightly run --release -p morphodiff-enzyme-native
 ```
