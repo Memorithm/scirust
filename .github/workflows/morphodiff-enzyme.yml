@@ -6,6 +6,8 @@ on:
       - "experiments/rustc-autodiff-enzyme/**"
       - "scirust-tensor-ir/**"
       - "scirust-tensor-core/**"
+      - "scirust-tensor-compile/**"
+      - "scirust-tensor-reference/**"
       - "scirust-tensor-runtime/**"
       - ".github/workflows/morphodiff-enzyme.yml"
   workflow_dispatch:
@@ -47,16 +49,24 @@ jobs:
           RUSTFLAGS: "-Zautodiff=Enable"
         run: cargo +nightly test --release -p morphodiff-enzyme-native
 
-      - name: Run isolated Enzyme native benchmark
+      - name: Run isolated Enzyme native benchmarks
         working-directory: experiments/rustc-autodiff-enzyme
         env:
           RUSTFLAGS: "-Zautodiff=Enable"
           MORPHODIFF_BENCH_ITERS: "20000"
+          MORPHODIFF_MATMUL_ITERS: "2000"
         run: cargo +nightly run --release -p morphodiff-enzyme-native
 
-      - name: Run MorphoDiff reference benchmark
+      - name: Run MorphoDiff scalar reference benchmark
         working-directory: experiments/rustc-autodiff-enzyme
         env:
           MORPHODIFF_BENCH_ITERS: "20000"
           MORPHODIFF_TRANSFORM_ITERS: "1000"
         run: cargo +nightly run --release --bin morphodiff-reference
+
+      - name: Run MorphoDiff MatMul reference benchmark
+        working-directory: experiments/rustc-autodiff-enzyme
+        env:
+          MORPHODIFF_MATMUL_ITERS: "2000"
+          MORPHODIFF_MATMUL_TRANSFORM_ITERS: "1000"
+        run: cargo +nightly run --release --bin morphodiff-matmul-reference
