@@ -7,9 +7,9 @@ publish = false
 # Deliberately independent from the root SciRust workspace: rustc AutoDiff is
 # nightly-only and must not affect the framework's Rust 1.89 MSRV gate.
 [workspace]
+members = ["enzyme-native"]
 
 [dependencies]
-scirust-autodiff = { path = "../../scirust-autodiff" }
 scirust-gpu = { path = "../../scirust-gpu" }
 scirust-tensor-core = { path = "../../scirust-tensor-core" }
 scirust-tensor-ir = { path = "../../scirust-tensor-ir" }
