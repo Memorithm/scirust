@@ -13,6 +13,7 @@ mod autodiff;
 mod error;
 mod graph;
 mod ids;
+mod morphodiff;
 mod operation;
 mod optimize;
 mod physical;
@@ -29,6 +30,9 @@ pub use autodiff::{AutodiffError, GradGraph, JvpGraph, VjpGraph, grad, jvp, valu
 pub use error::GraphError;
 pub use graph::{Graph, Node, TensorType};
 pub use ids::{ConstantId, NodeId};
+pub use morphodiff::{
+    MORPHODIFF_ENGINE, MorphoDiff, MorphoDiffMode, MorphoDiffProgram, MorphoDiffReport,
+};
 pub use operation::{Operation, Scalar};
 pub use optimize::{
     OptimizationConfig, OptimizationError, OptimizationStats, OptimizedGraph, optimize_graph,
