@@ -37,13 +37,19 @@ jobs:
           cargo +nightly --version
           rustup +nightly component list --installed | grep '^enzyme-'
 
-      - name: Test Enzyme and MorphoDiff parity
+      - name: Test isolated benchmark workspace
         working-directory: experiments/rustc-autodiff-enzyme
-        run: cargo +nightly test --release
+        run: cargo +nightly test --workspace --release
 
-      - name: Run MorphoDiff versus Enzyme reference harness
+      - name: Run isolated Enzyme native benchmark
+        working-directory: experiments/rustc-autodiff-enzyme
+        env:
+          MORPHODIFF_BENCH_ITERS: "20000"
+        run: cargo +nightly run --release -p morphodiff-enzyme-native
+
+      - name: Run MorphoDiff reference benchmark
         working-directory: experiments/rustc-autodiff-enzyme
         env:
           MORPHODIFF_BENCH_ITERS: "20000"
           MORPHODIFF_TRANSFORM_ITERS: "1000"
-        run: cargo +nightly run --release --bin morphodiff_vs_enzyme
+        run: cargo +nightly run --release --bin morphodiff-reference
