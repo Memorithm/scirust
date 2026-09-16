@@ -72,8 +72,10 @@ mod tests {
 
     #[test]
     fn equivalent_rounded_annualisation_is_accepted_and_canonicalized() {
-        let mut cfg = BacktestConfig::default();
-        cfg.interval = "5h".to_string();
+        let cfg = BacktestConfig {
+            interval: "5h".to_string(),
+            ..BacktestConfig::default()
+        };
         let supplied = PerformanceConvention::new(8760.0 / 5.0, 0.001, 0.002).unwrap();
         let expected = PerformanceConvention::for_crypto_interval("5h", 0.001, 0.002).unwrap();
 
