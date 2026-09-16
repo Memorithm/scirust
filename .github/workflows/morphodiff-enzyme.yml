@@ -33,16 +33,17 @@ jobs:
 
       - name: Show toolchain metadata
         run: |
-          rustc +enzyme --version --verbose
-          cargo +enzyme --version
+          rustc +nightly --version --verbose
+          cargo +nightly --version
+          rustup +nightly component list --installed | grep '^enzyme-'
 
       - name: Test Enzyme and MorphoDiff parity
         working-directory: experiments/rustc-autodiff-enzyme
-        run: cargo +enzyme test --release
+        run: cargo +nightly test --release
 
       - name: Run MorphoDiff versus Enzyme reference harness
         working-directory: experiments/rustc-autodiff-enzyme
         env:
           MORPHODIFF_BENCH_ITERS: "20000"
           MORPHODIFF_TRANSFORM_ITERS: "1000"
-        run: cargo +enzyme run --release --bin morphodiff_vs_enzyme
+        run: cargo +nightly run --release --bin morphodiff_vs_enzyme
