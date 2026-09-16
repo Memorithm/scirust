@@ -132,6 +132,10 @@ impl MorphoDiff {
         })
     }
 
+    /// Build a forward-mode Jacobian-vector-product program.
+    ///
+    /// The returned program exposes tangent seed inputs in `seed_inputs` and the
+    /// resulting JVP node in `derivative_outputs`.
     pub fn jvp(
         source: &Graph,
         output: NodeId,
@@ -140,6 +144,10 @@ impl MorphoDiff {
         Self::transform(source, output, wrt, MorphoDiffMode::ForwardJvp)
     }
 
+    /// Build a reverse-mode vector-Jacobian-product program.
+    ///
+    /// The returned program exposes one cotangent seed input and one derivative
+    /// output for every requested `wrt` node.
     pub fn vjp(
         source: &Graph,
         output: NodeId,
@@ -148,6 +156,11 @@ impl MorphoDiff {
         Self::transform(source, output, wrt, MorphoDiffMode::ReverseVjp)
     }
 
+    /// Build a reverse-mode gradient program with an all-one cotangent seed.
+    ///
+    /// This convenience transform is self-seeded, so `seed_inputs` is empty and
+    /// `derivative_outputs` contains the gradients of `output` with respect to
+    /// the requested nodes.
     pub fn grad(
         source: &Graph,
         output: NodeId,
@@ -156,6 +169,10 @@ impl MorphoDiff {
         Self::transform(source, output, wrt, MorphoDiffMode::ReverseGrad)
     }
 
+    /// Build a reverse-mode program that retains the primal and its gradients.
+    ///
+    /// The transformed graph keeps the primal output first and appends one
+    /// derivative output for every requested `wrt` node.
     pub fn value_and_grad(
         source: &Graph,
         output: NodeId,
