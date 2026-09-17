@@ -9,6 +9,7 @@ needed for neural operators. It does **not** embed or wrap the Python
 Current foundation:
 
 - trainable 1-D Fourier Neural Operator through SciRust N-D autodiff;
+- reusable trained-parameter snapshots plus fast/portable radix-2 FFT CPU inference without changing the dense-DFT training path;
 - exact `F_2` affine operators and bit-packed Boolean vectors;
 - exact ANF/Zhegalkin operators with truth-table Möbius synthesis;
 - complete bounded sparse-ANF synthesis over unique Development assignments, refusing candidate-budget truncation;

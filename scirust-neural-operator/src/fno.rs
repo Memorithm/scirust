@@ -1,6 +1,6 @@
 use crate::{NeuralOperatorError, OperatorDataset1d, Result, SpectralModePlan};
 use scirust_core::autodiff::nd::NdTape;
-use scirust_core::nn::fno::NdFno;
+use scirust_core::nn::fno::{Fno1dInferenceSnapshot, NdFno};
 use scirust_core::nn::nd_optim::NdAdam;
 use scirust_core::nn::rng::PcgEngine;
 use scirust_core::tensor::tensor_nd::TensorND;
@@ -84,6 +84,11 @@ impl Fno1dOperator {
             &mut rng,
         );
         Ok(Self { cfg, model })
+    }
+
+    /// Capture immutable trained parameters for alternate inference runtimes.
+    pub fn inference_snapshot(&self) -> Fno1dInferenceSnapshot {
+        self.model.inference_snapshot()
     }
 
     /// Return the validated configuration used to construct this operator.

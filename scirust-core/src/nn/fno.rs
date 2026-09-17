@@ -234,6 +234,50 @@ impl FnoSpectralConv1d {
     }
 }
 
+/// Immutable parameter snapshot for fast inference implementations of a trained 1-D FNO.
+///
+/// The training path stays on [`NdTape`] and dense differentiable DFT matrices.
+/// A snapshot contains only owned tensor values and dimensions, so downstream
+/// inference runtimes can execute an equivalent operator without mutating model state.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct Fno1dInferenceSnapshot {
+    /// Spatial grid length.
+    pub n: usize,
+    /// Number of retained positive-frequency modes including DC.
+    pub modes: usize,
+    /// Hidden channel width.
+    pub width: usize,
+    /// Pointwise lift weight `(in_channels, width)`.
+    pub lift_weight: TensorND,
+    /// Pointwise lift bias `(1, width)`.
+    pub lift_bias: TensorND,
+    /// Spectral real weights `(modes, width, width)`.
+    pub spectral_real: TensorND,
+    /// Spectral imaginary weights `(modes, width, width)`.
+    pub spectral_imag: TensorND,
+    /// Local pointwise weight `(width, width)`.
+    pub local_weight: TensorND,
+    /// Local pointwise bias `(1, width)`.
+    pub local_bias: TensorND,
+    /// Projection weight `(width, out_channels)`.
+    pub projection_weight: TensorND,
+    /// Projection bias `(1, out_channels)`.
+    pub projection_bias: TensorND,
+}
+
+impl Fno1dInferenceSnapshot {
+    /// Input channel count derived from the lift matrix.
+    pub fn in_channels(&self) -> usize {
+        self.lift_weight.shape[0]
+    }
+
+    /// Output channel count derived from the projection matrix.
+    pub fn out_channels(&self) -> usize {
+        self.projection_weight.shape[1]
+    }
+}
+
 /// **FNO block** — one Fourier-operator layer: lift the `in_ch` input channels to a
 /// `width`-dimensional channel space, run a global [`FnoSpectralConv1d`] in parallel
 /// with a **local** pointwise linear `W`, sum them, apply a ReLU non-linearity, and
@@ -295,6 +339,23 @@ impl NdFno {
         let loc = self.local.forward(tape, v);
         let y = spec.add(loc).relu();
         self.proj.forward(tape, y)
+    }
+
+    /// Capture an immutable copy of all parameters needed for inference.
+    pub fn inference_snapshot(&self) -> Fno1dInferenceSnapshot {
+        Fno1dInferenceSnapshot {
+            n: self.spectral.n,
+            modes: self.spectral.modes,
+            width: self.spectral.width,
+            lift_weight: self.lift.weight().clone(),
+            lift_bias: self.lift.bias().clone(),
+            spectral_real: self.spectral.ar.clone(),
+            spectral_imag: self.spectral.ai.clone(),
+            local_weight: self.local.weight().clone(),
+            local_bias: self.local.bias().clone(),
+            projection_weight: self.proj.weight().clone(),
+            projection_bias: self.proj.bias().clone(),
+        }
     }
 
     /// Trainable parameters (lift, spectral weights, local linear, projection).
