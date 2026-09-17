@@ -145,8 +145,8 @@ pub struct SobolSummary {
 /// let a = [0.0, 1.0, 0.0, 1.0];
 /// let b = [0.0, 0.0, 1.0, 1.0];
 /// let s = sobol_first_total(&a, &b, &[b.to_vec()]).unwrap();
-/// assert_eq!(s.first, vec![1.0]);
-/// assert_eq!(s.total, vec![1.0]);
+/// assert!((s.first[0] - 1.0).abs() <= 1e-12);
+/// assert!((s.total[0] - 1.0).abs() <= 1e-12);
 /// assert!(sobol_first_total(&[1.0, 1.0], &[1.0, 1.0], &[vec![1.0, 1.0]]).is_err());
 /// ```
 pub fn sobol_first_total(
