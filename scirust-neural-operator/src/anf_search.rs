@@ -36,36 +36,7 @@ pub struct BooleanDevelopmentSet {
 impl BooleanDevelopmentSet {
     /// Validate one exact label per distinct assignment.
     pub fn new(variables: usize, examples: Vec<BooleanDevelopmentExample>) -> Result<Self> {
-        if examples.is_empty()
-        {
-            return Err(NeuralOperatorError::Empty {
-                what: "Boolean development set",
-            });
-        }
-        if variables > 20
-        {
-            return Err(NeuralOperatorError::TooManyBooleanVariables {
-                variables,
-                maximum: 20,
-            });
-        }
-        let mut seen = BTreeSet::new();
-        for (index, example) in examples.iter().enumerate()
-        {
-            if example.input.len() != variables
-            {
-                return Err(NeuralOperatorError::BooleanDatasetShapeMismatch {
-                    example: index,
-                    expected: variables,
-                    got: example.input.len(),
-                });
-            }
-            let assignment = pack_assignment(&example.input);
-            if !seen.insert(assignment)
-            {
-                return Err(NeuralOperatorError::DuplicateBooleanAssignment { assignment });
-            }
-        }
+        validate_boolean_cases(variables, &examples, "Boolean development set")?;
         Ok(Self {
             variables,
             examples,
@@ -81,6 +52,49 @@ impl BooleanDevelopmentSet {
     pub fn examples(&self) -> &[BooleanDevelopmentExample] {
         &self.examples
     }
+}
+
+/// Validation-only exact-function set. This type cannot be passed to
+/// [`search_sparse_anf`], so validation labels are structurally unavailable
+/// during candidate selection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BooleanValidationSet {
+    variables: usize,
+    examples: Vec<BooleanDevelopmentExample>,
+}
+
+impl BooleanValidationSet {
+    /// Validate one label per distinct assignment for post-selection evaluation.
+    pub fn new(variables: usize, examples: Vec<BooleanDevelopmentExample>) -> Result<Self> {
+        validate_boolean_cases(variables, &examples, "Boolean validation set")?;
+        Ok(Self {
+            variables,
+            examples,
+        })
+    }
+
+    /// Input arity of the validation surface.
+    pub const fn variables(&self) -> usize {
+        self.variables
+    }
+
+    /// Validation rows in declaration order.
+    pub fn examples(&self) -> &[BooleanDevelopmentExample] {
+        &self.examples
+    }
+}
+
+/// Post-selection validation evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SparseAnfValidation {
+    /// Number of validation rows evaluated.
+    pub cases: usize,
+    /// Number of rows on which the selected polynomial disagrees with the label.
+    pub mismatches: usize,
+    /// Exact agreement on every validation row.
+    pub exact: bool,
+    /// Monomial evaluations charged by this validation pass.
+    pub monomial_evaluations: usize,
 }
 
 /// Complete bounded sparse-ANF grammar.
@@ -105,6 +119,41 @@ pub struct SparseAnfSearchResult {
     pub monomial_universe: usize,
     /// Structural complexity of the selected polynomial.
     pub complexity: BooleanComplexity,
+}
+
+impl SparseAnfSearchResult {
+    /// Evaluate the already-selected polynomial on a typed validation set.
+    /// Validation never changes the selected candidate or its search envelope.
+    pub fn evaluate_validation(
+        &self,
+        validation: &BooleanValidationSet,
+    ) -> Result<SparseAnfValidation> {
+        if validation.variables != self.polynomial.variables()
+        {
+            return Err(NeuralOperatorError::BooleanShapeMismatch {
+                what: "ANF validation arity",
+                expected: self.polynomial.variables(),
+                got: validation.variables,
+            });
+        }
+        let mut mismatches = 0usize;
+        for row in &validation.examples
+        {
+            if self.polynomial.evaluate(&row.input)? != row.target
+            {
+                mismatches = mismatches.saturating_add(1);
+            }
+        }
+        Ok(SparseAnfValidation {
+            cases: validation.examples.len(),
+            mismatches,
+            exact: mismatches == 0,
+            monomial_evaluations: validation
+                .examples
+                .len()
+                .saturating_mul(self.complexity.monomials),
+        })
+    }
 }
 
 /// Search the complete bounded ANF grammar for an exact fit.
@@ -175,6 +224,42 @@ pub fn search_sparse_anf(
         monomial_universe: monomials.len(),
         complexity,
     })
+}
+
+fn validate_boolean_cases(
+    variables: usize,
+    examples: &[BooleanDevelopmentExample],
+    what: &'static str,
+) -> Result<()> {
+    if examples.is_empty()
+    {
+        return Err(NeuralOperatorError::Empty { what });
+    }
+    if variables > 20
+    {
+        return Err(NeuralOperatorError::TooManyBooleanVariables {
+            variables,
+            maximum: 20,
+        });
+    }
+    let mut seen = BTreeSet::new();
+    for (index, example) in examples.iter().enumerate()
+    {
+        if example.input.len() != variables
+        {
+            return Err(NeuralOperatorError::BooleanDatasetShapeMismatch {
+                example: index,
+                expected: variables,
+                got: example.input.len(),
+            });
+        }
+        let assignment = pack_assignment(&example.input);
+        if !seen.insert(assignment)
+        {
+            return Err(NeuralOperatorError::DuplicateBooleanAssignment { assignment });
+        }
+    }
+    Ok(())
 }
 
 fn pack_assignment(input: &[bool]) -> u64 {
@@ -351,5 +436,61 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error, NeuralOperatorError::NoExactAnfCandidate);
+    }
+
+    #[test]
+    fn validation_is_typed_and_cannot_change_selected_program() {
+        let development = complete_three_variable_set(|x0, x1, x2| x0 ^ (x1 & x2));
+        let result = search_sparse_anf(
+            &development,
+            SparseAnfSearchConfig {
+                max_degree: 2,
+                max_terms: 2,
+                candidate_budget: 64,
+            },
+        )
+        .unwrap();
+        let selected = result.polynomial.clone();
+        let validation = BooleanValidationSet::new(
+            3,
+            vec![
+                BooleanDevelopmentExample::new(vec![false, true, true], true),
+                BooleanDevelopmentExample::new(vec![true, true, false], true),
+            ],
+        )
+        .unwrap();
+        let evidence = result.evaluate_validation(&validation).unwrap();
+        assert_eq!(evidence.cases, 2);
+        assert_eq!(evidence.mismatches, 0);
+        assert!(evidence.exact);
+        assert_eq!(evidence.monomial_evaluations, 4);
+        assert_eq!(result.polynomial, selected);
+    }
+
+    #[test]
+    fn validation_arity_mismatch_fails_closed() {
+        let development = complete_three_variable_set(|x0, _, _| x0);
+        let result = search_sparse_anf(
+            &development,
+            SparseAnfSearchConfig {
+                max_degree: 1,
+                max_terms: 1,
+                candidate_budget: 8,
+            },
+        )
+        .unwrap();
+        let validation = BooleanValidationSet::new(
+            2,
+            vec![BooleanDevelopmentExample::new(vec![true, false], true)],
+        )
+        .unwrap();
+        assert!(matches!(
+            result.evaluate_validation(&validation),
+            Err(NeuralOperatorError::BooleanShapeMismatch {
+                what: "ANF validation arity",
+                expected: 3,
+                got: 2
+            })
+        ));
     }
 }

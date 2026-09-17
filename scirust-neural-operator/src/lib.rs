@@ -28,8 +28,8 @@ pub mod spectral;
 pub mod spectral_routing;
 
 pub use anf_search::{
-    BooleanDevelopmentExample, BooleanDevelopmentSet, SparseAnfSearchConfig, SparseAnfSearchResult,
-    search_sparse_anf,
+    BooleanDevelopmentExample, BooleanDevelopmentSet, BooleanValidationSet, SparseAnfSearchConfig,
+    SparseAnfSearchResult, SparseAnfValidation, search_sparse_anf,
 };
 pub use boolean::{AnfOperator, AnfPolynomial, BooleanComplexity, F2LinearOperator, PackedBits};
 pub use dataset::{OperatorDataset1d, OperatorSample1d};
