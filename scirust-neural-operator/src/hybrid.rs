@@ -6,6 +6,7 @@
 
 use crate::boolean::{AnfPolynomial, BooleanComplexity};
 use crate::error::{NeuralOperatorError, Result};
+use crate::{LearnedOperator, relative_l2};
 
 /// Execution action selected by a hybrid operator controller.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -149,6 +150,144 @@ impl BooleanRouter {
     }
 }
 
+/// Result of one routed hybrid operator execution.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HybridExecution {
+    /// Action selected by the Boolean router.
+    pub action: HybridAction,
+    /// Returned field, or `None` for an abstention.
+    pub output: Option<Vec<f32>>,
+    /// Whether an authoritative solve was executed.
+    pub exact_solve_executed: bool,
+    /// Relative L2 discrepancy measured during verification, when applicable.
+    pub verification_relative_l2: Option<f64>,
+    /// Whether verification accepted the surrogate output.
+    pub surrogate_accepted: Option<bool>,
+}
+
+/// Executes a learned operator under an inspectable Boolean control plane.
+///
+/// Verification always computes both paths. When the relative L2 discrepancy
+/// exceeds the configured tolerance, the authoritative exact output is returned.
+pub struct HybridExecutor<O> {
+    router: BooleanRouter,
+    surrogate: O,
+    verification_tolerance: f64,
+}
+
+impl<O: LearnedOperator> HybridExecutor<O> {
+    /// Construct a fail-closed hybrid executor.
+    pub fn new(router: BooleanRouter, surrogate: O, verification_tolerance: f64) -> Result<Self> {
+        if !verification_tolerance.is_finite() || verification_tolerance < 0.0
+        {
+            return Err(NeuralOperatorError::InvalidVerificationTolerance {
+                tolerance: verification_tolerance,
+            });
+        }
+        Ok(Self {
+            router,
+            surrogate,
+            verification_tolerance,
+        })
+    }
+
+    /// Execute one routed call. The supplied closure is the authoritative solver.
+    pub fn execute<F>(
+        &mut self,
+        predicates: &[bool],
+        input: &[f32],
+        mut exact: F,
+    ) -> Result<HybridExecution>
+    where
+        F: FnMut(&[f32]) -> Result<Vec<f32>>,
+    {
+        let action = self.router.route(predicates)?;
+        match action
+        {
+            HybridAction::Abstain => Ok(HybridExecution {
+                action,
+                output: None,
+                exact_solve_executed: false,
+                verification_relative_l2: None,
+                surrogate_accepted: None,
+            }),
+            HybridAction::UseSurrogate =>
+            {
+                let output = self.surrogate.predict(input)?;
+                Ok(HybridExecution {
+                    action,
+                    output: Some(output),
+                    exact_solve_executed: false,
+                    verification_relative_l2: None,
+                    surrogate_accepted: None,
+                })
+            },
+            HybridAction::UseExact =>
+            {
+                let output = self.validate_exact_output(exact(input)?)?;
+                Ok(HybridExecution {
+                    action,
+                    output: Some(output),
+                    exact_solve_executed: true,
+                    verification_relative_l2: None,
+                    surrogate_accepted: None,
+                })
+            },
+            HybridAction::VerifySurrogate =>
+            {
+                let surrogate = self.surrogate.predict(input)?;
+                let exact_output = self.validate_exact_output(exact(input)?)?;
+                let discrepancy = relative_l2(&surrogate, &exact_output)?;
+                let accepted = discrepancy <= self.verification_tolerance;
+                Ok(HybridExecution {
+                    action,
+                    output: Some(if accepted { surrogate } else { exact_output }),
+                    exact_solve_executed: true,
+                    verification_relative_l2: Some(discrepancy),
+                    surrogate_accepted: Some(accepted),
+                })
+            },
+        }
+    }
+
+    fn validate_exact_output(&self, output: Vec<f32>) -> Result<Vec<f32>> {
+        if output.len() != self.surrogate.output_len()
+        {
+            return Err(NeuralOperatorError::ShapeMismatch {
+                what: "exact operator output",
+                expected: self.surrogate.output_len(),
+                got: output.len(),
+            });
+        }
+        if let Some((index, _)) = output
+            .iter()
+            .enumerate()
+            .find(|(_, value)| !value.is_finite())
+        {
+            return Err(NeuralOperatorError::NonFinite {
+                what: "exact operator output",
+                index,
+            });
+        }
+        Ok(output)
+    }
+
+    /// Read the current router.
+    pub const fn router(&self) -> &BooleanRouter {
+        &self.router
+    }
+
+    /// Mutable access to the learned surrogate.
+    pub fn surrogate_mut(&mut self) -> &mut O {
+        &mut self.surrogate
+    }
+
+    /// Relative L2 tolerance used by the verification path.
+    pub const fn verification_tolerance(&self) -> f64 {
+        self.verification_tolerance
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,5 +344,95 @@ mod tests {
                 max_degree: 2,
             }
         );
+    }
+
+    struct ScaleSurrogate {
+        factor: f32,
+    }
+
+    impl LearnedOperator for ScaleSurrogate {
+        fn input_len(&self) -> usize {
+            2
+        }
+        fn output_len(&self) -> usize {
+            2
+        }
+        fn predict(&mut self, input: &[f32]) -> Result<Vec<f32>> {
+            if input.len() != 2
+            {
+                return Err(NeuralOperatorError::ShapeMismatch {
+                    what: "scale surrogate input",
+                    expected: 2,
+                    got: input.len(),
+                });
+            }
+            Ok(input.iter().map(|value| value * self.factor).collect())
+        }
+    }
+
+    fn executor_for(
+        action: HybridAction,
+        factor: f32,
+        tolerance: f64,
+    ) -> HybridExecutor<ScaleSurrogate> {
+        let guard = AnfPolynomial::from_monomials(1, &[0]).unwrap();
+        let router = BooleanRouter::new(
+            1,
+            vec![BooleanRouteRule::new(guard, action)],
+            HybridAction::Abstain,
+        )
+        .unwrap();
+        HybridExecutor::new(router, ScaleSurrogate { factor }, tolerance).unwrap()
+    }
+
+    #[test]
+    fn verification_accepts_surrogate_inside_tolerance() {
+        let mut executor = executor_for(HybridAction::VerifySurrogate, 2.0, 1e-6);
+        let result = executor
+            .execute(&[true], &[1.0, 2.0], |input| {
+                Ok(input.iter().map(|value| value * 2.0).collect())
+            })
+            .unwrap();
+        assert_eq!(result.output, Some(vec![2.0, 4.0]));
+        assert_eq!(result.surrogate_accepted, Some(true));
+        assert_eq!(result.verification_relative_l2, Some(0.0));
+        assert!(result.exact_solve_executed);
+    }
+
+    #[test]
+    fn verification_falls_back_to_exact_outside_tolerance() {
+        let mut executor = executor_for(HybridAction::VerifySurrogate, 1.0, 0.1);
+        let result = executor
+            .execute(&[true], &[1.0, 2.0], |input| {
+                Ok(input.iter().map(|value| value * 2.0).collect())
+            })
+            .unwrap();
+        assert_eq!(result.output, Some(vec![2.0, 4.0]));
+        assert_eq!(result.surrogate_accepted, Some(false));
+        assert!(result.verification_relative_l2.unwrap() > 0.1);
+        assert!(result.exact_solve_executed);
+    }
+
+    #[test]
+    fn abstain_executes_neither_path() {
+        let guard = AnfPolynomial::from_monomials(1, &[1]).unwrap();
+        let router = BooleanRouter::new(
+            1,
+            vec![BooleanRouteRule::new(guard, HybridAction::UseExact)],
+            HybridAction::Abstain,
+        )
+        .unwrap();
+        let mut executor =
+            HybridExecutor::new(router, ScaleSurrogate { factor: 2.0 }, 0.1).unwrap();
+        let mut exact_calls = 0;
+        let result = executor
+            .execute(&[false], &[1.0, 2.0], |_| {
+                exact_calls += 1;
+                Ok(vec![2.0, 4.0])
+            })
+            .unwrap();
+        assert_eq!(result.output, None);
+        assert_eq!(exact_calls, 0);
+        assert!(!result.exact_solve_executed);
     }
 }
