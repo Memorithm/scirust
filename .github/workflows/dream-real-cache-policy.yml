@@ -71,6 +71,18 @@ jobs:
           printf 'HF_HOME=%s\n' "$HF_HOME" >> "$GITHUB_ENV"
           printf 'PIP_CACHE_DIR=%s\n' "$PIP_CACHE_DIR" >> "$GITHUB_ENV"
 
+      - name: Reset isolated checkout directory
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          checkout_dir="$GITHUB_WORKSPACE/ci-dream-real"
+          if [[ -e "$checkout_dir" || -L "$checkout_dir" ]]; then
+            rm -rf -- "$checkout_dir"
+          fi
+          test ! -e "$checkout_dir"
+          test ! -L "$checkout_dir"
+
       - name: Check out SciRust
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
