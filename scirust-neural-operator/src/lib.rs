@@ -14,6 +14,7 @@
 //! Exact/reference simulations remain the oracle for qualification and for
 //! out-of-distribution fallback.
 
+pub mod anf_search;
 pub mod boolean;
 pub mod dataset;
 pub mod error;
@@ -26,6 +27,10 @@ pub mod normalizer;
 pub mod spectral;
 pub mod spectral_routing;
 
+pub use anf_search::{
+    BooleanDevelopmentExample, BooleanDevelopmentSet, SparseAnfSearchConfig, SparseAnfSearchResult,
+    search_sparse_anf,
+};
 pub use boolean::{AnfOperator, AnfPolynomial, BooleanComplexity, F2LinearOperator, PackedBits};
 pub use dataset::{OperatorDataset1d, OperatorSample1d};
 pub use error::{NeuralOperatorError, Result};
