@@ -81,8 +81,10 @@ pub mod discrete;
 pub mod dist;
 pub mod htest;
 pub mod lottery;
+pub mod resampling;
 pub mod rng;
 pub mod robust;
+pub mod sensitivity;
 pub mod survival;
 
 pub use cox::{
