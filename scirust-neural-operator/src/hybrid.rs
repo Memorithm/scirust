@@ -202,6 +202,10 @@ impl<O: LearnedOperator> HybridExecutor<O> {
         F: FnMut(&[f32]) -> Result<Vec<f32>>,
     {
         let action = self.router.route(predicates)?;
+        if action != HybridAction::Abstain
+        {
+            self.validate_input(input)?;
+        }
         match action
         {
             HybridAction::Abstain => Ok(HybridExecution {
@@ -248,6 +252,28 @@ impl<O: LearnedOperator> HybridExecutor<O> {
                 })
             },
         }
+    }
+
+    fn validate_input(&self, input: &[f32]) -> Result<()> {
+        if input.len() != self.surrogate.input_len()
+        {
+            return Err(NeuralOperatorError::ShapeMismatch {
+                what: "hybrid operator input",
+                expected: self.surrogate.input_len(),
+                got: input.len(),
+            });
+        }
+        if let Some((index, _)) = input
+            .iter()
+            .enumerate()
+            .find(|(_, value)| !value.is_finite())
+        {
+            return Err(NeuralOperatorError::NonFinite {
+                what: "hybrid operator input",
+                index,
+            });
+        }
+        Ok(())
     }
 
     fn validate_exact_output(&self, output: Vec<f32>) -> Result<Vec<f32>> {
@@ -411,6 +437,69 @@ mod tests {
         assert_eq!(result.surrogate_accepted, Some(false));
         assert!(result.verification_relative_l2.unwrap() > 0.1);
         assert!(result.exact_solve_executed);
+    }
+
+    #[test]
+    fn exact_route_rejects_bad_input_before_calling_solver() {
+        let mut executor = executor_for(HybridAction::UseExact, 1.0, 0.1);
+        let mut exact_calls = 0usize;
+        let error = executor
+            .execute(&[true], &[1.0], |_| {
+                exact_calls += 1;
+                Ok(vec![1.0, 2.0])
+            })
+            .unwrap_err();
+        assert_eq!(exact_calls, 0);
+        assert_eq!(
+            error,
+            NeuralOperatorError::ShapeMismatch {
+                what: "hybrid operator input",
+                expected: 2,
+                got: 1,
+            }
+        );
+
+        let error = executor
+            .execute(&[true], &[1.0, f32::NAN], |_| {
+                exact_calls += 1;
+                Ok(vec![1.0, 2.0])
+            })
+            .unwrap_err();
+        assert_eq!(exact_calls, 0);
+        assert_eq!(
+            error,
+            NeuralOperatorError::NonFinite {
+                what: "hybrid operator input",
+                index: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn exact_route_rejects_invalid_solver_output() {
+        let mut executor = executor_for(HybridAction::UseExact, 1.0, 0.1);
+        let error = executor
+            .execute(&[true], &[1.0, 2.0], |_| Ok(vec![1.0]))
+            .unwrap_err();
+        assert_eq!(
+            error,
+            NeuralOperatorError::ShapeMismatch {
+                what: "exact operator output",
+                expected: 2,
+                got: 1,
+            }
+        );
+
+        let error = executor
+            .execute(&[true], &[1.0, 2.0], |_| Ok(vec![1.0, f32::INFINITY]))
+            .unwrap_err();
+        assert_eq!(
+            error,
+            NeuralOperatorError::NonFinite {
+                what: "exact operator output",
+                index: 1,
+            }
+        );
     }
 
     #[test]
