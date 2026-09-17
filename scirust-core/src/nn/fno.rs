@@ -234,6 +234,308 @@ impl FnoSpectralConv1d {
     }
 }
 
+/// Canonical representative of one two-dimensional discrete Fourier frequency.
+///
+/// `ky` and `kx` are storage indices in `0..rows` and `0..cols`. A real field has
+/// conjugate symmetry, so a mode and its conjugate `(−ky,−kx)` share one trainable
+/// complex weight. [`low_frequency_modes_2d`] returns exactly one representative
+/// from each retained conjugate pair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FourierMode2d {
+    /// Row-axis Fourier index.
+    pub ky: usize,
+    /// Column-axis Fourier index.
+    pub kx: usize,
+}
+
+impl FourierMode2d {
+    fn conjugate(self, rows: usize, cols: usize) -> Self {
+        Self {
+            ky: (rows - self.ky) % rows,
+            kx: (cols - self.kx) % cols,
+        }
+    }
+
+    fn is_self_conjugate(self, rows: usize, cols: usize) -> bool {
+        self == self.conjugate(rows, cols)
+    }
+}
+
+/// Build a rectangular low-frequency 2-D mode set with one canonical
+/// representative per conjugate pair.
+///
+/// Frequencies are retained when their wrapped absolute indices satisfy
+/// `|ky| <= max_abs_ky` and `|kx| <= max_abs_kx`. The result is sorted and
+/// contains DC. Nyquist self-conjugate modes are included only when the caller's
+/// requested bound reaches them.
+pub fn low_frequency_modes_2d(
+    rows: usize,
+    cols: usize,
+    max_abs_ky: usize,
+    max_abs_kx: usize,
+) -> Vec<FourierMode2d> {
+    assert!(rows > 0 && cols > 0, "FNO 2-D grid axes must be non-zero");
+    assert!(max_abs_ky <= rows / 2, "max_abs_ky exceeds Nyquist");
+    assert!(max_abs_kx <= cols / 2, "max_abs_kx exceeds Nyquist");
+    let mut modes = Vec::new();
+    for ky in 0..rows
+    {
+        let abs_ky = ky.min(rows - ky);
+        if abs_ky > max_abs_ky
+        {
+            continue;
+        }
+        for kx in 0..cols
+        {
+            let abs_kx = kx.min(cols - kx);
+            if abs_kx > max_abs_kx
+            {
+                continue;
+            }
+            let mode = FourierMode2d { ky, kx };
+            let conjugate = mode.conjugate(rows, cols);
+            if mode <= conjugate
+            {
+                modes.push(mode);
+            }
+        }
+    }
+    modes
+}
+
+fn validate_modes_2d(rows: usize, cols: usize, modes: &[FourierMode2d]) {
+    assert!(!modes.is_empty(), "FNO 2-D mode set must not be empty");
+    let mut previous = None;
+    for &mode in modes
+    {
+        assert!(
+            mode.ky < rows && mode.kx < cols,
+            "FNO 2-D mode out of range"
+        );
+        let conjugate = mode.conjugate(rows, cols);
+        assert!(
+            mode <= conjugate,
+            "FNO 2-D modes must use canonical conjugate representatives"
+        );
+        if let Some(prev) = previous
+        {
+            assert!(prev < mode, "FNO 2-D modes must be strictly increasing");
+        }
+        previous = Some(mode);
+    }
+}
+
+fn dft2_forward(rows: usize, cols: usize, modes: &[FourierMode2d]) -> (Vec<f32>, Vec<f32>) {
+    let points = rows * cols;
+    let mut cf = vec![0.0f32; modes.len() * points];
+    let mut sf = vec![0.0f32; modes.len() * points];
+    for (m, mode) in modes.iter().copied().enumerate()
+    {
+        for y in 0..rows
+        {
+            for x in 0..cols
+            {
+                let phase = TAU
+                    * (mode.ky as f32 * y as f32 / rows as f32
+                        + mode.kx as f32 * x as f32 / cols as f32);
+                let j = y * cols + x;
+                cf[m * points + j] = phase.cos();
+                sf[m * points + j] = -phase.sin();
+            }
+        }
+    }
+    (cf, sf)
+}
+
+fn dft2_inverse(rows: usize, cols: usize, modes: &[FourierMode2d]) -> (Vec<f32>, Vec<f32>) {
+    let points = rows * cols;
+    let norm = points as f32;
+    let mut ic = vec![0.0f32; points * modes.len()];
+    let mut is = vec![0.0f32; points * modes.len()];
+    for y in 0..rows
+    {
+        for x in 0..cols
+        {
+            let j = y * cols + x;
+            for (m, mode) in modes.iter().copied().enumerate()
+            {
+                let factor = if mode.is_self_conjugate(rows, cols)
+                {
+                    1.0
+                }
+                else
+                {
+                    2.0
+                };
+                let phase = TAU
+                    * (mode.ky as f32 * y as f32 / rows as f32
+                        + mode.kx as f32 * x as f32 / cols as f32);
+                ic[j * modes.len() + m] = factor * phase.cos() / norm;
+                is[j * modes.len() + m] = factor * phase.sin() / norm;
+            }
+        }
+    }
+    (ic, is)
+}
+
+/// Trainable 2-D Fourier spectral convolution over a real `(rows, cols, width)` field.
+///
+/// The implementation uses a fixed real/imaginary DFT matrix over the flattened
+/// spatial grid and one complex `width × width` trainable matrix per canonical
+/// Fourier-mode representative. Conjugate symmetry is restored explicitly by
+/// the inverse basis, so the output remains real without storing duplicate
+/// negative-frequency weights.
+pub struct FnoSpectralConv2d {
+    ar: TensorND, // (modes, width, width)
+    ai: TensorND, // (modes, width, width)
+    rows: usize,
+    cols: usize,
+    modes: Vec<FourierMode2d>,
+    width: usize,
+    ar_idx: Option<usize>,
+    ai_idx: Option<usize>,
+}
+
+impl FnoSpectralConv2d {
+    /// Create a 2-D spectral convolution from a canonical mode set.
+    pub fn new(
+        rows: usize,
+        cols: usize,
+        modes: Vec<FourierMode2d>,
+        width: usize,
+        rng: &mut PcgEngine,
+    ) -> Self {
+        assert!(width > 0, "FNO 2-D width must be non-zero");
+        validate_modes_2d(rows, cols, &modes);
+        let scale = 1.0 / width as f32;
+        let count = modes.len() * width * width;
+        let ar = (0..count)
+            .map(|_| rng.float_signed() * scale)
+            .collect::<Vec<_>>();
+        let ai = (0..count)
+            .map(|_| rng.float_signed() * scale)
+            .collect::<Vec<_>>();
+        Self {
+            ar: TensorND::new(ar, vec![modes.len(), width, width]),
+            ai: TensorND::new(ai, vec![modes.len(), width, width]),
+            rows,
+            cols,
+            modes,
+            width,
+            ar_idx: None,
+            ai_idx: None,
+        }
+    }
+
+    /// Canonical Fourier modes represented by this convolution.
+    pub fn modes(&self) -> &[FourierMode2d] {
+        &self.modes
+    }
+
+    /// Forward `(rows, cols, width) -> (rows, cols, width)`.
+    pub fn forward<'t>(&mut self, tape: &'t NdTape, v: NdVar<'t>) -> NdVar<'t> {
+        assert_eq!(
+            v.shape(),
+            vec![self.rows, self.cols, self.width],
+            "FNO 2-D input shape mismatch"
+        );
+        let points = self.rows * self.cols;
+        let mode_count = self.modes.len();
+        let flat = v.reshape(&[points, self.width]);
+        let (cf, sf) = dft2_forward(self.rows, self.cols, &self.modes);
+        let cfv = tape.input(TensorND::new(cf, vec![mode_count, points]));
+        let sfv = tape.input(TensorND::new(sf, vec![mode_count, points]));
+        let vre = cfv.matmul(flat).reshape(&[mode_count, self.width, 1]);
+        let vim = sfv.matmul(flat).reshape(&[mode_count, self.width, 1]);
+
+        let arv = tape.input(self.ar.clone());
+        self.ar_idx = Some(arv.idx());
+        let aiv = tape.input(self.ai.clone());
+        self.ai_idx = Some(aiv.idx());
+        let outre = arv
+            .bmm(vre)
+            .sub(aiv.bmm(vim))
+            .reshape(&[mode_count, self.width]);
+        let outim = arv
+            .bmm(vim)
+            .add(aiv.bmm(vre))
+            .reshape(&[mode_count, self.width]);
+
+        let (ic, is) = dft2_inverse(self.rows, self.cols, &self.modes);
+        let icv = tape.input(TensorND::new(ic, vec![points, mode_count]));
+        let isv = tape.input(TensorND::new(is, vec![points, mode_count]));
+        icv.matmul(outre)
+            .sub(isv.matmul(outim))
+            .reshape(&[self.rows, self.cols, self.width])
+    }
+
+    /// Trainable real/imaginary mode-weight tensors.
+    pub fn parameters(&mut self) -> Vec<NdParam<'_>> {
+        let mut params = Vec::new();
+        if let Some(i) = self.ar_idx
+        {
+            params.push(NdParam {
+                value: &mut self.ar,
+                grad_idx: i,
+            });
+        }
+        if let Some(i) = self.ai_idx
+        {
+            params.push(NdParam {
+                value: &mut self.ai,
+                grad_idx: i,
+            });
+        }
+        params
+    }
+}
+
+/// One trainable 2-D FNO block: pointwise lift, global 2-D spectral convolution,
+/// local pointwise linear branch, ReLU, and pointwise projection.
+pub struct NdFno2d {
+    lift: NdLinear,
+    spectral: FnoSpectralConv2d,
+    local: NdLinear,
+    proj: NdLinear,
+}
+
+impl NdFno2d {
+    /// Construct a deterministic 2-D FNO block.
+    pub fn new(
+        rows: usize,
+        cols: usize,
+        in_ch: usize,
+        out_ch: usize,
+        width: usize,
+        modes: Vec<FourierMode2d>,
+        rng: &mut PcgEngine,
+    ) -> Self {
+        Self {
+            lift: NdLinear::new(in_ch, width, rng),
+            spectral: FnoSpectralConv2d::new(rows, cols, modes, width, rng),
+            local: NdLinear::new(width, width, rng),
+            proj: NdLinear::new(width, out_ch, rng),
+        }
+    }
+
+    /// Forward over `(rows, cols, in_ch)`.
+    pub fn forward<'t>(&mut self, tape: &'t NdTape, x: NdVar<'t>) -> NdVar<'t> {
+        let v = self.lift.forward(tape, x);
+        let global = self.spectral.forward(tape, v);
+        let local = self.local.forward(tape, v);
+        self.proj.forward(tape, global.add(local).relu())
+    }
+
+    /// Trainable parameters of lift, spectral, local and projection branches.
+    pub fn parameters(&mut self) -> Vec<NdParam<'_>> {
+        let mut params = self.lift.parameters();
+        params.extend(self.spectral.parameters());
+        params.extend(self.local.parameters());
+        params.extend(self.proj.parameters());
+        params
+    }
+}
+
 /// **FNO block** — one Fourier-operator layer: lift the `in_ch` input channels to a
 /// `width`-dimensional channel space, run a global [`FnoSpectralConv1d`] in parallel
 /// with a **local** pointwise linear `W`, sum them, apply a ReLU non-linearity, and
@@ -562,5 +864,134 @@ mod tests {
         let (first2, last2) = run();
         assert_eq!(first.to_bits(), first2.to_bits());
         assert_eq!(last.to_bits(), last2.to_bits());
+    }
+
+    #[test]
+    fn low_frequency_modes_2d_are_canonical_conjugate_representatives() {
+        let modes = low_frequency_modes_2d(5, 5, 1, 1);
+        assert_eq!(modes.len(), 5);
+        assert_eq!(modes[0], FourierMode2d { ky: 0, kx: 0 });
+        for (index, &mode) in modes.iter().enumerate()
+        {
+            assert!(mode <= mode.conjugate(5, 5));
+            for &other in &modes[index + 1..]
+            {
+                assert_ne!(other, mode.conjugate(5, 5));
+            }
+        }
+    }
+
+    #[test]
+    fn fno2d_identity_reconstructs_bandlimited_real_field() {
+        let (rows, cols, width) = (5usize, 5usize, 1usize);
+        let modes = low_frequency_modes_2d(rows, cols, 1, 1);
+        let mut rng = PcgEngine::new(11);
+        let mut conv = FnoSpectralConv2d::new(rows, cols, modes.clone(), width, &mut rng);
+        conv.ar = TensorND::new(vec![1.0; modes.len()], vec![modes.len(), 1, 1]);
+        conv.ai = TensorND::new(vec![0.0; modes.len()], vec![modes.len(), 1, 1]);
+
+        let mut field = vec![0.0f32; rows * cols];
+        for y in 0..rows
+        {
+            for x in 0..cols
+            {
+                let mut value = 1.25f32;
+                for (index, mode) in modes.iter().copied().enumerate().skip(1)
+                {
+                    let phase = TAU
+                        * (mode.ky as f32 * y as f32 / rows as f32
+                            + mode.kx as f32 * x as f32 / cols as f32);
+                    let a = 0.07 * index as f32;
+                    let b = -0.04 * index as f32;
+                    value += a * phase.cos() + b * phase.sin();
+                }
+                field[y * cols + x] = value;
+            }
+        }
+
+        let tape = NdTape::new();
+        let input = tape.input(TensorND::new(field.clone(), vec![rows, cols, width]));
+        let output = tape.value(conv.forward(&tape, input));
+        for (got, want) in output.data.iter().zip(&field)
+        {
+            assert!(
+                (got - want).abs() < 3e-5,
+                "FNO 2-D reconstruction: {got} != {want}"
+            );
+        }
+    }
+
+    #[test]
+    fn fno2d_spectral_conv_gradient_matches_finite_difference() {
+        let (rows, cols, width) = (3usize, 3usize, 1usize);
+        let modes = low_frequency_modes_2d(rows, cols, 1, 1);
+        let mut rng = PcgEngine::new(19);
+        let mut conv = FnoSpectralConv2d::new(rows, cols, modes.clone(), width, &mut rng);
+        let ar0 = conv.ar.data.to_vec();
+        let ai0 = conv.ai.data.to_vec();
+        let field: Vec<f32> = (0..rows * cols)
+            .map(|i| ((i as f32) * 0.37 - 0.8).sin())
+            .collect();
+
+        let evaluate = |values: &[f32], ar: &[f32], ai: &[f32]| -> f32 {
+            let mut local_rng = PcgEngine::new(1);
+            let mut local =
+                FnoSpectralConv2d::new(rows, cols, modes.clone(), width, &mut local_rng);
+            local.ar = TensorND::new(ar.to_vec(), vec![modes.len(), 1, 1]);
+            local.ai = TensorND::new(ai.to_vec(), vec![modes.len(), 1, 1]);
+            let tape = NdTape::new();
+            let x = tape.input(TensorND::new(values.to_vec(), vec![rows, cols, width]));
+            let y = local.forward(&tape, x);
+            tape.value(y.mul(y).sum()).data[0]
+        };
+
+        let tape = NdTape::new();
+        let x = tape.input(TensorND::new(field.clone(), vec![rows, cols, width]));
+        let y = conv.forward(&tape, x);
+        let grads = tape.backward(y.mul(y).sum());
+        let gx = grads[x.idx()].clone();
+        let gar = grads[conv.ar_idx.unwrap()].clone();
+        let gai = grads[conv.ai_idx.unwrap()].clone();
+        let eps = 1e-3f32;
+
+        for index in 0..field.len()
+        {
+            let mut up = field.clone();
+            let mut down = field.clone();
+            up[index] += eps;
+            down[index] -= eps;
+            let numeric = (evaluate(&up, &ar0, &ai0) - evaluate(&down, &ar0, &ai0)) / (2.0 * eps);
+            assert!(
+                (numeric - gx.data[index]).abs() < 4e-2,
+                "FNO 2-D input grad {index}: numeric {numeric}, analytic {}",
+                gx.data[index]
+            );
+        }
+        for index in 0..modes.len()
+        {
+            let mut up = ar0.clone();
+            let mut down = ar0.clone();
+            up[index] += eps;
+            down[index] -= eps;
+            let numeric =
+                (evaluate(&field, &up, &ai0) - evaluate(&field, &down, &ai0)) / (2.0 * eps);
+            assert!(
+                (numeric - gar.data[index]).abs() < 4e-2,
+                "FNO 2-D Ar grad {index}: numeric {numeric}, analytic {}",
+                gar.data[index]
+            );
+
+            let mut up = ai0.clone();
+            let mut down = ai0.clone();
+            up[index] += eps;
+            down[index] -= eps;
+            let numeric =
+                (evaluate(&field, &ar0, &up) - evaluate(&field, &ar0, &down)) / (2.0 * eps);
+            assert!(
+                (numeric - gai.data[index]).abs() < 4e-2,
+                "FNO 2-D Ai grad {index}: numeric {numeric}, analytic {}",
+                gai.data[index]
+            );
+        }
     }
 }
