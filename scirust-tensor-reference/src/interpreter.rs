@@ -206,10 +206,10 @@ impl PreparedReferenceKernel {
                     permutation,
                 }
             },
-            (
-                ReferenceOpcode::MatMul | ReferenceOpcode::BatchMatMul,
-                ReferenceAttributes::None,
-            ) => prepare_matrix_product(artifact, opcode)?,
+            (ReferenceOpcode::MatMul | ReferenceOpcode::BatchMatMul, ReferenceAttributes::None) =>
+            {
+                prepare_matrix_product(artifact, opcode)?
+            },
             (
                 ReferenceOpcode::Relu
                 | ReferenceOpcode::ZerosLike

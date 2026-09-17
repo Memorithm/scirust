@@ -5,20 +5,20 @@
 //! # What is, and is not, reachable through the public API
 //!
 //! `scirust_tensor_compile::KernelLowerer::lower` already enforces, before a
-//! `LoweredPlan` can exist: uniform operand/result dtype, exact operand arity,
-//! valid reshape/permutation semantics, sequential `LogicalKernelId`
-//! assignment, and rejection of `MatMul`. Consequently several of
+//! `LoweredPlan` can exist: operand/result dtype consistency, exact operand
+//! arity, matrix-product shape contracts, valid reshape/permutation semantics
+//! and sequential `LogicalKernelId` assignment. Consequently several of
 //! [`crate::ReferenceGenerationError`]'s variants — `UnsupportedKernelFamily`,
 //! `MixedDTypes`, `ScaleFactorTypeMismatch`, `ScaleFactorBitsOverflow`,
 //! `AxisIndexOverflow`, generator-side `UnexpectedOperandCount`,
-// `TooManyKernels`, `DuplicateLogicalKernel`, `OutOfOrderLogicalKernel` and
+//! `TooManyKernels`, `DuplicateLogicalKernel`, `OutOfOrderLogicalKernel` and
 //! `MissingLogicalKernel` — cannot be produced by feeding this crate a real
 //! `LoweredPlan`. They are not exercised here, per the same "don't fabricate
 //! API surface just to force coverage" discipline `scirust-tensor-compile`
-//! itself followed for its own defensive lowering errors. What *is*
-//! reachable — `UnsupportedDType` and `RankTooLarge` at generation time, and
-//! every [`crate::ReferenceDecodeError`] variant, reachable by feeding the
-//! decoder deliberately malformed bytes — is tested below.
+//! itself follows for defensive lowering errors. What *is* reachable —
+//! `UnsupportedDType` and `RankTooLarge` at generation time, and every
+//! [`crate::ReferenceDecodeError`] variant, reachable by feeding the decoder
+//! deliberately malformed bytes — is tested below.
 
 use scirust_compute::{DType, KernelFormat, KernelModule, Shape};
 use scirust_tensor_compile::{CanonicalCompiler, ExternalBindings, KernelLowerer, LoweredPlan};
@@ -477,8 +477,6 @@ fn to_kernel_module_uses_reference_format_and_the_derived_entry_point() {
 
 #[test]
 fn dimensions_beyond_u32_max_are_encoded_as_u64() {
-    // 5_000_000_000 > u32::MAX (4_294_967_295); only representable on the wire
-    // because dimensions are u64.
     const HUGE: usize = 5_000_000_000;
 
     let plan = single_unary_plan(Operation::Relu, f32_type(vec![HUGE]));
@@ -497,22 +495,56 @@ fn dimensions_beyond_u32_max_are_encoded_as_u64() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn matmul_never_reaches_a_lowered_plan() {
+fn matmul_generates_prepares_and_executes_as_reference_opcode() {
     let mut graph = Graph::new();
-    let lhs = graph.add_input("lhs", f32_type(vec![2, 2])).unwrap();
-    let rhs = graph.add_input("rhs", f32_type(vec![2, 2])).unwrap();
+    let lhs = graph.add_input("lhs", f32_type(vec![2, 3])).unwrap();
+    let rhs = graph.add_input("rhs", f32_type(vec![3, 2])).unwrap();
     let product = graph
         .add_node(Operation::MatMul, vec![lhs, rhs], f32_type(vec![2, 2]))
         .unwrap();
     graph.set_outputs(vec![product]).unwrap();
 
-    let plan = CanonicalCompiler::new().compile(&graph).unwrap();
-    let bindings = ExternalBindings::derive(&plan);
+    let lowered = lower(&graph);
+    let artifact = only_artifact(&lowered);
+    assert_eq!(artifact.opcode(), ReferenceOpcode::MatMul);
+    assert_eq!(artifact.operands()[0].dims(), &[2, 3]);
+    assert_eq!(artifact.operands()[1].dims(), &[3, 2]);
+    assert_eq!(artifact.result().dims(), &[2, 2]);
 
-    // `scirust_tensor_compile`'s lowering phase already rejects `MatMul`
-    // before a `LoweredPlan` can exist, so `ReferenceKernelGenerator` never
-    // has to reject it itself.
-    assert!(KernelLowerer::new().lower(&plan, &bindings).is_err());
+    let prepared = PreparedReferenceKernel::from_artifact(&artifact).unwrap();
+    let left = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+    let right = [7.0f32, 8.0, 9.0, 10.0, 11.0, 12.0];
+    let mut output = vec![0.0f32; prepared.result_length()];
+    ReferenceInterpreter::new()
+        .execute(&prepared, &[&left, &right], &mut output)
+        .unwrap();
+    assert_eq!(output, vec![58.0, 64.0, 139.0, 154.0]);
+}
+
+#[test]
+fn batch_matmul_generates_prepares_and_executes_as_reference_opcode() {
+    let mut graph = Graph::new();
+    let lhs = graph.add_input("lhs", f32_type(vec![2, 1, 2])).unwrap();
+    let rhs = graph.add_input("rhs", f32_type(vec![2, 2, 2])).unwrap();
+    let product = graph
+        .add_node(
+            Operation::BatchMatMul,
+            vec![lhs, rhs],
+            f32_type(vec![2, 1, 2]),
+        )
+        .unwrap();
+    graph.set_outputs(vec![product]).unwrap();
+
+    let artifact = only_artifact(&lower(&graph));
+    assert_eq!(artifact.opcode(), ReferenceOpcode::BatchMatMul);
+    let prepared = PreparedReferenceKernel::from_artifact(&artifact).unwrap();
+    let left = [1.0f32, 2.0, 3.0, 4.0];
+    let right = [5.0f32, 6.0, 7.0, 8.0, 1.0, 0.0, 0.0, 1.0];
+    let mut output = vec![0.0f32; prepared.result_length()];
+    ReferenceInterpreter::new()
+        .execute(&prepared, &[&left, &right], &mut output)
+        .unwrap();
+    assert_eq!(output, vec![19.0, 22.0, 3.0, 4.0]);
 }
 
 #[test]
@@ -624,7 +656,7 @@ fn unknown_dtype_tag_is_rejected() {
 fn known_but_unsupported_dtype_tag_is_distinguishable_from_an_unknown_one() {
     let mut bytes = relu_baseline_bytes();
     let offset = REFERENCE_MAGIC.len() + 2 + 2 + 4 + 2;
-    bytes[offset..offset + 2].copy_from_slice(&0x0001u16.to_le_bytes()); // Bool's tag
+    bytes[offset..offset + 2].copy_from_slice(&0x0001u16.to_le_bytes());
 
     assert_eq!(
         ReferenceKernelArtifact::decode(&bytes),
@@ -648,7 +680,7 @@ fn invalid_result_count_is_rejected() {
 fn unexpected_operand_count_is_rejected() {
     let mut bytes = relu_baseline_bytes();
     let offset = REFERENCE_MAGIC.len() + 2 + 2 + 4 + 2 + 2;
-    bytes[offset..offset + 2].copy_from_slice(&2u16.to_le_bytes()); // Relu expects 1
+    bytes[offset..offset + 2].copy_from_slice(&2u16.to_le_bytes());
 
     assert_eq!(
         ReferenceKernelArtifact::decode(&bytes),
@@ -692,16 +724,13 @@ fn trailing_bytes_are_rejected() {
 
 #[test]
 fn decoder_checks_the_rank_limit_before_any_rank_sized_allocation() {
-    // A minimal, truncated-after-rank stream: if the rank check ran after
-    // trying to read `rank` dimensions, this would report `TruncatedInput`
-    // instead. It must report `RankTooLarge`.
     let mut bytes = Vec::new();
     bytes.extend_from_slice(REFERENCE_MAGIC.as_slice());
     bytes.extend_from_slice(&REFERENCE_FORMAT_VERSION.major().to_le_bytes());
     bytes.extend_from_slice(&REFERENCE_FORMAT_VERSION.minor().to_le_bytes());
     bytes.extend_from_slice(&0u32.to_le_bytes());
     bytes.extend_from_slice(&ReferenceOpcode::Relu.code().to_le_bytes());
-    bytes.extend_from_slice(&0x000Au16.to_le_bytes()); // F32
+    bytes.extend_from_slice(&0x000Au16.to_le_bytes());
     bytes.extend_from_slice(&1u16.to_le_bytes());
     bytes.extend_from_slice(&1u16.to_le_bytes());
     bytes.extend_from_slice(&(REFERENCE_MAX_RANK + 1).to_le_bytes());
@@ -726,11 +755,10 @@ fn decoder_rejects_a_layout_whose_dimension_product_overflows_u64() {
     bytes.extend_from_slice(&0x000Au16.to_le_bytes());
     bytes.extend_from_slice(&1u16.to_le_bytes());
     bytes.extend_from_slice(&1u16.to_le_bytes());
-    // rank 2, dims [u64::MAX, 2]: their product overflows u64 outright.
     bytes.extend_from_slice(&2u16.to_le_bytes());
     bytes.extend_from_slice(&u64::MAX.to_le_bytes());
     bytes.extend_from_slice(&2u64.to_le_bytes());
-    bytes.extend_from_slice(&0u64.to_le_bytes()); // declared elements, moot: overflow trips first
+    bytes.extend_from_slice(&0u64.to_le_bytes());
 
     assert_eq!(
         ReferenceKernelArtifact::decode(&bytes),
@@ -741,9 +769,6 @@ fn decoder_rejects_a_layout_whose_dimension_product_overflows_u64() {
 #[test]
 fn decoder_rejects_a_layout_whose_declared_element_count_disagrees_with_its_dimensions() {
     let mut bytes = relu_baseline_bytes();
-
-    // The Relu baseline's operand[0] layout is rank 2, dims [2, 2]: its
-    // `elements` field is the last 8 bytes of that layout.
     let elements_offset = header_len() + layout_total_len(2) - 8;
     bytes[elements_offset..elements_offset + 8].copy_from_slice(&999u64.to_le_bytes());
 
@@ -759,9 +784,6 @@ fn decoder_rejects_an_elementwise_operand_shape_disagreeing_with_the_result() {
     let artifact = only_artifact(&plan);
     let mut bytes = artifact.encode();
 
-    // Corrupt operand[0]'s first dimension (2 -> 99), keeping its own layout
-    // self-consistent (dims product == declared elements) so this exercises
-    // the *cross*-layout `ShapeMismatch` check, not `ElementCountMismatch`.
     let first_dim_offset = header_len() + 2;
     bytes[first_dim_offset..first_dim_offset + 8].copy_from_slice(&99u64.to_le_bytes());
     let elements_offset = header_len() + layout_total_len(2) - 8;
@@ -808,8 +830,6 @@ fn decoder_rejects_a_permutation_axis_out_of_bounds() {
 #[test]
 fn decoder_rejects_a_permutation_disagreeing_with_the_permuted_shape() {
     let (mut bytes, artifact) = permute_baseline();
-    // [1, 0] -> [0, 1]: still a valid permutation, but now inconsistent with
-    // the declared result shape [3, 2].
     let axes_start = bytes.len() - artifact.result().rank() * 2;
     bytes[axes_start..axes_start + 2].copy_from_slice(&0u16.to_le_bytes());
     bytes[axes_start + 2..axes_start + 4].copy_from_slice(&1u16.to_le_bytes());
@@ -826,9 +846,8 @@ fn decoder_rejects_an_attribute_tag_inconsistent_with_the_opcode() {
     let artifact = only_artifact(&plan);
     let mut bytes = artifact.encode();
 
-    // `Add` has no attribute payload, so its attribute tag is the final u16.
     let tag_offset = bytes.len() - 2;
-    bytes[tag_offset..tag_offset + 2].copy_from_slice(&0x0001u16.to_le_bytes()); // Scale's tag
+    bytes[tag_offset..tag_offset + 2].copy_from_slice(&0x0001u16.to_le_bytes());
 
     assert_eq!(
         ReferenceKernelArtifact::decode(&bytes),
@@ -856,23 +875,8 @@ fn decoder_rejects_an_unknown_attribute_tag() {
 // ===========================================================================
 // CPU interpreter
 // ===========================================================================
-//
-// Bit-level assertions use `to_bits()` wherever the semantics demand it: signed
-// zeros, infinities and NaN payloads are indistinguishable under `==` (or
-// compare unequal, for NaN), so value equality would silently pass where the
-// contract requires an exact bit pattern.
-//
-// NaN payload expectations follow the crate's stated contract: exact bits are
-// asserted only for operations that return or copy a value without arithmetic
-// (the `Relu` NaN branch, `ShapeCopy`, `Permute`). For `Add`/`Sub`/`Mul`/`Div`/
-// `Scale` a NaN operand is asserted to produce *some* NaN via `is_nan()`, never
-// a specific payload, because IEEE 754 leaves the propagated payload
-// unspecified.
 
-/// A NaN with a non-trivial payload, distinguishable from any canonical NaN.
 const PAYLOAD_NAN_BITS: u32 = 0x7FC0_1234;
-
-/// A second, different NaN payload.
 const OTHER_NAN_BITS: u32 = 0x7FE0_5678;
 
 fn prepared_from(plan: &LoweredPlan) -> PreparedReferenceKernel {
@@ -891,7 +895,6 @@ fn bits(values: &[f32]) -> Vec<u32> {
     values.iter().map(|value| value.to_bits()).collect()
 }
 
-/// Runs a single-operand kernel and returns the output bits.
 fn run_unary_bits(plan: &LoweredPlan, input: &[f32]) -> Vec<u32> {
     let prepared = prepared_from(plan);
     let mut output = vec![0.0f32; prepared.result_length()];
@@ -899,7 +902,6 @@ fn run_unary_bits(plan: &LoweredPlan, input: &[f32]) -> Vec<u32> {
     bits(&output)
 }
 
-/// Runs a two-operand kernel and returns the raw output.
 fn run_binary(plan: &LoweredPlan, left: &[f32], right: &[f32]) -> Vec<f32> {
     let prepared = prepared_from(plan);
     let mut output = vec![0.0f32; prepared.result_length()];
@@ -984,7 +986,6 @@ fn rejects_a_module_whose_entry_point_disagrees_with_the_artifact() {
     let plan = single_unary_plan(Operation::Relu, f32_type(vec![2]));
     let artifact = only_artifact(&plan);
 
-    // Same valid Reference payload, deliberately mislabelled.
     let module = KernelModule::new(
         KernelFormat::Reference,
         "not_the_derived_name",
@@ -1006,7 +1007,7 @@ fn rejects_a_module_with_corrupted_encoding() {
     let plan = single_unary_plan(Operation::Relu, f32_type(vec![2]));
     let artifact = only_artifact(&plan);
     let mut code = artifact.encode();
-    code[0] ^= 0xFF; // break the magic
+    code[0] ^= 0xFF;
 
     let module = KernelModule::new(KernelFormat::Reference, artifact.entry_point(), code).unwrap();
 
@@ -1036,7 +1037,6 @@ fn rejects_exp_at_preparation() {
         }
     );
 
-    // And through the module path too, so a caller cannot slip past it.
     let module = artifact.to_kernel_module().unwrap();
     assert_eq!(
         PreparedReferenceKernel::from_kernel_module(&module).unwrap_err(),
@@ -1076,14 +1076,14 @@ fn relu_maps_every_float_class_exactly() {
     let plan = single_unary_plan(Operation::Relu, f32_type(vec![8]));
 
     let input = [
-        2.5f32,                           // positive        -> unchanged
-        -2.5f32,                          // negative        -> +0.0
-        0.0f32,                           // +0.0            -> +0.0
-        -0.0f32,                          // -0.0            -> +0.0
-        f32::from_bits(PAYLOAD_NAN_BITS), // NaN w/ payload  -> same bits
-        f32::INFINITY,                    // +inf            -> +inf
-        f32::NEG_INFINITY,                // -inf            -> +0.0
-        f32::from_bits(1),                // subnormal > 0   -> unchanged
+        2.5f32,
+        -2.5f32,
+        0.0f32,
+        -0.0f32,
+        f32::from_bits(PAYLOAD_NAN_BITS),
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        f32::from_bits(1),
     ];
 
     let observed = run_unary_bits(&plan, &input);
@@ -1102,8 +1102,6 @@ fn relu_maps_every_float_class_exactly() {
         ]
     );
 
-    // `-0.0` must become `+0.0`, not merely "a zero": the two compare equal
-    // under `==`, so only the bits distinguish them.
     assert_ne!(observed[3], (-0.0f32).to_bits());
 }
 
@@ -1141,7 +1139,6 @@ fn scale_by_negative_zero_produces_signed_zeros() {
     let plan = scale_plan(f32_type(vec![3]), Scalar::f32(-0.0));
     let input = [1.0f32, -1.0, 0.0];
 
-    // IEEE 754: 1.0 * -0.0 = -0.0, -1.0 * -0.0 = +0.0, 0.0 * -0.0 = -0.0.
     assert_eq!(run_unary_bits(&plan, &input), bits(&[-0.0f32, 0.0, -0.0]));
 }
 
@@ -1198,7 +1195,6 @@ fn zero_divided_by_zero_is_nan() {
     let plan = single_binary_plan(Operation::Div, f32_type(vec![2]));
     let output = run_binary(&plan, &[0.0, -0.0], &[0.0, 0.0]);
 
-    // A NaN is required; its payload is deliberately not asserted.
     assert!(output[0].is_nan());
     assert!(output[1].is_nan());
 }
@@ -1221,7 +1217,6 @@ fn nan_operands_propagate_a_nan_without_a_payload_guarantee() {
         assert!(output[1].is_nan());
     }
 
-    // Scale follows the same rule: NaN in, NaN out, payload unspecified.
     let scale = scale_plan(f32_type(vec![1]), Scalar::f32(2.0));
     let prepared = prepared_from(&scale);
     let mut output = [0.0f32; 1];
@@ -1243,7 +1238,6 @@ fn subnormal_and_near_limit_values_are_computed_exactly() {
     assert_eq!(output[0].to_bits(), f32::from_bits(2).to_bits());
     assert_eq!(output[1].to_bits(), f32::MIN_POSITIVE.to_bits());
     assert_eq!(output[2].to_bits(), f32::MAX.to_bits());
-    // MAX + MAX overflows to +inf under round-to-nearest.
     assert_eq!(output[3].to_bits(), f32::INFINITY.to_bits());
 }
 
@@ -1257,7 +1251,6 @@ fn repeated_execution_reproduces_identical_bits() {
 
     let mut first = vec![0.0f32; prepared.result_length()];
     let mut second = vec![0.0f32; prepared.result_length()];
-
     run(&prepared, &[&left, &right], &mut first).unwrap();
     run(&prepared, &[&left, &right], &mut second).unwrap();
 
@@ -1278,7 +1271,6 @@ fn shape_copy_copies_in_linear_order_without_touching_the_source() {
     run(&prepared, &[&source], &mut output).unwrap();
 
     assert_eq!(bits(&output), bits(&source));
-    // The source is borrowed immutably and must be untouched.
     assert_eq!(bits(&source), bits(&[1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0]));
 }
 
@@ -1305,10 +1297,7 @@ fn shape_copy_preserves_nan_payloads_and_signed_zeros_exactly() {
 
 #[test]
 fn permute_transposes_a_2d_tensor() {
-    // [2, 3] with permutation [1, 0] -> [3, 2].
     let plan = transpose_plan(f32_type(vec![2, 3]), f32_type(vec![3, 2]), vec![1, 0]);
-
-    // Row-major [[1,2,3],[4,5,6]] transposes to [[1,4],[2,5],[3,6]].
     let source = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
 
     assert_eq!(
@@ -1319,7 +1308,6 @@ fn permute_transposes_a_2d_tensor() {
 
 #[test]
 fn permute_reorders_a_3d_tensor() {
-    // [2, 3, 4] with permutation [2, 0, 1] -> [4, 2, 3].
     let plan = transpose_plan(
         f32_type(vec![2, 3, 4]),
         f32_type(vec![4, 2, 3]),
@@ -1327,7 +1315,6 @@ fn permute_reorders_a_3d_tensor() {
     );
     let prepared = prepared_from(&plan);
 
-    // source[i, j, k] = 100*i + 10*j + k, so every element is identifiable.
     let mut source = vec![0.0f32; 24];
     for i in 0..2
     {
@@ -1343,9 +1330,6 @@ fn permute_reorders_a_3d_tensor() {
     let mut output = vec![0.0f32; prepared.result_length()];
     run(&prepared, &[&source], &mut output).unwrap();
 
-    // Convention: output.shape[i] == input.shape[permutation[i]], so with
-    // permutation [2, 0, 1] the output axes are (k, i, j) and
-    // output[k, i, j] == input[i, j, k].
     let mut expected = vec![0.0f32; 24];
     for k in 0..4
     {
@@ -1374,7 +1358,6 @@ fn permute_handles_a_rank_zero_scalar() {
     let plan = transpose_plan(f32_type(vec![]), f32_type(vec![]), vec![]);
     let prepared = prepared_from(&plan);
 
-    // A rank-0 tensor holds exactly one element (the empty product).
     assert_eq!(prepared.result_length(), 1);
     assert_eq!(prepared.operand_lengths(), &[1]);
 
@@ -1386,7 +1369,6 @@ fn permute_handles_a_rank_zero_scalar() {
 
 #[test]
 fn permute_handles_a_zero_dimension_without_dividing_by_zero() {
-    // [0, 3] with permutation [1, 0] -> [3, 0]: zero elements either way.
     let plan = transpose_plan(f32_type(vec![0, 3]), f32_type(vec![3, 0]), vec![1, 0]);
     let prepared = prepared_from(&plan);
 
@@ -1394,7 +1376,6 @@ fn permute_handles_a_zero_dimension_without_dividing_by_zero() {
     assert_eq!(prepared.operand_lengths(), &[0]);
 
     let mut output: Vec<f32> = Vec::new();
-    // Must succeed, and in particular must not divide by a zero stride.
     run(&prepared, &[&[]], &mut output).unwrap();
     assert!(output.is_empty());
 }
@@ -1425,7 +1406,6 @@ fn permute_preserves_nan_payloads_bit_for_bit() {
         f32::INFINITY,
     ];
 
-    // Transposing [[a,b],[c,d]] gives [[a,c],[b,d]].
     assert_eq!(
         run_unary_bits(&plan, &source),
         vec![
@@ -1441,7 +1421,6 @@ fn permute_preserves_nan_payloads_bit_for_bit() {
 // Invocation validation — output must stay untouched on every rejection
 // ---------------------------------------------------------------------------
 
-/// Distinctive sentinel: a NaN payload no operation below could produce.
 const SENTINEL_BITS: u32 = 0x7F80_5A5A;
 
 fn sentinel(length: usize) -> Vec<f32> {
@@ -1516,7 +1495,6 @@ fn an_operand_that_is_too_long_is_rejected_and_leaves_the_output_untouched() {
     let prepared = prepared_from(&plan);
     let mut output = sentinel(prepared.result_length());
 
-    // The second operand is the one at fault, so `operand_index` must say 1.
     let error = run(&prepared, &[&[1.0, 2.0], &[1.0, 2.0, 3.0]], &mut output);
 
     assert_eq!(
