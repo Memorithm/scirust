@@ -24,6 +24,7 @@ pub mod loss;
 pub mod metrics;
 pub mod normalizer;
 pub mod spectral;
+pub mod spectral_routing;
 
 pub use boolean::{AnfOperator, AnfPolynomial, BooleanComplexity, F2LinearOperator, PackedBits};
 pub use dataset::{OperatorDataset1d, OperatorSample1d};
@@ -37,6 +38,7 @@ pub use normalizer::ChannelNormalizer;
 pub use spectral::{
     spectral_derivative_1d, spectral_derivative_2d, spectral_laplacian_1d, spectral_laplacian_2d,
 };
+pub use spectral_routing::{BooleanSpectralRouter, SpectralModePlan, SpectralRouterComplexity};
 
 // Existing SciRust operator-learning primitives remain available through the
 // dedicated crate so callers do not have to know their historical locations.

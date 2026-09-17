@@ -83,6 +83,15 @@ pub enum NeuralOperatorError {
     #[error("ANF monomial mask {mask:#x} references a variable outside arity {variables}")]
     InvalidMonomialMask { mask: u64, variables: usize },
 
+    #[error("spectral mode {mode} is outside configured range 0..{configured_modes}")]
+    InvalidSpectralMode {
+        mode: usize,
+        configured_modes: usize,
+    },
+
+    #[error("spectral mode indices must be strictly increasing and unique")]
+    NonCanonicalSpectralModes,
+
     #[error("surrogate cost inputs must be finite and non-negative")]
     InvalidCost,
 }
