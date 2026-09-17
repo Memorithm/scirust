@@ -1403,11 +1403,7 @@ mod tests {
         let lhs = graph.add_input("lhs", typed(vec![5, 2, 3])).unwrap();
         let rhs = graph.add_input("rhs", typed(vec![5, 3, 4])).unwrap();
         let product = graph
-            .add_node(
-                Operation::BatchMatMul,
-                vec![lhs, rhs],
-                typed(vec![5, 2, 4]),
-            )
+            .add_node(Operation::BatchMatMul, vec![lhs, rhs], typed(vec![5, 2, 4]))
             .unwrap();
         graph.set_outputs(vec![product]).unwrap();
 
@@ -1444,11 +1440,7 @@ mod tests {
         let lhs = graph.add_input("lhs", typed(vec![2, 2, 3])).unwrap();
         let rhs = graph.add_input("rhs", typed(vec![3, 3, 4])).unwrap();
         let product = graph
-            .add_node(
-                Operation::BatchMatMul,
-                vec![lhs, rhs],
-                typed(vec![2, 2, 4]),
-            )
+            .add_node(Operation::BatchMatMul, vec![lhs, rhs], typed(vec![2, 2, 4]))
             .unwrap();
         graph.set_outputs(vec![product]).unwrap();
 

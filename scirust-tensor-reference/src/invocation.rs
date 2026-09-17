@@ -65,9 +65,7 @@ pub(crate) fn validate(
         {
             return Err(ReferenceExecutionError::DeterministicMathUnavailable { opcode });
         },
-        ReferenceOpcode::ReluGrad
-        | ReferenceOpcode::BroadcastTo
-        | ReferenceOpcode::ReduceSumTo =>
+        ReferenceOpcode::ReluGrad | ReferenceOpcode::BroadcastTo | ReferenceOpcode::ReduceSumTo =>
         {
             return Err(ReferenceExecutionError::UnsupportedOpcode { opcode });
         },

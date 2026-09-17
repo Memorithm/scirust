@@ -1083,7 +1083,10 @@ fn matmul_executes_through_graph_session() {
 
     let outputs = session.execute(&inputs).expect("MatMul must execute");
     assert_eq!(outputs.len(), 1);
-    assert_eq!(outputs.into_values()[0].values, vec![58.0, 64.0, 139.0, 154.0]);
+    assert_eq!(
+        outputs.into_values()[0].values,
+        vec![58.0, 64.0, 139.0, 154.0]
+    );
 }
 
 #[test]
