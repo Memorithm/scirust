@@ -104,4 +104,18 @@ fn main() {
         "fft_sparse_vs_fft_full_speedup={:.6}",
         fast_mean / fft_sparse_mean
     );
+
+    let local_only_output = fast.predict_local_only(&input).unwrap();
+    println!(
+        "local_only_vs_full_relative_l2={:.9}",
+        relative_l2(&local_only_output, &fast_output).unwrap()
+    );
+    let local_only_mean = mean_seconds(warmups, repeats, || {
+        black_box(fast.predict_local_only(black_box(&input)).unwrap());
+    });
+    println!("local_only_mean_seconds={local_only_mean:.9}");
+    println!(
+        "local_only_vs_full_fft_speedup={:.6}",
+        fast_mean / local_only_mean
+    );
 }

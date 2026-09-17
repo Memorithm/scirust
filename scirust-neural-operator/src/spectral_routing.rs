@@ -136,6 +136,31 @@ pub struct SpectralRouterComplexity {
     pub max_degree: usize,
 }
 
+/// Coarse execution decision for the global Fourier branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SpectralExecutionPlan {
+    /// Skip the complete spectral branch: no forward FFT, complex mixing or inverse FFT.
+    Disabled,
+    /// Execute only the selected canonical modes.
+    Modes(SpectralModePlan),
+}
+
+impl SpectralExecutionPlan {
+    /// Whether this plan executes any spectral transform work.
+    pub const fn spectral_enabled(&self) -> bool {
+        matches!(self, Self::Modes(_))
+    }
+
+    /// Selected modes when the spectral branch is enabled.
+    pub fn modes(&self) -> Option<&SpectralModePlan> {
+        match self
+        {
+            Self::Disabled => None,
+            Self::Modes(plan) => Some(plan),
+        }
+    }
+}
+
 /// One ANF guard per Fourier mode, evaluated before spectral mode mixing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BooleanSpectralRouter {
@@ -206,6 +231,41 @@ impl BooleanSpectralRouter {
             active.push(self.fallback_mode);
         }
         SpectralModePlan::new(self.guards.len(), active)
+    }
+
+    /// Route modes but disable the whole spectral branch when no guard fires.
+    ///
+    /// Unlike [`Self::route`], this method does not inject the configured fallback
+    /// mode. It is intended for an explicit coarse Boolean gate where no admitted
+    /// mode means no Fourier work. Predicate semantics remain caller-defined.
+    pub fn route_or_disable(&self, predicates: &[bool]) -> Result<SpectralExecutionPlan> {
+        if predicates.len() != self.input_arity
+        {
+            return Err(NeuralOperatorError::BooleanShapeMismatch {
+                what: "spectral router predicates",
+                expected: self.input_arity,
+                got: predicates.len(),
+            });
+        }
+        let mut active = Vec::new();
+        for (mode, guard) in self.guards.iter().enumerate()
+        {
+            if guard.evaluate(predicates)?
+            {
+                active.push(mode);
+            }
+        }
+        if active.is_empty()
+        {
+            Ok(SpectralExecutionPlan::Disabled)
+        }
+        else
+        {
+            Ok(SpectralExecutionPlan::Modes(SpectralModePlan::new(
+                self.guards.len(),
+                active,
+            )?))
+        }
     }
 
     /// Number of available Fourier modes controlled by this router.
@@ -294,5 +354,20 @@ mod tests {
             SpectralModePlan::new(4, vec![1, 1]).unwrap_err(),
             NeuralOperatorError::NonCanonicalSpectralModes
         );
+    }
+
+    #[test]
+    fn boolean_router_can_disable_complete_spectral_branch() {
+        let guards = vec![
+            AnfPolynomial::from_monomials(2, &[0b01]).unwrap(),
+            AnfPolynomial::from_monomials(2, &[0b10]).unwrap(),
+        ];
+        let router = BooleanSpectralRouter::new(2, guards, 0).unwrap();
+        assert_eq!(
+            router.route_or_disable(&[false, false]).unwrap(),
+            SpectralExecutionPlan::Disabled
+        );
+        let enabled = router.route_or_disable(&[true, false]).unwrap();
+        assert_eq!(enabled.modes().unwrap().active_modes(), &[0]);
     }
 }
