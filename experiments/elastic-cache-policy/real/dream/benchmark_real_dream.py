@@ -12,6 +12,7 @@ import math
 import random
 import re
 import statistics
+import platform
 import time
 import types
 from dataclasses import asdict, dataclass
@@ -19,8 +20,10 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Iterable
 
+import datasets
 import numpy as np
 import torch
+import transformers
 from datasets import load_dataset
 from transformers import AutoTokenizer
 
@@ -84,6 +87,26 @@ class Aggregate:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default="Dream-org/Dream-v0-Instruct-7B")
+    parser.add_argument(
+        "--model-revision",
+        required=True,
+        help="Exact Hugging Face commit used for both model weights and tokenizer code/data.",
+    )
+    parser.add_argument(
+        "--dataset-revision",
+        required=True,
+        help="Exact Hugging Face commit for the GSM8K dataset snapshot.",
+    )
+    parser.add_argument(
+        "--source-revision",
+        required=True,
+        help="Exact SciRust commit containing this benchmark harness.",
+    )
+    parser.add_argument(
+        "--elastic-cache-revision",
+        required=True,
+        help="Exact Elastic-Cache commit patched for this run.",
+    )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--seed", type=int, default=20260804)
     parser.add_argument("--validation-size", type=int, default=8)
@@ -130,8 +153,18 @@ def extract_prediction(text: str) -> str | None:
     return normalize_number(numbers[-1]) if numbers else None
 
 
-def load_gsm8k(validation_size: int, test_size: int, seed: int) -> tuple[list[Example], list[Example]]:
-    dataset = load_dataset("openai/gsm8k", "main", split="test")
+def load_gsm8k(
+    validation_size: int,
+    test_size: int,
+    seed: int,
+    dataset_revision: str,
+) -> tuple[list[Example], list[Example]]:
+    dataset = load_dataset(
+        "openai/gsm8k",
+        "main",
+        split="test",
+        revision=dataset_revision,
+    )
     indices = list(range(len(dataset)))
     rng = random.Random(seed)
     rng.shuffle(indices)
@@ -378,12 +411,22 @@ def main() -> None:
     if args.validation_size < 2 or args.test_size < 2:
         raise ValueError("validation-size and test-size must both be >= 2")
     set_determinism(args.seed)
-    validation, test = load_gsm8k(args.validation_size, args.test_size, args.seed)
+    validation, test = load_gsm8k(
+        args.validation_size,
+        args.test_size,
+        args.seed,
+        args.dataset_revision,
+    )
     dtype = torch.bfloat16 if args.dtype == "bfloat16" else torch.float16
     print(json.dumps({"event": "device", "name": torch.cuda.get_device_name(), "dtype": args.dtype}))
-    tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(
+        args.model,
+        revision=args.model_revision,
+        trust_remote_code=True,
+    )
     model = DreamModel.from_pretrained(
         args.model,
+        revision=args.model_revision,
         torch_dtype=dtype,
         trust_remote_code=True,
         low_cpu_mem_usage=True,
@@ -452,6 +495,20 @@ def main() -> None:
         "schema_version": 1,
         "scope": "real Dream-v0-Instruct-7B checkpoint; preliminary held-out GSM8K benchmark",
         "model": args.model,
+        "model_revision": args.model_revision,
+        "tokenizer_revision": args.model_revision,
+        "tokenizer_class": type(tokenizer).__name__,
+        "dataset": "openai/gsm8k",
+        "dataset_revision": args.dataset_revision,
+        "source_revision": args.source_revision,
+        "elastic_cache_revision": args.elastic_cache_revision,
+        "python_version": platform.python_version(),
+        "machine": platform.machine(),
+        "numpy_version": np.__version__,
+        "datasets_version": datasets.__version__,
+        "transformers_version": transformers.__version__,
+        "torch_version": torch.__version__,
+        "torch_cuda_version": torch.version.cuda,
         "device": torch.cuda.get_device_name(),
         "seed": args.seed,
         "max_new_tokens": args.max_new_tokens,
