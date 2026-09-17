@@ -41,20 +41,54 @@ jobs:
       - internal
 
     timeout-minutes: 360
+    defaults:
+      run:
+        working-directory: ci-dream-real
 
     env:
       PYTHONUNBUFFERED: "1"
       TOKENIZERS_PARALLELISM: "false"
       HF_HUB_ENABLE_HF_TRANSFER: "1"
-      HF_HOME: ${{ runner.tool_cache }}/huggingface
-      PIP_CACHE_DIR: ${{ runner.tool_cache }}/pip
       ELASTIC_CACHE_COMMIT: 1960d8fc6231205a1ae4ebba3898d475e339f7e1
+      TORCH_VERSION: "2.9.0+cu130"
+      TORCH_INDEX: https://download.pytorch.org/whl/cu130
+      # Thor + torch 2.10/cu130 reproducibly failed Dream q_proj in cuBLAS/cuBLASLt.
+      # The pinned 2.9/cu130 stack is locally requalified on the same physical Thor;
+      # keep the addmm/Lt opt-out explicit and record the exact torch version.
+      DISABLE_ADDMM_CUDA_LT: "1"
+      DREAM_MODEL_REVISION: 05334cb9faaf763692dcf9d8737c642be2b2a6ae
+      GSM8K_REVISION: 740312add88f781978c0658806c59bc2815b9866
+      SCIRUST_THOR_GPU_LOCK: /dev/nvidia0
+      SCIRUST_THOR_IDLE_SETTLE_SECONDS: "300"
 
     steps:
+      - name: Initialize shared cache paths after runner assignment
+        working-directory: ${{ github.workspace }}
+        env:
+          HF_HOME: ${{ runner.tool_cache }}/huggingface
+          PIP_CACHE_DIR: ${{ runner.tool_cache }}/pip
+        run: |
+          printf 'HF_HOME=%s\n' "$HF_HOME" >> "$GITHUB_ENV"
+          printf 'PIP_CACHE_DIR=%s\n' "$PIP_CACHE_DIR" >> "$GITHUB_ENV"
+
+      - name: Reset isolated checkout directory
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          checkout_dir="$GITHUB_WORKSPACE/ci-dream-real"
+          if [[ -e "$checkout_dir" || -L "$checkout_dir" ]]; then
+            rm -rf -- "$checkout_dir"
+          fi
+          test ! -e "$checkout_dir"
+          test ! -L "$checkout_dir"
+
       - name: Check out SciRust
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+          path: ci-dream-real
 
       - name: Report native GPU environment
         run: |
@@ -62,20 +96,47 @@ jobs:
           uname -m
           free -h
           df -h .
-          nvidia-smi || true
+          nvidia-smi
           python3 - <<'PY'
-          import torch
-          print("torch", torch.__version__)
-          print("cuda_available", torch.cuda.is_available())
-          if torch.cuda.is_available():
-              print("cuda_device", torch.cuda.get_device_name())
+          import platform
+          print("python_arch", platform.machine())
+          try:
+              import torch
+          except Exception as exc:
+              print("system_torch_unavailable", repr(exc))
+          else:
+              print("system_torch", torch.__version__)
+              print("system_cuda_available", torch.cuda.is_available())
+              print("system_torch_cuda", torch.version.cuda)
           PY
 
-      - name: Create isolated Python environment
+      - name: Create isolated CUDA Python environment
         run: |
           rm -rf .venv-dream-real
-          python3 -m venv --system-site-packages .venv-dream-real
+          python3 -m venv .venv-dream-real
           .venv-dream-real/bin/python -m pip install --upgrade pip
+          .venv-dream-real/bin/python -m pip install \
+            --index-url "$TORCH_INDEX" \
+            "torch==$TORCH_VERSION"
+          .venv-dream-real/bin/python - <<'PY'
+          import torch
+          print("torch", torch.__version__)
+          print("torch_cuda", torch.version.cuda)
+          print("cuda_available", torch.cuda.is_available())
+          if not torch.cuda.is_available():
+              raise SystemExit("CUDA-enabled PyTorch did not expose the Thor GPU")
+          print("cuda_device", torch.cuda.get_device_name())
+          for dtype in (torch.float32, torch.bfloat16):
+              left = torch.randn(128, 128, device="cuda", dtype=dtype)
+              right = torch.randn(128, 128, device="cuda", dtype=dtype)
+              product = left @ right
+              linear = torch.nn.Linear(128, 128, bias=True, device="cuda", dtype=dtype)
+              projected = linear(left)
+              torch.cuda.synchronize()
+              if not torch.isfinite(product).all() or not torch.isfinite(projected).all():
+                  raise SystemExit(f"non-finite Thor GEMM/Linear preflight for {dtype}")
+              print("thor_gemm_linear_preflight", dtype, "ok")
+          PY
           .venv-dream-real/bin/python -m pip install \
             "transformers==4.49.0" \
             "accelerate==0.34.2" \
@@ -99,18 +160,73 @@ jobs:
           .venv-dream-real/bin/python \
             experiments/elastic-cache-policy/real/dream/patch_elastic_cache.py \
             .external/elastic-cache
+          .venv-dream-real/bin/python \
+            experiments/elastic-cache-policy/real/dream/patch_thor_rope_compat.py \
+            .external/elastic-cache
           .venv-dream-real/bin/python -m py_compile \
             .external/elastic-cache/dream/model/modeling_dream.py \
+            experiments/elastic-cache-policy/real/dream/patch_thor_rope_compat.py \
             experiments/elastic-cache-policy/real/dream/benchmark_real_dream.py
 
       - name: Run real Dream held-out smoke benchmark
         env:
-          PYTHONPATH: ${{ github.workspace }}/.external/elastic-cache/dream
+          PYTHONPATH: ${{ github.workspace }}/ci-dream-real/.external/elastic-cache/dream
         run: |
+          set -euo pipefail
+          for prerequisite in flock pgrep stat nvidia-smi; do
+            command -v "$prerequisite" >/dev/null || {
+              echo "::error::missing physical-Thor prerequisite: $prerequisite"
+              exit 1
+            }
+          done
+          if [[ ! -c "$SCIRUST_THOR_GPU_LOCK" || ! -r "$SCIRUST_THOR_GPU_LOCK" || ! -w "$SCIRUST_THOR_GPU_LOCK" ]]; then
+            echo "::error::physical Thor lock target is not an accessible NVIDIA character device"
+            exit 1
+          fi
+          stat -Lc 'gpu_lock_target=%n st_dev=%d inode=%i rdev_hex=%t:%T mode=%a owner=%U:%G type=%F' "$SCIRUST_THOR_GPU_LOCK"
+          exec 9<>"$SCIRUST_THOR_GPU_LOCK"
+          flock -x 9
+          if flock -n "$SCIRUST_THOR_GPU_LOCK" -c 'true'; then
+            echo "::error::physical GPU lock does not contend independently"
+            exit 1
+          fi
+
+          compute_processes() {
+            nvidia-smi --query-compute-apps=pid,process_name --format=csv,noheader 2>/dev/null || true
+          }
+          deadline=$((SECONDS + 18000))
+          settled=0
+          while (( settled < 10#$SCIRUST_THOR_IDLE_SETTLE_SECONDS )); do
+            active="$(compute_processes)"
+            if [[ -n "${active//[[:space:]]/}" ]]; then
+              echo "GPU activity prevents Dream qualification; restarting idle window:"
+              printf '%s\n' "$active"
+              settled=0
+            else
+              settled=$((settled + 5))
+              if (( settled == 5 || settled % 60 == 0 )); then
+                echo "Thor continuously idle: ${settled}/${SCIRUST_THOR_IDLE_SETTLE_SECONDS}s"
+              fi
+            fi
+            if (( SECONDS >= deadline )); then
+              echo "::error::Thor never reached the required idle window"
+              exit 1
+            fi
+            sleep 5
+          done
+
           mkdir -p artifacts/dream-real
+          contamination="$RUNNER_TEMP/dream-real-contamination.txt"
+          run_log="artifacts/dream-real/run.log"
+          : > "$contamination"
+          : > "$run_log"
           .venv-dream-real/bin/python \
             experiments/elastic-cache-policy/real/dream/benchmark_real_dream.py \
             --model Dream-org/Dream-v0-Instruct-7B \
+            --model-revision "$DREAM_MODEL_REVISION" \
+            --dataset-revision "$GSM8K_REVISION" \
+            --source-revision "${{ github.event.pull_request.head.sha || github.sha }}" \
+            --elastic-cache-revision "$ELASTIC_CACHE_COMMIT" \
             --output artifacts/dream-real/smoke-seed-20260804.json \
             --seed 20260804 \
             --validation-size 4 \
@@ -120,7 +236,75 @@ jobs:
             --gamma-grid 0.85,0.90,0.95,0.98 \
             --policy-quantiles 0.25,0.50,0.75,0.90 \
             --probe-prompts 2 \
-            --dtype bfloat16
+            --dtype bfloat16 >"$run_log" 2>&1 &
+          benchmark_pid=$!
+          while kill -0 "$benchmark_pid" 2>/dev/null; do
+            active="$(compute_processes)"
+            foreign="$(awk -F, -v own="$benchmark_pid" '$1 + 0 != own { print }' <<< "$active")"
+            if [[ -n "${foreign//[[:space:]]/}" ]]; then
+              { date -u +'%Y-%m-%dT%H:%M:%SZ'; printf '%s\n' "$foreign"; } >> "$contamination"
+              kill "$benchmark_pid" 2>/dev/null || true
+              break
+            fi
+            sleep 1
+          done
+          set +e
+          wait "$benchmark_pid"
+          status=$?
+          set -e
+          cat "$run_log"
+          contamination_detected=false
+          if [[ -s "$contamination" ]]; then
+            contamination_detected=true
+            echo "::error::foreign GPU compute contaminated Dream qualification"
+            cat "$contamination"
+          fi
+          BENCHMARK_STATUS="$status" \
+          CONTAMINATION_DETECTED="$contamination_detected" \
+          DREAM_MODEL_REVISION="$DREAM_MODEL_REVISION" \
+          GSM8K_REVISION="$GSM8K_REVISION" \
+          ELASTIC_CACHE_COMMIT="$ELASTIC_CACHE_COMMIT" \
+          GITHUB_HEAD_SHA="${{ github.event.pull_request.head.sha || github.sha }}" \
+          .venv-dream-real/bin/python - <<'PY'
+          import json
+          import os
+          import platform
+          from pathlib import Path
+          import torch
+
+          Path("artifacts/dream-real/run-exit.json").write_text(
+              json.dumps(
+                  {
+                      "schema_version": 1,
+                      "benchmark_exit_status": int(os.environ["BENCHMARK_STATUS"]),
+                      "contamination_detected": os.environ["CONTAMINATION_DETECTED"] == "true",
+                      "head_sha": os.environ["GITHUB_HEAD_SHA"],
+                      "model": "Dream-org/Dream-v0-Instruct-7B",
+                      "model_revision": os.environ["DREAM_MODEL_REVISION"],
+                      "tokenizer_revision": os.environ["DREAM_MODEL_REVISION"],
+                      "dataset": "openai/gsm8k",
+                      "dataset_revision": os.environ["GSM8K_REVISION"],
+                      "elastic_cache_revision": os.environ["ELASTIC_CACHE_COMMIT"],
+                      "torch_version": torch.__version__,
+                      "torch_cuda_version": torch.version.cuda,
+                      "disable_addmm_cuda_lt": os.environ.get("DISABLE_ADDMM_CUDA_LT") == "1",
+                      "cuda_available": torch.cuda.is_available(),
+                      "cuda_device": torch.cuda.get_device_name() if torch.cuda.is_available() else None,
+                      "python": platform.python_version(),
+                      "machine": platform.machine(),
+                  },
+                  indent=2,
+                  sort_keys=True,
+              )
+              + "\n"
+          )
+          PY
+          nvidia-smi > artifacts/dream-real/nvidia-smi.txt 2>&1 || true
+          cp "$contamination" artifacts/dream-real/contamination.txt
+          if [[ "$contamination_detected" == true ]]; then
+            exit 1
+          fi
+          exit "$status"
 
       - name: Display benchmark verdict
         if: always()
@@ -146,7 +330,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: dream-real-cache-policy-${{ github.sha }}
-          if-no-files-found: warn
+          name: dream-real-cache-policy-${{ github.event.pull_request.head.sha || github.sha }}
+          if-no-files-found: error
           retention-days: 14
-          path: artifacts/dream-real/
+          path: ci-dream-real/artifacts/dream-real/
