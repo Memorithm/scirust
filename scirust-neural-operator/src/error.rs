@@ -60,6 +60,29 @@ pub enum NeuralOperatorError {
     #[error("learning rate must be finite, got {lr}")]
     InvalidLearningRate { lr: f32 },
 
+    #[error("Boolean shape mismatch for {what}: expected {expected}, got {got}")]
+    BooleanShapeMismatch {
+        what: &'static str,
+        expected: usize,
+        got: usize,
+    },
+
+    #[error("Boolean index {index} is out of bounds for length {len}")]
+    BooleanIndexOutOfBounds { index: usize, len: usize },
+
+    #[error("{variables} Boolean variables exceed the supported maximum {maximum}")]
+    TooManyBooleanVariables { variables: usize, maximum: usize },
+
+    #[error("truth table for {variables} variables must contain {expected} rows, got {got}")]
+    TruthTableLength {
+        variables: usize,
+        expected: usize,
+        got: usize,
+    },
+
+    #[error("ANF monomial mask {mask:#x} references a variable outside arity {variables}")]
+    InvalidMonomialMask { mask: u64, variables: usize },
+
     #[error("surrogate cost inputs must be finite and non-negative")]
     InvalidCost,
 }

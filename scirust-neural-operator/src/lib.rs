@@ -14,19 +14,23 @@
 //! Exact/reference simulations remain the oracle for qualification and for
 //! out-of-distribution fallback.
 
+pub mod boolean;
 pub mod dataset;
 pub mod error;
 pub mod fno;
 pub mod grid;
+pub mod hybrid;
 pub mod loss;
 pub mod metrics;
 pub mod normalizer;
 pub mod spectral;
 
+pub use boolean::{AnfOperator, AnfPolynomial, BooleanComplexity, F2LinearOperator, PackedBits};
 pub use dataset::{OperatorDataset1d, OperatorSample1d};
 pub use error::{NeuralOperatorError, Result};
 pub use fno::{FitReport, Fno1dConfig, Fno1dOperator, LearnedOperator};
 pub use grid::PeriodicGrid1d;
+pub use hybrid::{BooleanRouteRule, BooleanRouter, HybridAction, RouterComplexity};
 pub use loss::{LpLoss, relative_l2};
 pub use metrics::{OperatorMetrics, SurrogateEconomics};
 pub use normalizer::ChannelNormalizer;

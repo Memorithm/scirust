@@ -9,6 +9,9 @@ needed for neural operators. It does **not** embed or wrap the Python
 Current foundation:
 
 - trainable 1-D Fourier Neural Operator through SciRust N-D autodiff;
+- exact `F_2` affine operators and bit-packed Boolean vectors;
+- exact ANF/Zhegalkin operators with truth-table Möbius synthesis;
+- ordered Boolean routing for surrogate/exact/verify/abstain execution;
 - existing SciRust FNO / DeepONet / PINN primitives exposed from one package;
 - deterministic portable FFT spectral derivatives and 1-D/2-D Laplacians;
 - operator datasets with strict shape/finite-value validation;
@@ -22,6 +25,7 @@ must be qualified against an exact or otherwise authoritative solver, including
 out-of-distribution and conservation/invariant checks, before it is used as an
 accelerator.
 
+The architecture now has continuous, Boolean and hybrid rails from the foundation.
 Planned layers include N-D trainable spectral convolution, tensor-factorized
 spectral weights, geometry-aware operators, physics/dynamics-informed losses,
 uncertainty/OOD gating, multi-fidelity active learning, checkpointing and
