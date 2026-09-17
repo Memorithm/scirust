@@ -20,7 +20,7 @@
 //! | [`ReferenceKernelArtifact`] | one logical kernel in the canonical binary format: encode, decode, wrap as a [`scirust_compute::KernelModule`] |
 //! | [`PreparedReferenceKernel`] | that artefact decoded, validated and converted into the form the CPU executes |
 //! | [`ReferenceInterpreter`] | serial execution of **one individual** kernel over `f32` slices |
-//! | `CpuComputeAdapter` (in `scirust-gpu`) | the physical integration, **still absent** — see below |
+//! | `CpuComputeAdapter` (in `scirust-gpu`) | downstream physical integration; this crate does not own graph-session scheduling or buffer orchestration |
 //!
 //! ```text
 //! LoweredPlan
@@ -35,17 +35,16 @@
 //! * **No plan execution.** [`ReferenceInterpreter`] runs one kernel. It does
 //!   not walk a `scirust_tensor_compile::LoweredPlan`, resolve inter-kernel
 //!   dependencies, consult a memory plan, allocate slots, bind external inputs
-//!   or constants, or order instructions. That is a later plan runtime.
-//! * **No backend buffer, no device, no physical allocation.** Operands and
-//!   results are plain `&[f32]` / `&mut [f32]` the caller owns. Nothing here
-//!   touches `scirust_compute::BufferBinding`, a `MemorySpace`, or a device.
-//! * **No `ComputeBackend` integration.** `CpuComputeAdapter::compile` still
-//!   stores a Reference module without parsing it, and
-//!   `CpuComputeAdapter::launch` still returns
-//!   `Unsupported("CPU reference kernel launch ABI is not implemented")`.
-//!   Nothing in this crate changes either. Wiring the two together — mapping
-//!   `BufferBinding`s onto `f32` slices and calling this interpreter — is a
-//!   separate phase.
+//!   or constants, or order instructions. Those responsibilities live in the
+//!   downstream tensor runtime.
+//! * **No backend buffer ownership, no device ownership, no physical allocation.**
+//!   Operands and results are plain `&[f32]` / `&mut [f32]` the caller owns.
+//!   This crate does not itself allocate a `scirust_compute::BufferBinding` or
+//!   select a `MemorySpace` or device.
+//! * **No graph-session or `ComputeBackend` orchestration is owned here.**
+//!   Downstream runtime/adapter code may prepare and execute Reference modules;
+//!   this crate owns only their deterministic format, validation and serial
+//!   per-kernel interpreter semantics.
 //! * **No WGSL and no PTX.** Those are separate target-specific generators.
 //!
 //! # `Exp` and `Log` are not executable
@@ -62,10 +61,12 @@
 //!
 //! # Numeric guarantees, and their limits
 //!
-//! The element-wise opcodes run serially, in increasing index order, one scalar
+//! Element-wise opcodes run serially, in increasing index order, one scalar
 //! `f32` operation per element, with no reassociation, no `mul_add`, no explicit
-//! FMA, no explicit SIMD, no Rayon, no fast-math and no widening to `f64`. That
-//! is the contract this crate implements and tests.
+//! FMA, no explicit SIMD, no Rayon, no fast-math and no widening to `f64`.
+//! Matrix products use row-major layouts and a fixed increasing-`K` scalar
+//! accumulation order under the same no-`mul_add`, no explicit FMA and no-`f64`
+//! policy. These are Reference semantics, not an optimized GEMM claim.
 //!
 //! This crate does **not** claim a compiled `f32` operator is bit-identical on
 //! every conforming architecture; that depends on target and toolchain, not on
@@ -74,9 +75,9 @@
 //!
 //! NaN payloads are preserved bit-for-bit **only** where a value is returned or
 //! copied without arithmetic — the NaN branch of `Relu`, [`ReferenceOpcode::ShapeCopy`]
-//! and [`ReferenceOpcode::Permute`]. For `Add`, `Sub`, `Mul`, `Div` and `Scale`,
-//! a NaN operand produces a NaN result but the propagated payload is
-//! unspecified, exactly as IEEE 754 leaves it.
+//! and [`ReferenceOpcode::Permute`]. For arithmetic operations, including
+//! matrix products, a NaN operand produces arithmetic governed by Rust/target
+//! floating-point semantics; no payload-preservation claim is made.
 //!
 //! `Scale`'s factor, by contrast, is carried bit-exact end to end: it travels as
 //! a raw `u32` bit pattern, so `-0.0`, `+0.0`, `+inf`, `-inf` and every NaN
@@ -101,20 +102,20 @@
 //! # Supported and rejected operations
 //!
 //! The artefact format covers every kernel family
-//! `scirust_tensor_compile::KernelLowerer` produces: element-wise unary
-//! (`Relu`, `Exp`, `Log`, `Scale`), element-wise binary (`Add`, `Sub`, `Mul`,
-//! `Div`), `ShapeCopy` (the lowering of `Reshape`) and `Permute` (the lowering
-//! of `Transpose`). The CPU interpreter executes all of them **except `Exp` and
-//! `Log`**, as explained above.
+//! `scirust_tensor_compile::KernelLowerer` produces in this phase: element-wise
+//! unary operations, element-wise binary operations, shape-copy/reduction/
+//! permutation families, rank-2 `MatMul` and identical-prefix `BatchMatMul`.
+//! The Reference CPU interpreter executes the supported F32 families, including
+//! both matrix-product families, **except `Exp` and `Log`**, as explained above.
 //!
-//! `MatMul` never reaches this crate: `scirust_tensor_compile`'s lowering phase
-//! rejects it before a `LoweredPlan` can exist. Any kernel family this crate
-//! does not recognise is rejected with
-//! [`ReferenceGenerationError::UnsupportedKernelFamily`]. There is no silent
-//! fallback, no no-op substitution and no partial artefact anywhere in this
-//! crate.
+//! Matrix-product lowering must already have established `[M,K] @ [K,N] ->
+//! [M,N]` for `MatMul` or an identical batch prefix for `BatchMatMul`; generation
+//! and preparation retain those layouts and reject malformed artefacts rather
+//! than silently adapting them. Any kernel family this crate does not recognise
+//! is rejected with [`ReferenceGenerationError::UnsupportedKernelFamily`]. There
+//! is no silent fallback, no no-op substitution and no partial artefact.
 //!
-//! Reference v1.0 supports exactly `DType::F32`. Every other `DType` SciRust
+//! Reference v1.1 generates exactly `DType::F32`. Every other `DType` SciRust
 //! declares has a *reserved, stable wire tag*, so a decoder can always
 //! distinguish a tag it has never heard of from a `DType` it recognises but does
 //! not support — but generating, decoding or executing a kernel of any other

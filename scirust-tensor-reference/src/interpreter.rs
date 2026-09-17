@@ -15,6 +15,12 @@
 //! * no conversion to `f64`;
 //! * plain Rust `f32` operators (`+`, `-`, `*`, `/`).
 //!
+//! Matrix products are also serial and row-major. Each output element accumulates
+//! `lhs * rhs` terms in strictly increasing `K` order using separate multiply and
+//! add expressions; this implementation does not call `mul_add` and never
+//! promotes the accumulator to `f64`. Batched products traverse the flattened
+//! batch prefix in increasing row-major order.
+//!
 //! That contract fixes *what this crate does*. It deliberately does **not**
 //! claim that a compiled `f32` operator is bit-identical on every conforming
 //! architecture — that is a property of the target and toolchain, not something
@@ -31,10 +37,10 @@
 //! * `ShapeCopy`, which copies elements verbatim;
 //! * `Permute`, which copies elements verbatim to permuted positions.
 //!
-//! For `Add`, `Sub`, `Mul`, `Div` and `Scale`, a NaN operand yields a NaN
-//! result, but **the payload of that NaN is not specified** by this crate: IEEE
-//! 754 leaves the propagated payload to the implementation. Tests assert
-//! `is_nan()` for those cases and never a specific bit pattern.
+//! For arithmetic operations, including matrix products, a NaN operand can yield
+//! a NaN result, but **the payload of that NaN is not specified** by this crate:
+//! IEEE 754 leaves the propagated payload to the implementation. Tests assert
+//! `is_nan()` for such cases and never a specific payload bit pattern.
 //!
 //! # Scope
 //!
@@ -44,7 +50,7 @@
 //! not bind external inputs or constants, and does not order instructions — all
 //! of that belongs to a later plan runtime. It also touches no backend buffer,
 //! no device and no `scirust_compute::ComputeBackend`; see the crate
-//! documentation for the still-missing `CpuComputeAdapter` bridge.
+//! documentation for the CPU adapter bridge.
 
 use scirust_compute::{DType, KernelFormat, KernelModule};
 use scirust_tensor_compile::LogicalKernelId;
@@ -60,9 +66,8 @@ const MAX_RANK: usize = REFERENCE_MAX_RANK as usize;
 /// Attribute payload converted once, at preparation, into the exact form the
 /// executor needs.
 ///
-/// For `Permute` this includes the row-major strides of both the operand and the
-/// result, computed once here with `checked_mul` rather than recomputed on every
-/// invocation.
+/// `MatrixProduct` is derived from tensor layouts in the Reference artefact; it
+/// is runtime preparation metadata, not an additional wire-format attribute.
 #[derive(Debug, Clone)]
 pub(crate) enum PreparedAttributes {
     None,
@@ -75,6 +80,12 @@ pub(crate) enum PreparedAttributes {
         input_strides: Vec<usize>,
         output_strides: Vec<usize>,
         permutation: Vec<usize>,
+    },
+    MatrixProduct {
+        batches: usize,
+        m: usize,
+        k: usize,
+        n: usize,
     },
 }
 
@@ -105,8 +116,8 @@ impl PreparedReferenceKernel {
     ///
     /// Rejects a non-`F32` element type, `Exp`, `Log`, and any attribute payload
     /// inconsistent with the opcode. Converts every `u64` dimension and element
-    /// count to `usize` through a checked conversion, and precomputes the
-    /// `Permute` strides.
+    /// count to `usize` through a checked conversion, precomputes `Permute`
+    /// strides, and extracts checked matrix-product dimensions once.
     pub fn from_artifact(
         artifact: &ReferenceKernelArtifact,
     ) -> Result<Self, ReferenceExecutionError> {
@@ -121,9 +132,7 @@ impl PreparedReferenceKernel {
             },
             ReferenceOpcode::ReluGrad
             | ReferenceOpcode::BroadcastTo
-            | ReferenceOpcode::ReduceSumTo
-            | ReferenceOpcode::MatMul
-            | ReferenceOpcode::BatchMatMul =>
+            | ReferenceOpcode::ReduceSumTo =>
             {
                 return Err(ReferenceExecutionError::UnsupportedOpcode { opcode });
             },
@@ -136,7 +145,9 @@ impl PreparedReferenceKernel {
             | ReferenceOpcode::Mul
             | ReferenceOpcode::Div
             | ReferenceOpcode::ShapeCopy
-            | ReferenceOpcode::Permute =>
+            | ReferenceOpcode::Permute
+            | ReferenceOpcode::MatMul
+            | ReferenceOpcode::BatchMatMul =>
             {},
         }
 
@@ -157,8 +168,6 @@ impl PreparedReferenceKernel {
         {
             (ReferenceOpcode::Scale, ReferenceAttributes::Scale { factor_bits }) =>
             {
-                // Bit pattern in, value out: `from_bits` is exact, so `-0.0`,
-                // the infinities and every NaN payload survive unchanged.
                 PreparedAttributes::Scale {
                     factor: f32::from_bits(*factor_bits),
                 }
@@ -177,8 +186,6 @@ impl PreparedReferenceKernel {
                     || input_dims.len() > MAX_RANK
                     || output_dims.len() > MAX_RANK
                 {
-                    // Defensive: the encoder and decoder both cap rank at
-                    // `REFERENCE_MAX_RANK`, so a valid artefact cannot get here.
                     return Err(ReferenceExecutionError::InternalIndexOutOfBounds);
                 }
 
@@ -199,6 +206,10 @@ impl PreparedReferenceKernel {
                     permutation,
                 }
             },
+            (ReferenceOpcode::MatMul | ReferenceOpcode::BatchMatMul, ReferenceAttributes::None) =>
+            {
+                prepare_matrix_product(artifact, opcode)?
+            },
             (
                 ReferenceOpcode::Relu
                 | ReferenceOpcode::ZerosLike
@@ -212,8 +223,6 @@ impl PreparedReferenceKernel {
             ) => PreparedAttributes::None,
             _ =>
             {
-                // Defensive: `codec` and `generator` both establish
-                // opcode/attribute coherence before an artefact can exist.
                 return Err(ReferenceExecutionError::AttributeMismatch { opcode });
             },
         };
@@ -229,17 +238,6 @@ impl PreparedReferenceKernel {
     }
 
     /// Prepares a [`KernelModule`] for CPU execution.
-    ///
-    /// Performs, strictly in this order:
-    ///
-    /// 1. verify `module.format == KernelFormat::Reference` — WGSL, PTX, SPIR-V
-    ///    and any future format are rejected with
-    ///    [`ReferenceExecutionError::WrongKernelFormat`];
-    /// 2. decode `module.code` as a Reference stream;
-    /// 3. derive the canonical entry-point name from the decoded artefact;
-    /// 4. compare it exactly with `module.entry_point`;
-    /// 5. prepare the artefact ([`Self::from_artifact`]);
-    /// 6. which in turn rejects `Exp` and `Log`.
     pub fn from_kernel_module(module: &KernelModule) -> Result<Self, ReferenceExecutionError> {
         if module.format != KernelFormat::Reference
         {
@@ -294,9 +292,6 @@ impl PreparedReferenceKernel {
 }
 
 /// Serial CPU interpreter for one prepared Reference kernel.
-///
-/// Stateless: it holds nothing between calls and performs no I/O, no
-/// allocation proportional to the element count, and no device interaction.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ReferenceInterpreter;
 
@@ -307,19 +302,8 @@ impl ReferenceInterpreter {
 
     /// Executes `prepared` over `operands`, writing into `output`.
     ///
-    /// # Aliasing
-    ///
-    /// `operands: &[&[f32]]` and `output: &mut [f32]` cannot legally overlap:
-    /// holding a shared borrow and an exclusive borrow of the same data at the
-    /// same call site is rejected by the borrow checker. No runtime aliasing
-    /// check is therefore performed — or needed — and no in-place execution is
-    /// offered. The result is always written to a buffer the caller owns
-    /// separately from every operand.
-    ///
-    /// # Failure atomicity
-    ///
-    /// Every check runs before the first write, so a rejected invocation leaves
-    /// `output` bit-for-bit unchanged.
+    /// Every invocation is validated in full before the first write, so a
+    /// rejected call leaves `output` bit-for-bit unchanged.
     pub fn execute(
         &self,
         prepared: &PreparedReferenceKernel,
@@ -396,12 +380,13 @@ impl ReferenceInterpreter {
                     *target = lhs / rhs;
                 }
             },
+            ReferenceOpcode::MatMul | ReferenceOpcode::BatchMatMul =>
+            {
+                execute_matrix_product(prepared.attributes(), operands, output)?;
+            },
             ReferenceOpcode::ShapeCopy =>
             {
                 let operand = first_operand(operands)?;
-                // Validation already established both lengths; re-checked so
-                // that `copy_from_slice`, which panics on a length mismatch,
-                // provably cannot.
                 if operand.len() != output.len()
                 {
                     return Err(ReferenceExecutionError::OutputLengthMismatch {
@@ -438,15 +423,11 @@ impl ReferenceInterpreter {
             },
             ReferenceOpcode::Exp | ReferenceOpcode::Log =>
             {
-                // Unreachable: preparation rejects both. Re-stated rather than
-                // reached, so no opcode is ever silently treated as a no-op.
                 return Err(ReferenceExecutionError::DeterministicMathUnavailable { opcode });
             },
             ReferenceOpcode::ReluGrad
             | ReferenceOpcode::BroadcastTo
-            | ReferenceOpcode::ReduceSumTo
-            | ReferenceOpcode::MatMul
-            | ReferenceOpcode::BatchMatMul =>
+            | ReferenceOpcode::ReduceSumTo =>
             {
                 return Err(ReferenceExecutionError::UnsupportedOpcode { opcode });
             },
@@ -456,28 +437,152 @@ impl ReferenceInterpreter {
     }
 }
 
+fn prepare_matrix_product(
+    artifact: &ReferenceKernelArtifact,
+    opcode: ReferenceOpcode,
+) -> Result<PreparedAttributes, ReferenceExecutionError> {
+    let lhs = artifact
+        .operands()
+        .first()
+        .ok_or(ReferenceExecutionError::AttributeMismatch { opcode })?;
+    let rhs = artifact
+        .operands()
+        .get(1)
+        .ok_or(ReferenceExecutionError::AttributeMismatch { opcode })?;
+    let lhs_dims = checked_dims(lhs.dims())?;
+    let rhs_dims = checked_dims(rhs.dims())?;
+    let output_dims = checked_dims(artifact.result().dims())?;
+
+    let rank = lhs_dims.len();
+    let batched = opcode == ReferenceOpcode::BatchMatMul;
+    if (!batched && (rank != 2 || rhs_dims.len() != 2 || output_dims.len() != 2))
+        || (batched && (rank < 3 || rhs_dims.len() != rank || output_dims.len() != rank))
+    {
+        return Err(ReferenceExecutionError::AttributeMismatch { opcode });
+    }
+
+    let matrix_axis = rank - 2;
+    let prefixes_match = !batched
+        || (lhs_dims[..matrix_axis] == rhs_dims[..matrix_axis]
+            && lhs_dims[..matrix_axis] == output_dims[..matrix_axis]);
+    let matrix_contract = lhs_dims.get(matrix_axis + 1) == rhs_dims.get(matrix_axis)
+        && output_dims.get(matrix_axis) == lhs_dims.get(matrix_axis)
+        && output_dims.get(matrix_axis + 1) == rhs_dims.get(matrix_axis + 1);
+    if !prefixes_match || !matrix_contract
+    {
+        return Err(ReferenceExecutionError::AttributeMismatch { opcode });
+    }
+
+    let batches = if batched
+    {
+        checked_product(&lhs_dims[..matrix_axis])?
+    }
+    else
+    {
+        1
+    };
+
+    Ok(PreparedAttributes::MatrixProduct {
+        batches,
+        m: lhs_dims[matrix_axis],
+        k: lhs_dims[matrix_axis + 1],
+        n: rhs_dims[matrix_axis + 1],
+    })
+}
+
+fn execute_matrix_product(
+    attributes: &PreparedAttributes,
+    operands: &[&[f32]],
+    output: &mut [f32],
+) -> Result<(), ReferenceExecutionError> {
+    let (lhs, rhs) = binary_operands(operands)?;
+    let PreparedAttributes::MatrixProduct { batches, m, k, n } = attributes
+    else
+    {
+        return Err(ReferenceExecutionError::InternalIndexOutOfBounds);
+    };
+    let (batches, m, k, n) = (*batches, *m, *k, *n);
+    let lhs_matrix = m
+        .checked_mul(k)
+        .ok_or(ReferenceExecutionError::IndexOverflow)?;
+    let rhs_matrix = k
+        .checked_mul(n)
+        .ok_or(ReferenceExecutionError::IndexOverflow)?;
+    let out_matrix = m
+        .checked_mul(n)
+        .ok_or(ReferenceExecutionError::IndexOverflow)?;
+
+    for batch in 0..batches
+    {
+        let lhs_base = batch
+            .checked_mul(lhs_matrix)
+            .ok_or(ReferenceExecutionError::IndexOverflow)?;
+        let rhs_base = batch
+            .checked_mul(rhs_matrix)
+            .ok_or(ReferenceExecutionError::IndexOverflow)?;
+        let out_base = batch
+            .checked_mul(out_matrix)
+            .ok_or(ReferenceExecutionError::IndexOverflow)?;
+
+        for row in 0..m
+        {
+            let lhs_row = lhs_base
+                .checked_add(
+                    row.checked_mul(k)
+                        .ok_or(ReferenceExecutionError::IndexOverflow)?,
+                )
+                .ok_or(ReferenceExecutionError::IndexOverflow)?;
+            let out_row = out_base
+                .checked_add(
+                    row.checked_mul(n)
+                        .ok_or(ReferenceExecutionError::IndexOverflow)?,
+                )
+                .ok_or(ReferenceExecutionError::IndexOverflow)?;
+
+            for col in 0..n
+            {
+                let mut sum = 0.0f32;
+                for inner in 0..k
+                {
+                    let lhs_index = lhs_row
+                        .checked_add(inner)
+                        .ok_or(ReferenceExecutionError::IndexOverflow)?;
+                    let rhs_index = rhs_base
+                        .checked_add(
+                            inner
+                                .checked_mul(n)
+                                .ok_or(ReferenceExecutionError::IndexOverflow)?,
+                        )
+                        .and_then(|base| base.checked_add(col))
+                        .ok_or(ReferenceExecutionError::IndexOverflow)?;
+                    let lhs_value = *lhs
+                        .get(lhs_index)
+                        .ok_or(ReferenceExecutionError::InternalIndexOutOfBounds)?;
+                    let rhs_value = *rhs
+                        .get(rhs_index)
+                        .ok_or(ReferenceExecutionError::InternalIndexOutOfBounds)?;
+                    sum += lhs_value * rhs_value;
+                }
+                let output_index = out_row
+                    .checked_add(col)
+                    .ok_or(ReferenceExecutionError::IndexOverflow)?;
+                let target = output
+                    .get_mut(output_index)
+                    .ok_or(ReferenceExecutionError::InternalIndexOutOfBounds)?;
+                *target = sum;
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Rectified linear unit, with fully specified behaviour on every `f32` class.
-///
-/// * NaN: returned untouched, so its payload is preserved bit-for-bit.
-/// * strictly positive, including `+inf`: returned unchanged.
-/// * negative, `-0.0`, `+0.0` and `-inf`: `+0.0`.
-///
-/// `0.0 > 0.0` is false in IEEE 754, so `+0.0` takes the second branch and
-/// becomes `+0.0` — the same value it started as. `f32::max` is deliberately not
-/// used: its treatment of signed zeros and NaN does not match this
-/// specification.
-///
-/// The two "return the input" cases (NaN, strictly positive) are one branch
-/// rather than two identical ones purely so the condition reads as a single
-/// predicate; the semantics are exactly those spelled out above.
 #[inline]
 fn relu(x: f32) -> f32 {
     if x.is_nan() || x > 0.0 { x } else { 0.0 }
 }
 
-/// The single operand of a unary opcode.
-///
-/// Defensive: [`invocation::validate`] has already checked the operand count.
 fn first_operand<'a>(operands: &[&'a [f32]]) -> Result<&'a [f32], ReferenceExecutionError> {
     operands
         .first()
@@ -485,9 +590,6 @@ fn first_operand<'a>(operands: &[&'a [f32]]) -> Result<&'a [f32], ReferenceExecu
         .ok_or(ReferenceExecutionError::InternalIndexOutOfBounds)
 }
 
-/// The two operands of a binary opcode, in operand order.
-///
-/// Defensive, for the same reason as [`first_operand`].
 fn binary_operands<'a>(
     operands: &[&'a [f32]],
 ) -> Result<(&'a [f32], &'a [f32]), ReferenceExecutionError> {
@@ -503,13 +605,6 @@ fn binary_operands<'a>(
     Ok((left, right))
 }
 
-/// Row-major strides of `dims`: `strides[rank - 1] == 1` and
-/// `strides[i] == product(dims[i + 1 ..])`.
-///
-/// Built by multiplication only — never by division — with `checked_mul` at
-/// every step. A shape containing a zero dimension yields zero strides for the
-/// axes outside it; those strides are never used, because such a shape has zero
-/// elements and [`execute_permute`] returns before touching them.
 fn row_major_strides(dims: &[usize]) -> Result<Vec<usize>, ReferenceExecutionError> {
     let mut strides = vec![0usize; dims.len()];
     let mut accumulator = 1usize;
@@ -532,26 +627,6 @@ fn row_major_strides(dims: &[usize]) -> Result<Vec<usize>, ReferenceExecutionErr
     Ok(strides)
 }
 
-/// Copies each element to its permuted position, under the convention
-/// `output.shape[i] == input.shape[permutation[i]]`.
-///
-/// For every output element, in increasing linear order:
-///
-/// 1. the output coordinates are reconstructed from the precomputed output
-///    strides and dimensions;
-/// 2. each coordinate is mapped to its input axis through `permutation`;
-/// 3. the source linear index is accumulated from the precomputed input
-///    strides, with `checked_mul` and `checked_add`;
-/// 4. the source `f32` is copied verbatim — no arithmetic, so a NaN payload is
-///    preserved bit-for-bit.
-///
-/// Coordinates live in a fixed `[usize; 32]` array, so nothing proportional to
-/// the element count is allocated; the caller owns the only such buffer, the
-/// output. Rank `0` is a one-element scalar: the coordinate loops are empty, the
-/// source index stays `0`, and the single element is copied. A shape with a zero
-/// dimension has zero elements, and the early return below means no division is
-/// ever attempted — which is precisely why a zero dimension cannot divide by
-/// zero here.
 fn execute_permute(
     input_dims: &[usize],
     output_dims: &[usize],
@@ -563,7 +638,6 @@ fn execute_permute(
 ) -> Result<(), ReferenceExecutionError> {
     if output.is_empty()
     {
-        // Zero elements: nothing to permute, and no stride is ever divided by.
         return Ok(());
     }
 
@@ -573,7 +647,6 @@ fn execute_permute(
         || output_strides.len() != output_dims.len()
         || output_dims.len() > MAX_RANK
     {
-        // Defensive: preparation built all five from one validated artefact.
         return Err(ReferenceExecutionError::InternalIndexOutOfBounds);
     }
 
@@ -581,13 +654,10 @@ fn execute_permute(
 
     for (output_index, target) in output.iter_mut().enumerate()
     {
-        // 1. Reconstruct the output coordinates.
         for (axis, (&stride, &dim)) in output_strides.iter().zip(output_dims.iter()).enumerate()
         {
             if stride == 0 || dim == 0
             {
-                // Defensive: `output` is non-empty, so every output dimension
-                // is non-zero and so is every stride.
                 return Err(ReferenceExecutionError::InternalIndexOutOfBounds);
             }
 
@@ -598,7 +668,6 @@ fn execute_permute(
             *slot = coordinate;
         }
 
-        // 2 and 3. Map through the permutation and accumulate the source index.
         let mut source_index = 0usize;
         for (axis, &input_axis) in permutation.iter().enumerate()
         {
@@ -617,7 +686,6 @@ fn execute_permute(
                 .ok_or(ReferenceExecutionError::IndexOverflow)?;
         }
 
-        // 4. Copy the source element verbatim.
         let value = *operand
             .get(source_index)
             .ok_or(ReferenceExecutionError::InternalIndexOutOfBounds)?;
@@ -625,6 +693,17 @@ fn execute_permute(
     }
 
     Ok(())
+}
+
+fn checked_product(dims: &[usize]) -> Result<usize, ReferenceExecutionError> {
+    let mut product = 1usize;
+    for &dimension in dims
+    {
+        product = product
+            .checked_mul(dimension)
+            .ok_or(ReferenceExecutionError::IndexOverflow)?;
+    }
+    Ok(product)
 }
 
 /// Checked `u64 -> usize` conversion for one dimension or element count.

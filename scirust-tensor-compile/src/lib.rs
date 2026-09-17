@@ -52,8 +52,8 @@
 //!   → PtxGenerator       → KernelModule { format: Ptx, .. }
 //! ```
 //!
-//! None of those generators exists yet. **A [`LoweredPlan`] is a description,
-//! not an executable artefact**, and nothing in this crate can run a kernel.
+//! A [`LoweredPlan`] is a description rather than an executable artefact; kernel
+//! generation and execution remain responsibilities of downstream crates.
 //!
 //! # Deterministic invariants of the lowered plan
 //!
@@ -76,34 +76,36 @@
 //! Supported in this phase:
 //!
 //! * `Add`, `Sub`, `Mul`, `Div` — [`KernelFamily::ElementwiseBinary`];
-//! * `Relu`, `Exp`, `Log`, `ZerosLike`, `Scale` — [`KernelFamily::ElementwiseUnary`];
+//! * `Relu`, `Exp`, `Log`, `ZerosLike`, `OnesLike`, `Scale` —
+//!   [`KernelFamily::ElementwiseUnary`];
+//! * rank-2 `MatMul` — [`KernelFamily::MatMul`];
+//! * identical-prefix `BatchMatMul` — [`KernelFamily::BatchMatMul`];
 //! * `Reshape` — [`KernelFamily::ShapeCopy`];
 //! * `Transpose` — [`KernelFamily::Permute`].
 //!
 //! `Input` and `Constant` never become kernels; they feed the external binding
 //! table ([`ExternalBindings`]) instead.
 //!
-//! `MatMul` is **rejected** with [`LoweringError::UnsupportedOperation`]. An
-//! honest lowering of it needs rank validation, `M`/`K`/`N` extraction, a batch
-//! policy, memory order, an accumulation policy with a stated numeric
-//! determinism guarantee, a kernel strategy and possibly tiling constraints.
-//! None of that is modelled here, and inventing an incomplete `MatMul` family
-//! would advertise a capability that does not exist. It gets its own phase.
+//! Matrix-product lowering validates the complete logical shape contract before
+//! exposing a kernel family: rank-2 products require `[M,K] @ [K,N] -> [M,N]`,
+//! while batched products require one identical batch prefix and
+//! `[B...,M,K] @ [B...,K,N] -> [B...,M,N]`. All operands and the result must
+//! have the same dtype. This crate deliberately does not choose tiling, SIMD,
+//! thread partitioning, GPU workgroup geometry or a vendor GEMM implementation;
+//! those are backend/code-generator decisions. The Reference CPU executor defines
+//! its own deterministic accumulation policy separately.
 //!
 //! Any operation added to the non-exhaustive [`scirust_tensor_ir::Operation`]
-//! enum in the future is likewise rejected with a typed error. There is no
-//! silent fallback, no no-op substitution and no partial lowering: a plan either
-//! lowers completely or fails.
+//! enum in the future is rejected with a typed error until a lowering rule is
+//! supplied. There is no silent fallback, no no-op substitution and no partial
+//! lowering: a plan either lowers completely or fails.
 //!
 //! # Semantic validation performed while lowering
 //!
-//! [`KernelLowerer::lower`] validates operand types, reshape consistency and
-//! transpose permutations. These checks are *invariants of the canonical plan*
-//! that no earlier pass enforces today — `Graph::validate` checks arity and
-//! reference direction, not shapes. They live there because a code generator
-//! must be able to trust them. A later semantic-validation pass of this crate
-//! may own them instead, or share them; moving them would not change the
-//! contract.
+//! [`KernelLowerer::lower`] validates operand types, matrix-product shapes,
+//! reshape consistency and transpose permutations. These checks are invariants
+//! a code generator must be able to trust. They complement canonical Tensor IR
+//! semantic validation rather than weaken it.
 //!
 //! # Legacy element-wise fusion compiler
 //!
