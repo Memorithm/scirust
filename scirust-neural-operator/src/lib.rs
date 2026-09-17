@@ -18,6 +18,7 @@ pub mod anf_search;
 pub mod boolean;
 pub mod dataset;
 pub mod error;
+pub mod fft_inference;
 pub mod fno;
 pub mod grid;
 pub mod hybrid;
@@ -34,6 +35,7 @@ pub use anf_search::{
 pub use boolean::{AnfOperator, AnfPolynomial, BooleanComplexity, F2LinearOperator, PackedBits};
 pub use dataset::{OperatorDataset1d, OperatorSample1d};
 pub use error::{NeuralOperatorError, Result};
+pub use fft_inference::{FftInferenceMode, Fno1dFftInference};
 pub use fno::{FitReport, Fno1dConfig, Fno1dOperator, LearnedOperator};
 pub use grid::PeriodicGrid1d;
 pub use hybrid::{
@@ -53,5 +55,5 @@ pub use spectral_routing::{
 // Existing SciRust operator-learning primitives remain available through the
 // dedicated crate so callers do not have to know their historical locations.
 pub use scirust_core::nn::deeponet::DeepONet;
-pub use scirust_core::nn::fno::{FnoSpectralConv1d, NdFno};
+pub use scirust_core::nn::fno::{Fno1dInferenceSnapshot, FnoSpectralConv1d, NdFno};
 pub use scirust_core::nn::pinn::{Pinn1D, PinnSolution, solve_harmonic};
