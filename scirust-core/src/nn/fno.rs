@@ -34,19 +34,25 @@ use std::f32::consts::TAU;
 /// grid: `Cfwd[k,j] = cos(2πkj/n)`, `Sfwd[k,j] = −sin(2πkj/n)` (the `−i·sin` of
 /// `e^{−2πikj/n}`), each row-major `(modes, n)`. With a signal `v` of shape
 /// `(n, width)`, `Cfwd·v` and `Sfwd·v` are the real/imaginary spectra at those modes.
-fn dft_forward(n: usize, modes: usize) -> (Vec<f32>, Vec<f32>) {
-    let mut cf = vec![0f32; modes * n];
-    let mut sf = vec![0f32; modes * n];
-    for k in 0..modes
+fn dft_forward_selected(n: usize, selected_modes: &[usize]) -> (Vec<f32>, Vec<f32>) {
+    let rows = selected_modes.len();
+    let mut cf = vec![0f32; rows * n];
+    let mut sf = vec![0f32; rows * n];
+    for (row, &k) in selected_modes.iter().enumerate()
     {
         for j in 0..n
         {
             let a = TAU * (k as f32) * (j as f32) / n as f32;
-            cf[k * n + j] = a.cos();
-            sf[k * n + j] = -a.sin();
+            cf[row * n + j] = a.cos();
+            sf[row * n + j] = -a.sin();
         }
     }
     (cf, sf)
+}
+
+fn dft_forward(n: usize, modes: usize) -> (Vec<f32>, Vec<f32>) {
+    let selected: Vec<usize> = (0..modes).collect();
+    dft_forward_selected(n, &selected)
 }
 
 /// Inverse real-DFT basis reconstructing a length-`n` **real** signal from its first
@@ -54,20 +60,26 @@ fn dft_forward(n: usize, modes: usize) -> (Vec<f32>, Vec<f32>) {
 /// `ICos[j,k] = f_k·cos(2πkj/n)/n`, `ISin[j,k] = f_k·sin(2πkj/n)/n`, each `(n, modes)`.
 /// Then `v' = ICos·Outre − ISin·Outim`. Exact for signals band-limited to the kept
 /// modes (the factor 2 folds in the symmetric negative frequencies).
-fn dft_inverse(n: usize, modes: usize) -> (Vec<f32>, Vec<f32>) {
-    let mut ic = vec![0f32; n * modes];
-    let mut is = vec![0f32; n * modes];
+fn dft_inverse_selected(n: usize, selected_modes: &[usize]) -> (Vec<f32>, Vec<f32>) {
+    let cols = selected_modes.len();
+    let mut ic = vec![0f32; n * cols];
+    let mut is = vec![0f32; n * cols];
     for j in 0..n
     {
-        for k in 0..modes
+        for (col, &k) in selected_modes.iter().enumerate()
         {
             let f = if k == 0 { 1.0 } else { 2.0 };
             let a = TAU * (k as f32) * (j as f32) / n as f32;
-            ic[j * modes + k] = f * a.cos() / n as f32;
-            is[j * modes + k] = f * a.sin() / n as f32;
+            ic[j * cols + col] = f * a.cos() / n as f32;
+            is[j * cols + col] = f * a.sin() / n as f32;
         }
     }
     (ic, is)
+}
+
+fn dft_inverse(n: usize, modes: usize) -> (Vec<f32>, Vec<f32>) {
+    let selected: Vec<usize> = (0..modes).collect();
+    dft_inverse_selected(n, &selected)
 }
 
 /// **1-D spectral convolution** — the heart of an FNO layer. Keeps the lowest
@@ -140,6 +152,66 @@ impl FnoSpectralConv1d {
         icv.matmul(outre).sub(isv.matmul(outim)) // (n, width)
     }
 
+    /// Forward using only a canonical subset of the configured Fourier modes.
+    ///
+    /// `selected_modes` contains strictly increasing indices in `0..self.modes`.
+    /// The forward DFT rows, complex weight batches and inverse DFT columns are
+    /// built only for those modes, so rejected modes do not enter the expensive
+    /// per-mode channel-mixing `bmm`. The full parameter tensors remain the
+    /// trainable source: `gather` scatters gradients back to the selected rows.
+    pub fn forward_selected_modes<'t>(
+        &mut self,
+        tape: &'t NdTape,
+        v: NdVar<'t>,
+        selected_modes: &[usize],
+    ) -> NdVar<'t> {
+        assert!(
+            !selected_modes.is_empty(),
+            "FNO selected mode set must not be empty"
+        );
+        assert!(
+            selected_modes.iter().all(|&mode| mode < self.modes),
+            "FNO selected mode index exceeds configured modes"
+        );
+        assert!(
+            selected_modes.windows(2).all(|pair| pair[0] < pair[1]),
+            "FNO selected modes must be strictly increasing and unique"
+        );
+
+        let (selected, width) = (selected_modes.len(), self.width);
+        let (cf, sf) = dft_forward_selected(self.n, selected_modes);
+        let cfv = tape.input(TensorND::new(cf, vec![selected, self.n]));
+        let sfv = tape.input(TensorND::new(sf, vec![selected, self.n]));
+        let vre = cfv.matmul(v).reshape(&[selected, width, 1]);
+        let vim = sfv.matmul(v).reshape(&[selected, width, 1]);
+
+        let arv = tape.input(self.ar.clone());
+        self.ar_idx = Some(arv.idx());
+        let aiv = tape.input(self.ai.clone());
+        self.ai_idx = Some(aiv.idx());
+        let ar_selected = arv
+            .reshape(&[self.modes, width * width])
+            .gather(selected_modes)
+            .reshape(&[selected, width, width]);
+        let ai_selected = aiv
+            .reshape(&[self.modes, width * width])
+            .gather(selected_modes)
+            .reshape(&[selected, width, width]);
+
+        let outre = ar_selected
+            .bmm(vre)
+            .sub(ai_selected.bmm(vim))
+            .reshape(&[selected, width]);
+        let outim = ar_selected
+            .bmm(vim)
+            .add(ai_selected.bmm(vre))
+            .reshape(&[selected, width]);
+        let (ic, is) = dft_inverse_selected(self.n, selected_modes);
+        let icv = tape.input(TensorND::new(ic, vec![self.n, selected]));
+        let isv = tape.input(TensorND::new(is, vec![self.n, selected]));
+        icv.matmul(outre).sub(isv.matmul(outim))
+    }
+
     /// Trainable parameters (the real and imaginary per-mode weights).
     pub fn parameters(&mut self) -> Vec<NdParam<'_>> {
         let (ar_idx, ai_idx) = (self.ar_idx, self.ai_idx);
@@ -204,6 +276,25 @@ impl NdFno {
         let loc = self.local.forward(tape, v); // local
         let y = spec.add(loc).relu(); // σ(global + local)
         self.proj.forward(tape, y) // (n, out_ch)
+    }
+
+    /// Forward with the global spectral branch restricted to selected modes.
+    ///
+    /// The local pointwise branch remains unchanged; only the spectral branch
+    /// skips rejected Fourier-mode projection/mixing/reconstruction work.
+    pub fn forward_selected_modes<'t>(
+        &mut self,
+        tape: &'t NdTape,
+        x: NdVar<'t>,
+        selected_modes: &[usize],
+    ) -> NdVar<'t> {
+        let v = self.lift.forward(tape, x);
+        let spec = self
+            .spectral
+            .forward_selected_modes(tape, v, selected_modes);
+        let loc = self.local.forward(tape, v);
+        let y = spec.add(loc).relu();
+        self.proj.forward(tape, y)
     }
 
     /// Trainable parameters (lift, spectral weights, local linear, projection).
@@ -369,6 +460,68 @@ mod tests {
         // Determinism: identical test error across runs.
         let test_mse2 = run();
         assert_eq!(test_mse.to_bits(), test_mse2.to_bits());
+    }
+
+    /// Selecting every configured mode is forward-equivalent to the dense path.
+    #[test]
+    fn selected_modes_full_set_matches_dense_forward() {
+        let (n, modes, width) = (16usize, 5usize, 2usize);
+        let input: Vec<f32> = (0..n * width)
+            .map(|index| (index as f32 * 0.17 - 0.4).sin())
+            .collect();
+        let mut rng_dense = PcgEngine::new(91);
+        let mut rng_selected = PcgEngine::new(91);
+        let mut dense = FnoSpectralConv1d::new(n, modes, width, &mut rng_dense);
+        let mut selected = FnoSpectralConv1d::new(n, modes, width, &mut rng_selected);
+
+        let dense_tape = NdTape::new();
+        let dense_input = dense_tape.input(TensorND::new(input.clone(), vec![n, width]));
+        let dense_value = dense_tape.value(dense.forward(&dense_tape, dense_input));
+
+        let selected_tape = NdTape::new();
+        let selected_input = selected_tape.input(TensorND::new(input, vec![n, width]));
+        let all_modes: Vec<usize> = (0..modes).collect();
+        let selected_value = selected_tape.value(selected.forward_selected_modes(
+            &selected_tape,
+            selected_input,
+            &all_modes,
+        ));
+
+        assert_eq!(dense_value.shape, selected_value.shape);
+        for (dense, selected) in dense_value.data.iter().zip(selected_value.data.iter())
+        {
+            assert_eq!(dense.to_bits(), selected.to_bits());
+        }
+    }
+
+    /// Rejected modes do not receive spectral-weight gradients on the selected path.
+    #[test]
+    fn selected_modes_leave_rejected_weight_gradients_zero() {
+        let (n, modes) = (16usize, 4usize);
+        let mut rng = PcgEngine::new(33);
+        let mut conv = FnoSpectralConv1d::new(n, modes, 1, &mut rng);
+        let input: Vec<f32> = (0..n)
+            .map(|j| {
+                let x = TAU * j as f32 / n as f32;
+                1.0 + 0.7 * (2.0 * x).cos()
+            })
+            .collect();
+        let tape = NdTape::new();
+        let x = tape.input(TensorND::new(input, vec![n, 1]));
+        let out = conv.forward_selected_modes(&tape, x, &[0, 2]);
+        let grads = tape.backward(out.mul(out).sum());
+        let ar_grad = &grads[conv.ar_idx.unwrap()];
+        let ai_grad = &grads[conv.ai_idx.unwrap()];
+
+        for rejected in [1usize, 3usize]
+        {
+            assert_eq!(ar_grad.data[rejected].to_bits(), 0.0f32.to_bits());
+            assert_eq!(ai_grad.data[rejected].to_bits(), 0.0f32.to_bits());
+        }
+        assert!(
+            ar_grad.data[0].abs() > 0.0 || ar_grad.data[2].abs() > 0.0,
+            "selected modes should receive a non-zero real-weight gradient"
+        );
     }
 
     /// The full `NdFno` block trains (MSE↓ to a target) and is bit-for-bit
