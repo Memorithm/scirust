@@ -31,14 +31,19 @@ pub use dataset::{OperatorDataset1d, OperatorSample1d};
 pub use error::{NeuralOperatorError, Result};
 pub use fno::{FitReport, Fno1dConfig, Fno1dOperator, LearnedOperator};
 pub use grid::PeriodicGrid1d;
-pub use hybrid::{BooleanRouteRule, BooleanRouter, HybridAction, RouterComplexity};
+pub use hybrid::{
+    BooleanRouteRule, BooleanRouter, HybridAction, HybridExecution, HybridExecutor,
+    RouterComplexity,
+};
 pub use loss::{LpLoss, relative_l2};
 pub use metrics::{OperatorMetrics, SurrogateEconomics};
 pub use normalizer::ChannelNormalizer;
 pub use spectral::{
     spectral_derivative_1d, spectral_derivative_2d, spectral_laplacian_1d, spectral_laplacian_2d,
 };
-pub use spectral_routing::{BooleanSpectralRouter, SpectralModePlan, SpectralRouterComplexity};
+pub use spectral_routing::{
+    BooleanSpectralRouter, SpectralModePlan, SpectralRouterComplexity, SpectralWorkEstimate,
+};
 
 // Existing SciRust operator-learning primitives remain available through the
 // dedicated crate so callers do not have to know their historical locations.

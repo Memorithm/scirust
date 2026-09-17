@@ -12,7 +12,8 @@ Current foundation:
 - exact `F_2` affine operators and bit-packed Boolean vectors;
 - exact ANF/Zhegalkin operators with truth-table Möbius synthesis;
 - ordered Boolean routing for surrogate/exact/verify/abstain execution;
-- Boolean early-dispatch of Fourier modes before spectral channel mixing;
+- hybrid executor that invokes the learned and authoritative paths according to the route and falls back to the exact output when verification exceeds tolerance;
+- Boolean early-dispatch of Fourier modes before spectral channel mixing, with explicit arithmetic-work accounting;
 - existing SciRust FNO / DeepONet / PINN primitives exposed from one package;
 - deterministic portable FFT spectral derivatives and 1-D/2-D Laplacians;
 - operator datasets with strict shape/finite-value validation;
