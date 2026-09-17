@@ -12,3 +12,6 @@ repository = "https://github.com/Memorithm/scirust"
 scirust-core = { path = "../scirust-core" }
 scirust-signal = { path = "../scirust-signal" }
 thiserror = "2"
+
+[dev-dependencies]
+scirust-solvers = { path = "../scirust-solvers" }

@@ -121,6 +121,9 @@ pub enum NeuralOperatorError {
     #[error("no exact ANF candidate exists inside the declared bounded grammar")]
     NoExactAnfCandidate,
 
+    #[error("benchmark repeats must be positive, got {repeats}")]
+    InvalidBenchmarkRepeats { repeats: usize },
+
     #[error("verification tolerance must be finite and non-negative, got {tolerance}")]
     InvalidVerificationTolerance { tolerance: f64 },
 

@@ -15,6 +15,7 @@
 //! out-of-distribution fallback.
 
 pub mod anf_search;
+pub mod benchmark;
 pub mod boolean;
 pub mod dataset;
 pub mod error;
@@ -31,6 +32,10 @@ pub mod spectral_routing;
 pub use anf_search::{
     BooleanDevelopmentExample, BooleanDevelopmentSet, BooleanValidationSet, SparseAnfSearchConfig,
     SparseAnfSearchResult, SparseAnfValidation, search_sparse_anf,
+};
+pub use benchmark::{
+    BenchmarkAccuracy, BenchmarkConfig, SurrogateBenchmarkReport, TimingStats,
+    benchmark_exact_vs_surrogate,
 };
 pub use boolean::{AnfOperator, AnfPolynomial, BooleanComplexity, F2LinearOperator, PackedBits};
 pub use dataset::{OperatorDataset1d, OperatorDataset2d, OperatorSample1d, OperatorSample2d};
