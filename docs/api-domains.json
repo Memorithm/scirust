@@ -48,6 +48,7 @@
       "description": "Learning algorithms, AutoML/NAS/RL, SciAgent/RSI, reasoning, neuro-symbolic and causal methods, language/vision/audio/graph components, retrieval/discovery and SOM components.",
       "packages": [
         "scirust-learning",
+        "scirust-neural-operator",
         "scirust-automl",
         "scirust-nas",
         "scirust-rl-algo",

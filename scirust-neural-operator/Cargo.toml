@@ -1,0 +1,14 @@
+[package]
+name = "scirust-neural-operator"
+version = "0.1.0"
+edition = "2024"
+publish = false
+rust-version = "1.89"
+description = "Native Rust neural-operator learning primitives for SciRust"
+license-file = "../LICENSE.md"
+repository = "https://github.com/Memorithm/scirust"
+
+[dependencies]
+scirust-core = { path = "../scirust-core" }
+scirust-signal = { path = "../scirust-signal" }
+thiserror = "2"
