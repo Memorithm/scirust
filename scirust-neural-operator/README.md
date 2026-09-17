@@ -11,7 +11,7 @@ Current foundation:
 - trainable 1-D Fourier Neural Operator through SciRust N-D autodiff;
 - exact `F_2` affine operators and bit-packed Boolean vectors;
 - exact ANF/Zhegalkin operators with truth-table Möbius synthesis;
-- complete bounded sparse-ANF synthesis over unique Development assignments, refusing candidate-budget truncation;
+- complete bounded sparse-ANF synthesis over unique Development assignments, refusing candidate-budget truncation, with a distinct post-selection Validation type;
 - ordered Boolean routing for surrogate/exact/verify/abstain execution;
 - hybrid executor that invokes the learned and authoritative paths according to the route and falls back to the exact output when verification exceeds tolerance;
 - Boolean early-dispatch of Fourier modes before spectral channel mixing, with explicit arithmetic-work accounting;
