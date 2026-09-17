@@ -52,6 +52,7 @@ pub fn spectral_derivative_1d(field: &[f64], length: f64, order: usize) -> Resul
     Ok(spectrum.into_iter().map(|z| z.re).collect())
 }
 
+/// Evaluate the one-dimensional periodic Laplacian as the second spectral derivative.
 pub fn spectral_laplacian_1d(field: &[f64], length: f64) -> Result<Vec<f64>> {
     spectral_derivative_1d(field, length, 2)
 }
@@ -109,6 +110,7 @@ pub fn spectral_derivative_2d(
     Ok(out)
 }
 
+/// Evaluate the two-dimensional periodic Laplacian as `d²/dx² + d²/dy²`.
 pub fn spectral_laplacian_2d(
     field: &[f64],
     rows: usize,

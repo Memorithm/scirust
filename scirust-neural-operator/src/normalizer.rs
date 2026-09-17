@@ -12,6 +12,7 @@ pub struct ChannelNormalizer {
 }
 
 impl ChannelNormalizer {
+    /// Construct an unfitted per-channel normalizer with a positive finite epsilon.
     pub fn new(channels: usize, epsilon: f64) -> Result<Self> {
         if channels == 0
         {
@@ -86,9 +87,11 @@ impl ChannelNormalizer {
         Ok(())
     }
 
+    /// Standardize a row-major field using fitted per-channel statistics.
     pub fn encode(&self, field: &[f32]) -> Result<Vec<f32>> {
         self.transform(field, false)
     }
+    /// Invert standardization using the fitted per-channel statistics.
     pub fn decode(&self, field: &[f32]) -> Result<Vec<f32>> {
         self.transform(field, true)
     }
@@ -103,6 +106,16 @@ impl ChannelNormalizer {
             return Err(NeuralOperatorError::ChannelMismatch {
                 width: field.len(),
                 channels: self.channels,
+            });
+        }
+        if let Some((index, _)) = field
+            .iter()
+            .enumerate()
+            .find(|(_, value)| !value.is_finite())
+        {
+            return Err(NeuralOperatorError::NonFinite {
+                what: "normalizer field",
+                index,
             });
         }
         let mut out = Vec::with_capacity(field.len());
@@ -122,11 +135,13 @@ impl ChannelNormalizer {
         Ok(out)
     }
 
+    /// Return fitted per-channel means, or fail if fitting has not completed.
     pub fn mean(&self) -> Result<&[f64]> {
         self.fitted
             .then_some(self.mean.as_slice())
             .ok_or(NeuralOperatorError::NormalizerNotFitted)
     }
+    /// Return fitted population standard deviations, or fail before fitting.
     pub fn std(&self) -> Result<&[f64]> {
         self.fitted
             .then_some(self.std.as_slice())
@@ -137,6 +152,27 @@ impl ChannelNormalizer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fitted_normalizer_rejects_non_finite_transform_inputs() {
+        let data = vec![1.0f32, 2.0, 3.0, 4.0];
+        let mut normalizer = ChannelNormalizer::new(1, 1e-12).unwrap();
+        normalizer.fit([data.as_slice()]).unwrap();
+        assert!(matches!(
+            normalizer.encode(&[f32::NAN]),
+            Err(NeuralOperatorError::NonFinite {
+                what: "normalizer field",
+                index: 0
+            })
+        ));
+        assert!(matches!(
+            normalizer.decode(&[f32::INFINITY]),
+            Err(NeuralOperatorError::NonFinite {
+                what: "normalizer field",
+                index: 0
+            })
+        ));
+    }
 
     #[test]
     fn channel_normalizer_round_trips() {

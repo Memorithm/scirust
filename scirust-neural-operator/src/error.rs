@@ -57,6 +57,9 @@ pub enum NeuralOperatorError {
     #[error("LpLoss supports p >= 1, got {p}")]
     InvalidP { p: u32 },
 
+    #[error("learning rate must be finite, got {lr}")]
+    InvalidLearningRate { lr: f32 },
+
     #[error("surrogate cost inputs must be finite and non-negative")]
     InvalidCost,
 }

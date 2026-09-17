@@ -24,6 +24,7 @@ pub struct Fno1dConfig {
 }
 
 impl Fno1dConfig {
+    /// Validate dimensions and the strictly one-sided retained Fourier modes.
     pub fn validate(self) -> Result<Self> {
         if self.points == 0
         {
@@ -36,11 +37,17 @@ impl Fno1dConfig {
                 return Err(NeuralOperatorError::InvalidChannels { channels });
             }
         }
-        if self.modes == 0 || self.modes > self.points
+        // The wrapped inverse DFT reconstructs negative frequencies by doubling
+        // each retained nonzero positive-frequency mode.  For even grids the
+        // Nyquist bin is self-conjugate and therefore must not enter that path.
+        // Keep the public wrapper on the strictly one-sided spectrum until the
+        // low-level inverse handles Nyquist separately.
+        let max_modes = self.points / 2 + self.points % 2;
+        if self.modes == 0 || self.modes > max_modes
         {
             return Err(NeuralOperatorError::ShapeMismatch {
                 what: "FNO modes",
-                expected: self.points,
+                expected: max_modes,
                 got: self.modes,
             });
         }
@@ -64,6 +71,7 @@ pub struct Fno1dOperator {
 }
 
 impl Fno1dOperator {
+    /// Construct a deterministically seeded trainable FNO from validated configuration.
     pub fn new(cfg: Fno1dConfig) -> Result<Self> {
         let cfg = cfg.validate()?;
         let mut rng = PcgEngine::new(cfg.seed);
@@ -78,6 +86,7 @@ impl Fno1dOperator {
         Ok(Self { cfg, model })
     }
 
+    /// Return the validated configuration used to construct this operator.
     pub fn config(&self) -> Fno1dConfig {
         self.cfg
     }
@@ -112,6 +121,10 @@ impl Fno1dOperator {
                 expected: self.cfg.out_channels,
                 got: dataset.out_channels(),
             });
+        }
+        if !lr.is_finite()
+        {
+            return Err(NeuralOperatorError::InvalidLearningRate { lr });
         }
         let mut opt = NdAdam::with_lr(lr);
         let denom = (self.cfg.points * self.cfg.out_channels) as f64;
@@ -212,6 +225,35 @@ mod tests {
     }
 
     #[test]
+    fn fno_config_rejects_nyquist_and_negative_frequency_bins() {
+        let even = Fno1dConfig {
+            points: 8,
+            in_channels: 1,
+            out_channels: 1,
+            hidden_channels: 4,
+            modes: 4,
+            seed: 7,
+        };
+        assert!(even.validate().is_ok());
+        let err = Fno1dConfig { modes: 5, ..even }.validate().unwrap_err();
+        assert_eq!(
+            err,
+            NeuralOperatorError::ShapeMismatch {
+                what: "FNO modes",
+                expected: 4,
+                got: 5,
+            }
+        );
+
+        let odd = Fno1dConfig {
+            points: 7,
+            modes: 4,
+            ..even
+        };
+        assert!(odd.validate().is_ok());
+    }
+
+    #[test]
     fn fno_wrapper_predicts_correct_shape() {
         let cfg = Fno1dConfig {
             points: 8,
@@ -223,6 +265,28 @@ mod tests {
         };
         let mut op = Fno1dOperator::new(cfg).unwrap();
         assert_eq!(op.predict(&[0.0; 8]).unwrap().len(), 8);
+    }
+
+    #[test]
+    fn fno_training_rejects_non_finite_learning_rates() {
+        let n = 8;
+        let train = derivative_dataset(&[0.0], n);
+        let cfg = Fno1dConfig {
+            points: n,
+            in_channels: 1,
+            out_channels: 1,
+            hidden_channels: 4,
+            modes: 3,
+            seed: 11,
+        };
+        for lr in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY]
+        {
+            let mut op = Fno1dOperator::new(cfg).unwrap();
+            assert!(matches!(
+                op.fit(&train, 1, lr),
+                Err(NeuralOperatorError::InvalidLearningRate { lr: got }) if got.is_nan() == lr.is_nan() && (lr.is_nan() || got == lr)
+            ));
+        }
     }
 
     #[test]

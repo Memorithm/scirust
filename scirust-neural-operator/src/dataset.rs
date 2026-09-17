@@ -9,6 +9,7 @@ pub struct OperatorSample1d {
 }
 
 impl OperatorSample1d {
+    /// Construct a finite, non-empty operator-learning sample.
     pub fn new(input: Vec<f32>, target: Vec<f32>) -> Result<Self> {
         validate_finite("operator input", &input)?;
         validate_finite("operator target", &target)?;
@@ -46,6 +47,7 @@ pub struct OperatorDataset1d {
 }
 
 impl OperatorDataset1d {
+    /// Construct a shape-checked dataset and revalidate every sample as finite.
     pub fn new(
         samples: Vec<OperatorSample1d>,
         points: usize,
@@ -72,6 +74,8 @@ impl OperatorDataset1d {
         let expected_out = points.saturating_mul(out_channels);
         for (sample, item) in samples.iter().enumerate()
         {
+            validate_finite("operator input", &item.input)?;
+            validate_finite("operator target", &item.target)?;
             if item.input.len() != expected_in
             {
                 return Err(NeuralOperatorError::DatasetShapeMismatch {
@@ -99,21 +103,27 @@ impl OperatorDataset1d {
         })
     }
 
+    /// Return the samples in deterministic dataset order.
     pub fn samples(&self) -> &[OperatorSample1d] {
         &self.samples
     }
+    /// Return the number of samples.
     pub fn len(&self) -> usize {
         self.samples.len()
     }
+    /// Return whether the dataset contains no samples.
     pub fn is_empty(&self) -> bool {
         self.samples.is_empty()
     }
+    /// Return the number of grid points per sample.
     pub fn points(&self) -> usize {
         self.points
     }
+    /// Return the input-channel count per grid point.
     pub fn in_channels(&self) -> usize {
         self.in_channels
     }
+    /// Return the output-channel count per grid point.
     pub fn out_channels(&self) -> usize {
         self.out_channels
     }
@@ -122,6 +132,29 @@ impl OperatorDataset1d {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dataset_revalidates_mutable_sample_finiteness() {
+        let mut sample = OperatorSample1d::new(vec![0.0; 4], vec![0.0; 4]).unwrap();
+        sample.input[2] = f32::NAN;
+        assert_eq!(
+            OperatorDataset1d::new(vec![sample], 4, 1, 1).unwrap_err(),
+            NeuralOperatorError::NonFinite {
+                what: "operator input",
+                index: 2,
+            }
+        );
+
+        let mut sample = OperatorSample1d::new(vec![0.0; 4], vec![0.0; 4]).unwrap();
+        sample.target[1] = f32::INFINITY;
+        assert_eq!(
+            OperatorDataset1d::new(vec![sample], 4, 1, 1).unwrap_err(),
+            NeuralOperatorError::NonFinite {
+                what: "operator target",
+                index: 1,
+            }
+        );
+    }
 
     #[test]
     fn dataset_rejects_shape_mismatch() {

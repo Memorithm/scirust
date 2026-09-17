@@ -26,12 +26,15 @@ impl PeriodicGrid1d {
         Ok(Self { points, length })
     }
 
+    /// Return the number of grid points.
     pub fn points(self) -> usize {
         self.points
     }
+    /// Return the physical period length.
     pub fn length(self) -> f64 {
         self.length
     }
+    /// Return the uniform grid spacing `length / points`.
     pub fn spacing(self) -> f64 {
         self.length / self.points as f64
     }
