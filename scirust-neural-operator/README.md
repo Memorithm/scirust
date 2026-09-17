@@ -21,6 +21,7 @@ Current foundation:
 - per-channel normalization;
 - absolute and relative Lp losses;
 - exact-vs-surrogate accuracy metrics;
+- measured exact-vs-surrogate benchmark harness with alternating execution order, timing distributions and repeat-drift diagnostics;
 - training-amortisation / break-even metrics.
 
 The reference-solver rule is deliberate: a learned operator is a surrogate. It
