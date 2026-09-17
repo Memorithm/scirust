@@ -83,6 +83,40 @@ pub enum NeuralOperatorError {
     #[error("ANF monomial mask {mask:#x} references a variable outside arity {variables}")]
     InvalidMonomialMask { mask: u64, variables: usize },
 
+    #[error("spectral mode {mode} is outside configured range 0..{configured_modes}")]
+    InvalidSpectralMode {
+        mode: usize,
+        configured_modes: usize,
+    },
+
+    #[error("spectral mode indices must be strictly increasing and unique")]
+    NonCanonicalSpectralModes,
+
+    #[error("Boolean development example {example} has width {got}; expected {expected}")]
+    BooleanDatasetShapeMismatch {
+        example: usize,
+        expected: usize,
+        got: usize,
+    },
+
+    #[error("duplicate Boolean development assignment {assignment:#x}")]
+    DuplicateBooleanAssignment { assignment: u64 },
+
+    #[error("ANF search degree {degree} exceeds variable count {variables}")]
+    InvalidAnfSearchDegree { degree: usize, variables: usize },
+
+    #[error("ANF search max_terms must be positive, got {terms}")]
+    InvalidAnfSearchTerms { terms: usize },
+
+    #[error("ANF candidate universe needs {required} evaluations but budget is {budget}")]
+    CandidateBudgetExceeded { required: usize, budget: usize },
+
+    #[error("no exact ANF candidate exists inside the declared bounded grammar")]
+    NoExactAnfCandidate,
+
+    #[error("verification tolerance must be finite and non-negative, got {tolerance}")]
+    InvalidVerificationTolerance { tolerance: f64 },
+
     #[error("surrogate cost inputs must be finite and non-negative")]
     InvalidCost,
 }

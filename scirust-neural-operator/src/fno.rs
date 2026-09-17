@@ -1,4 +1,4 @@
-use crate::{NeuralOperatorError, OperatorDataset1d, Result};
+use crate::{NeuralOperatorError, OperatorDataset1d, Result, SpectralModePlan};
 use scirust_core::autodiff::nd::NdTape;
 use scirust_core::nn::fno::NdFno;
 use scirust_core::nn::nd_optim::NdAdam;
@@ -91,6 +91,56 @@ impl Fno1dOperator {
         self.cfg
     }
 
+    /// Predict with the global spectral branch restricted by an early-dispatch plan.
+    ///
+    /// Rejected modes are omitted before the spectral channel-mixing batch, not
+    /// zeroed after a dense spectral forward. The local pointwise branch remains
+    /// active. This method reports no speed claim; elapsed-time qualification is
+    /// a separate benchmark concern.
+    pub fn predict_with_mode_plan(
+        &mut self,
+        input: &[f32],
+        plan: &SpectralModePlan,
+    ) -> Result<Vec<f32>> {
+        self.validate_prediction_input(input)?;
+        if plan.total_modes() != self.cfg.modes
+        {
+            return Err(NeuralOperatorError::ShapeMismatch {
+                what: "FNO spectral plan modes",
+                expected: self.cfg.modes,
+                got: plan.total_modes(),
+            });
+        }
+        let tape = NdTape::new();
+        let x = tape.input(TensorND::new(
+            input.to_vec(),
+            vec![self.cfg.points, self.cfg.in_channels],
+        ));
+        let y = self
+            .model
+            .forward_selected_modes(&tape, x, plan.active_modes());
+        Ok(tape.value(y).data.to_vec())
+    }
+
+    fn validate_prediction_input(&self, input: &[f32]) -> Result<()> {
+        if input.len() != self.input_len()
+        {
+            return Err(NeuralOperatorError::ShapeMismatch {
+                what: "FNO input",
+                expected: self.input_len(),
+                got: input.len(),
+            });
+        }
+        if let Some((index, _)) = input.iter().enumerate().find(|(_, x)| !x.is_finite())
+        {
+            return Err(NeuralOperatorError::NonFinite {
+                what: "FNO input",
+                index,
+            });
+        }
+        Ok(())
+    }
+
     /// Deterministic sample-wise Adam training. MSE is reported per scalar output.
     pub fn fit(
         &mut self,
@@ -177,21 +227,7 @@ impl LearnedOperator for Fno1dOperator {
     }
 
     fn predict(&mut self, input: &[f32]) -> Result<Vec<f32>> {
-        if input.len() != self.input_len()
-        {
-            return Err(NeuralOperatorError::ShapeMismatch {
-                what: "FNO input",
-                expected: self.input_len(),
-                got: input.len(),
-            });
-        }
-        if let Some((index, _)) = input.iter().enumerate().find(|(_, x)| !x.is_finite())
-        {
-            return Err(NeuralOperatorError::NonFinite {
-                what: "FNO input",
-                index,
-            });
-        }
+        self.validate_prediction_input(input)?;
         let tape = NdTape::new();
         let x = tape.input(TensorND::new(
             input.to_vec(),
@@ -265,6 +301,33 @@ mod tests {
         };
         let mut op = Fno1dOperator::new(cfg).unwrap();
         assert_eq!(op.predict(&[0.0; 8]).unwrap().len(), 8);
+    }
+
+    #[test]
+    fn full_mode_plan_matches_dense_prediction_bit_for_bit() {
+        let cfg = Fno1dConfig {
+            points: 8,
+            in_channels: 1,
+            out_channels: 1,
+            hidden_channels: 4,
+            modes: 3,
+            seed: 17,
+        };
+        let mut op = Fno1dOperator::new(cfg).unwrap();
+        let input: Vec<f32> = (0..8).map(|i| (i as f32 * 0.31).sin()).collect();
+        let dense = op.predict(&input).unwrap();
+        let plan = SpectralModePlan::new(3, vec![0, 1, 2]).unwrap();
+        let selected = op.predict_with_mode_plan(&input, &plan).unwrap();
+        assert_eq!(
+            dense
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            selected
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
