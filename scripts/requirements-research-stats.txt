@@ -1,0 +1,17 @@
+# Optional reference qualification; Python 3.12, Linux x86_64, 2026-09-16.
+SALib==1.5.2
+contourpy==1.4.0
+cycler==0.12.1
+dill==0.4.1
+fonttools==4.65.0
+kiwisolver==1.5.1
+matplotlib==3.11.2
+multiprocess==0.70.19
+numpy==2.5.3
+packaging==26.3
+pandas==3.0.5
+pillow==12.3.0
+pyparsing==3.3.2
+python-dateutil==2.9.0.post0
+scipy==1.18.1
+six==1.17.0

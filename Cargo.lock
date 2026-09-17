@@ -4042,6 +4042,8 @@ version = "0.1.0"
 dependencies = [
  "proptest",
  "scirust-special",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
