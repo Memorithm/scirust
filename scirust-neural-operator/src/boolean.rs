@@ -19,6 +19,25 @@ pub struct BooleanComplexity {
     pub max_degree: usize,
 }
 
+impl BooleanComplexity {
+    /// Componentwise Pareto weak dominance, where lower complexity is better.
+    pub const fn weakly_dominates(self, other: Self) -> bool {
+        self.input_arity <= other.input_arity
+            && self.monomials <= other.monomials
+            && self.literal_occurrences <= other.literal_occurrences
+            && self.max_degree <= other.max_degree
+    }
+
+    /// Strict Pareto dominance: weak dominance plus at least one strict improvement.
+    pub const fn strictly_dominates(self, other: Self) -> bool {
+        self.weakly_dominates(other)
+            && (self.input_arity < other.input_arity
+                || self.monomials < other.monomials
+                || self.literal_occurrences < other.literal_occurrences
+                || self.max_degree < other.max_degree)
+    }
+}
+
 /// Compact bit-packed Boolean vector.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackedBits {
@@ -448,6 +467,26 @@ mod tests {
                 max_degree: 2,
             }
         );
+    }
+
+    #[test]
+    fn boolean_complexity_uses_componentwise_pareto_order() {
+        let simple = BooleanComplexity {
+            input_arity: 3,
+            monomials: 2,
+            literal_occurrences: 3,
+            max_degree: 2,
+        };
+        let larger = BooleanComplexity {
+            input_arity: 4,
+            monomials: 3,
+            literal_occurrences: 6,
+            max_degree: 3,
+        };
+        assert!(simple.weakly_dominates(larger));
+        assert!(simple.strictly_dominates(larger));
+        assert!(!larger.weakly_dominates(simple));
+        assert!(!simple.strictly_dominates(simple));
     }
 
     #[test]

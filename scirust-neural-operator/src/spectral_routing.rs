@@ -70,6 +70,55 @@ impl SpectralModePlan {
     pub fn retained_fraction(&self) -> f64 {
         self.active_modes.len() as f64 / self.total_modes as f64
     }
+
+    /// Count the real scalar multiplications implied by SciRust's current
+    /// selected-mode 1-D spectral path for a grid and channel width.
+    pub fn work_estimate(&self, points: usize, width: usize) -> SpectralWorkEstimate {
+        let active = self.active_modes.len();
+        SpectralWorkEstimate {
+            total_modes: self.total_modes,
+            active_modes: active,
+            forward_projection_muls: 2usize
+                .saturating_mul(active)
+                .saturating_mul(points)
+                .saturating_mul(width),
+            channel_mix_muls: 4usize
+                .saturating_mul(active)
+                .saturating_mul(width)
+                .saturating_mul(width),
+            inverse_projection_muls: 2usize
+                .saturating_mul(points)
+                .saturating_mul(active)
+                .saturating_mul(width),
+        }
+    }
+}
+
+/// Deterministic arithmetic work proxy for the selected 1-D spectral branch.
+///
+/// Counts real scalar multiplications implied by SciRust's current real/imaginary
+/// decomposition. These are operation counts, not elapsed-time or hardware claims.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpectralWorkEstimate {
+    /// Configured dense-mode count.
+    pub total_modes: usize,
+    /// Modes admitted by the plan.
+    pub active_modes: usize,
+    /// Real multiplications in forward cosine/sine projections.
+    pub forward_projection_muls: usize,
+    /// Real multiplications in the four real batched products implementing complex mixing.
+    pub channel_mix_muls: usize,
+    /// Real multiplications in inverse cosine/sine reconstruction.
+    pub inverse_projection_muls: usize,
+}
+
+impl SpectralWorkEstimate {
+    /// Total counted real scalar multiplications in the spectral branch.
+    pub fn total_muls(&self) -> usize {
+        self.forward_projection_muls
+            .saturating_add(self.channel_mix_muls)
+            .saturating_add(self.inverse_projection_muls)
+    }
 }
 
 /// Structural complexity of a Boolean mode router.
@@ -221,6 +270,18 @@ mod tests {
         ];
         let router = BooleanSpectralRouter::new(1, guards, 1).unwrap();
         assert_eq!(router.route(&[false]).unwrap().active_modes(), &[1]);
+    }
+
+    #[test]
+    fn work_estimate_scales_with_admitted_modes() {
+        let sparse = SpectralModePlan::new(8, vec![0, 3]).unwrap();
+        let dense = SpectralModePlan::new(8, (0..8).collect()).unwrap();
+        let sparse_work = sparse.work_estimate(64, 16);
+        let dense_work = dense.work_estimate(64, 16);
+        assert_eq!(sparse_work.forward_projection_muls, 4096);
+        assert_eq!(sparse_work.channel_mix_muls, 2048);
+        assert_eq!(sparse_work.inverse_projection_muls, 4096);
+        assert_eq!(sparse_work.total_muls() * 4, dense_work.total_muls());
     }
 
     #[test]
