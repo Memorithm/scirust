@@ -50,11 +50,11 @@ jobs:
       TOKENIZERS_PARALLELISM: "false"
       HF_HUB_ENABLE_HF_TRANSFER: "1"
       ELASTIC_CACHE_COMMIT: 1960d8fc6231205a1ae4ebba3898d475e339f7e1
-      TORCH_VERSION: "2.10.0+cu130"
+      TORCH_VERSION: "2.9.0+cu130"
       TORCH_INDEX: https://download.pytorch.org/whl/cu130
-      # Thor + torch 2.10/cu130 reproducibly fails Dream q_proj in the
-      # cuBLASLt heuristic path. Keep CUDA/BF16 execution while routing
-      # addmm/linear away from that backend until the pinned stack is fixed.
+      # Thor + torch 2.10/cu130 reproducibly failed Dream q_proj in cuBLAS/cuBLASLt.
+      # The pinned 2.9/cu130 stack is locally requalified on the same physical Thor;
+      # keep the addmm/Lt opt-out explicit and record the exact torch version.
       DISABLE_ADDMM_CUDA_LT: "1"
       DREAM_MODEL_REVISION: 05334cb9faaf763692dcf9d8737c642be2b2a6ae
       GSM8K_REVISION: 740312add88f781978c0658806c59bc2815b9866
@@ -126,6 +126,16 @@ jobs:
           if not torch.cuda.is_available():
               raise SystemExit("CUDA-enabled PyTorch did not expose the Thor GPU")
           print("cuda_device", torch.cuda.get_device_name())
+          for dtype in (torch.float32, torch.bfloat16):
+              left = torch.randn(128, 128, device="cuda", dtype=dtype)
+              right = torch.randn(128, 128, device="cuda", dtype=dtype)
+              product = left @ right
+              linear = torch.nn.Linear(128, 128, bias=True, device="cuda", dtype=dtype)
+              projected = linear(left)
+              torch.cuda.synchronize()
+              if not torch.isfinite(product).all() or not torch.isfinite(projected).all():
+                  raise SystemExit(f"non-finite Thor GEMM/Linear preflight for {dtype}")
+              print("thor_gemm_linear_preflight", dtype, "ok")
           PY
           .venv-dream-real/bin/python -m pip install \
             "transformers==4.49.0" \
