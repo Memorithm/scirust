@@ -1,6 +1,8 @@
 //! High-level trainable 2-D Fourier Neural Operator.
 
-use crate::{FitReport, LearnedOperator, NeuralOperatorError, OperatorDataset2d, Result};
+use crate::{
+    FitReport, LearnedOperator, NeuralOperatorError, OperatorDataset2d, Result, SpectralModePlan,
+};
 use scirust_core::autodiff::nd::NdTape;
 use scirust_core::nn::fno::{FourierMode2d, NdFno2d, low_frequency_modes_2d};
 use scirust_core::nn::nd_optim::NdAdam;
@@ -101,6 +103,33 @@ impl Fno2dOperator {
     /// Return the canonical trainable Fourier-mode representatives.
     pub fn modes(&self) -> &[FourierMode2d] {
         &self.modes
+    }
+
+    /// Predict while restricting the global spectral branch to a validated
+    /// early-dispatch plan over this operator's canonical 2-D mode list.
+    pub fn predict_with_mode_plan(
+        &mut self,
+        input: &[f32],
+        plan: &SpectralModePlan,
+    ) -> Result<Vec<f32>> {
+        self.validate_input(input)?;
+        if plan.total_modes() != self.modes.len()
+        {
+            return Err(NeuralOperatorError::ShapeMismatch {
+                what: "FNO 2-D spectral plan modes",
+                expected: self.modes.len(),
+                got: plan.total_modes(),
+            });
+        }
+        let tape = NdTape::new();
+        let x = tape.input(TensorND::new(
+            input.to_vec(),
+            vec![self.cfg.rows, self.cfg.cols, self.cfg.in_channels],
+        ));
+        let y = self
+            .model
+            .forward_selected_modes(&tape, x, plan.active_modes());
+        Ok(tape.value(y).data.to_vec())
     }
 
     /// Deterministic sample-wise Adam training; MSE is per scalar output.
@@ -262,6 +291,39 @@ mod tests {
         let mut operator = Fno2dOperator::new(cfg).unwrap();
         assert_eq!(operator.modes().len(), 5);
         assert_eq!(operator.predict(&[0.0; 25]).unwrap().len(), 50);
+    }
+
+    #[test]
+    fn fno2d_full_mode_plan_matches_dense_prediction_bit_for_bit() {
+        let cfg = Fno2dConfig {
+            rows: 5,
+            cols: 5,
+            in_channels: 1,
+            out_channels: 1,
+            hidden_channels: 4,
+            max_abs_ky: 1,
+            max_abs_kx: 1,
+            seed: 31,
+        };
+        let mut operator = Fno2dOperator::new(cfg).unwrap();
+        let input = identity_dataset(&[0.19], 5, 5).samples()[0].input.clone();
+        let dense = operator.predict(&input).unwrap();
+        let plan = SpectralModePlan::new(
+            operator.modes().len(),
+            (0..operator.modes().len()).collect(),
+        )
+        .unwrap();
+        let routed = operator.predict_with_mode_plan(&input, &plan).unwrap();
+        assert_eq!(
+            dense
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            routed
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]

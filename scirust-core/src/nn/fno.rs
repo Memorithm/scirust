@@ -469,6 +469,79 @@ impl FnoSpectralConv2d {
             .reshape(&[self.rows, self.cols, self.width])
     }
 
+    /// Forward using only selected indices from the configured canonical 2-D mode list.
+    ///
+    /// DFT rows, complex weight batches and inverse columns are materialized only
+    /// for the selected canonical representatives. Gradients scatter back through
+    /// `gather`; rejected mode weights therefore receive zero gradient.
+    pub fn forward_selected_modes<'t>(
+        &mut self,
+        tape: &'t NdTape,
+        v: NdVar<'t>,
+        selected_indices: &[usize],
+    ) -> NdVar<'t> {
+        assert!(
+            !selected_indices.is_empty(),
+            "FNO 2-D selected mode set must not be empty"
+        );
+        assert!(
+            selected_indices
+                .iter()
+                .all(|&index| index < self.modes.len()),
+            "FNO 2-D selected mode index exceeds configured modes"
+        );
+        assert!(
+            selected_indices.windows(2).all(|pair| pair[0] < pair[1]),
+            "FNO 2-D selected modes must be strictly increasing and unique"
+        );
+        assert_eq!(
+            v.shape(),
+            vec![self.rows, self.cols, self.width],
+            "FNO 2-D input shape mismatch"
+        );
+
+        let selected_modes = selected_indices
+            .iter()
+            .map(|&index| self.modes[index])
+            .collect::<Vec<_>>();
+        let points = self.rows * self.cols;
+        let selected = selected_modes.len();
+        let flat = v.reshape(&[points, self.width]);
+        let (cf, sf) = dft2_forward(self.rows, self.cols, &selected_modes);
+        let cfv = tape.input(TensorND::new(cf, vec![selected, points]));
+        let sfv = tape.input(TensorND::new(sf, vec![selected, points]));
+        let vre = cfv.matmul(flat).reshape(&[selected, self.width, 1]);
+        let vim = sfv.matmul(flat).reshape(&[selected, self.width, 1]);
+
+        let arv = tape.input(self.ar.clone());
+        self.ar_idx = Some(arv.idx());
+        let aiv = tape.input(self.ai.clone());
+        self.ai_idx = Some(aiv.idx());
+        let ar_selected = arv
+            .reshape(&[self.modes.len(), self.width * self.width])
+            .gather(selected_indices)
+            .reshape(&[selected, self.width, self.width]);
+        let ai_selected = aiv
+            .reshape(&[self.modes.len(), self.width * self.width])
+            .gather(selected_indices)
+            .reshape(&[selected, self.width, self.width]);
+        let outre = ar_selected
+            .bmm(vre)
+            .sub(ai_selected.bmm(vim))
+            .reshape(&[selected, self.width]);
+        let outim = ar_selected
+            .bmm(vim)
+            .add(ai_selected.bmm(vre))
+            .reshape(&[selected, self.width]);
+
+        let (ic, is) = dft2_inverse(self.rows, self.cols, &selected_modes);
+        let icv = tape.input(TensorND::new(ic, vec![points, selected]));
+        let isv = tape.input(TensorND::new(is, vec![points, selected]));
+        icv.matmul(outre)
+            .sub(isv.matmul(outim))
+            .reshape(&[self.rows, self.cols, self.width])
+    }
+
     /// Trainable real/imaginary mode-weight tensors.
     pub fn parameters(&mut self) -> Vec<NdParam<'_>> {
         let mut params = Vec::new();
@@ -522,6 +595,22 @@ impl NdFno2d {
     pub fn forward<'t>(&mut self, tape: &'t NdTape, x: NdVar<'t>) -> NdVar<'t> {
         let v = self.lift.forward(tape, x);
         let global = self.spectral.forward(tape, v);
+        let local = self.local.forward(tape, v);
+        self.proj.forward(tape, global.add(local).relu())
+    }
+
+    /// Forward with the global 2-D spectral branch restricted to selected
+    /// canonical mode-list indices. The local pointwise branch remains active.
+    pub fn forward_selected_modes<'t>(
+        &mut self,
+        tape: &'t NdTape,
+        x: NdVar<'t>,
+        selected_indices: &[usize],
+    ) -> NdVar<'t> {
+        let v = self.lift.forward(tape, x);
+        let global = self
+            .spectral
+            .forward_selected_modes(tape, v, selected_indices);
         let local = self.local.forward(tape, v);
         self.proj.forward(tape, global.add(local).relu())
     }
@@ -991,6 +1080,39 @@ mod tests {
                 (numeric - gai.data[index]).abs() < 4e-2,
                 "FNO 2-D Ai grad {index}: numeric {numeric}, analytic {}",
                 gai.data[index]
+            );
+        }
+    }
+
+    #[test]
+    fn fno2d_selected_modes_leave_rejected_weight_gradients_zero() {
+        let (rows, cols, width) = (5usize, 5usize, 1usize);
+        let modes = low_frequency_modes_2d(rows, cols, 1, 1);
+        let mut rng = PcgEngine::new(41);
+        let mut conv = FnoSpectralConv2d::new(rows, cols, modes.clone(), width, &mut rng);
+        let input: Vec<f32> = (0..rows * cols).map(|i| (i as f32 * 0.23).sin()).collect();
+        let selected = [0usize, 2usize];
+        let tape = NdTape::new();
+        let x = tape.input(TensorND::new(input, vec![rows, cols, width]));
+        let y = conv.forward_selected_modes(&tape, x, &selected);
+        let gradients = tape.backward(y.mul(y).sum());
+        let ar = &gradients[conv.ar_idx.unwrap()].data;
+        let ai = &gradients[conv.ai_idx.unwrap()].data;
+        for mode in 0..modes.len()
+        {
+            if selected.contains(&mode)
+            {
+                continue;
+            }
+            assert_eq!(
+                ar[mode].to_bits(),
+                0.0f32.to_bits(),
+                "rejected Ar mode {mode}"
+            );
+            assert_eq!(
+                ai[mode].to_bits(),
+                0.0f32.to_bits(),
+                "rejected Ai mode {mode}"
             );
         }
     }
