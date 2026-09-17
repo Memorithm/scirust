@@ -19,6 +19,7 @@ flat-attention-planner = { git = "https://github.com/Memorithm/FLAT-ATTENTION", 
 flat-elastic-kernel = { git = "https://github.com/Memorithm/FLAT-ATTENTION", rev = "75d3bd684643aedb98f55a892f93d727a8187cea", package = "flat-elastic-kernel", optional = true }
 scirust-symbolic = { path = "scirust-symbolic" }
 scirust-learning = { path = "scirust-learning" }
+scirust-neural-operator = { path = "scirust-neural-operator" }
 scirust-solvers = { path = "scirust-solvers" }
 scirust-rsi = { path = "scirust-rsi" }
 scirust-variational = { path = "scirust-variational" }
@@ -125,6 +126,7 @@ members = [
     "scirust-runtime",
     "scirust-embedded",
     "scirust-learning",
+    "scirust-neural-operator",
     "scirust-symbolic",
     "scirust-symreg",
     "scirust-synthesis",

@@ -2920,6 +2920,7 @@ dependencies = [
  "scirust-core",
  "scirust-gpu",
  "scirust-learning",
+ "scirust-neural-operator",
  "scirust-rsi",
  "scirust-simd",
  "scirust-solvers",
@@ -3616,6 +3617,15 @@ version = "0.1.0"
 dependencies = [
  "scirust-estimation",
  "serde",
+]
+
+[[package]]
+name = "scirust-neural-operator"
+version = "0.1.0"
+dependencies = [
+ "scirust-core",
+ "scirust-signal",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
