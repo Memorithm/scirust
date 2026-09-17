@@ -92,6 +92,9 @@ pub enum NeuralOperatorError {
     #[error("spectral mode indices must be strictly increasing and unique")]
     NonCanonicalSpectralModes,
 
+    #[error("verification tolerance must be finite and non-negative, got {tolerance}")]
+    InvalidVerificationTolerance { tolerance: f64 },
+
     #[error("surrogate cost inputs must be finite and non-negative")]
     InvalidCost,
 }
