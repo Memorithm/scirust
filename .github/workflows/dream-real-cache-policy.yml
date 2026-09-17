@@ -52,6 +52,8 @@ jobs:
       ELASTIC_CACHE_COMMIT: 1960d8fc6231205a1ae4ebba3898d475e339f7e1
       TORCH_VERSION: "2.10.0+cu130"
       TORCH_INDEX: https://download.pytorch.org/whl/cu130
+      SCIRUST_THOR_GPU_LOCK: /dev/nvidia0
+      SCIRUST_THOR_IDLE_SETTLE_SECONDS: "300"
 
     steps:
       - name: Initialize shared cache paths after runner assignment
@@ -142,7 +144,52 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}/ci-dream-real/.external/elastic-cache/dream
         run: |
+          set -euo pipefail
+          for prerequisite in flock pgrep stat nvidia-smi; do
+            command -v "$prerequisite" >/dev/null || {
+              echo "::error::missing physical-Thor prerequisite: $prerequisite"
+              exit 1
+            }
+          done
+          if [[ ! -c "$SCIRUST_THOR_GPU_LOCK" || ! -r "$SCIRUST_THOR_GPU_LOCK" || ! -w "$SCIRUST_THOR_GPU_LOCK" ]]; then
+            echo "::error::physical Thor lock target is not an accessible NVIDIA character device"
+            exit 1
+          fi
+          stat -Lc 'gpu_lock_target=%n st_dev=%d inode=%i rdev_hex=%t:%T mode=%a owner=%U:%G type=%F' "$SCIRUST_THOR_GPU_LOCK"
+          exec 9<>"$SCIRUST_THOR_GPU_LOCK"
+          flock -x 9
+          if flock -n "$SCIRUST_THOR_GPU_LOCK" -c 'true'; then
+            echo "::error::physical GPU lock does not contend independently"
+            exit 1
+          fi
+
+          compute_processes() {
+            nvidia-smi --query-compute-apps=pid,process_name --format=csv,noheader 2>/dev/null || true
+          }
+          deadline=$((SECONDS + 18000))
+          settled=0
+          while (( settled < 10#$SCIRUST_THOR_IDLE_SETTLE_SECONDS )); do
+            active="$(compute_processes)"
+            if [[ -n "${active//[[:space:]]/}" ]]; then
+              echo "GPU activity prevents Dream qualification; restarting idle window:"
+              printf '%s\n' "$active"
+              settled=0
+            else
+              settled=$((settled + 5))
+              if (( settled == 5 || settled % 60 == 0 )); then
+                echo "Thor continuously idle: ${settled}/${SCIRUST_THOR_IDLE_SETTLE_SECONDS}s"
+              fi
+            fi
+            if (( SECONDS >= deadline )); then
+              echo "::error::Thor never reached the required idle window"
+              exit 1
+            fi
+            sleep 5
+          done
+
           mkdir -p artifacts/dream-real
+          contamination="$RUNNER_TEMP/dream-real-contamination.txt"
+          : > "$contamination"
           .venv-dream-real/bin/python \
             experiments/elastic-cache-policy/real/dream/benchmark_real_dream.py \
             --model Dream-org/Dream-v0-Instruct-7B \
@@ -155,7 +202,28 @@ jobs:
             --gamma-grid 0.85,0.90,0.95,0.98 \
             --policy-quantiles 0.25,0.50,0.75,0.90 \
             --probe-prompts 2 \
-            --dtype bfloat16
+            --dtype bfloat16 &
+          benchmark_pid=$!
+          while kill -0 "$benchmark_pid" 2>/dev/null; do
+            active="$(compute_processes)"
+            foreign="$(awk -F, -v own="$benchmark_pid" '$1 + 0 != own { print }' <<< "$active")"
+            if [[ -n "${foreign//[[:space:]]/}" ]]; then
+              { date -u +'%Y-%m-%dT%H:%M:%SZ'; printf '%s\n' "$foreign"; } >> "$contamination"
+              kill "$benchmark_pid" 2>/dev/null || true
+              break
+            fi
+            sleep 1
+          done
+          set +e
+          wait "$benchmark_pid"
+          status=$?
+          set -e
+          if [[ -s "$contamination" ]]; then
+            echo "::error::foreign GPU compute contaminated Dream qualification"
+            cat "$contamination"
+            exit 1
+          fi
+          exit "$status"
 
       - name: Display benchmark verdict
         if: always()
