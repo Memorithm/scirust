@@ -211,6 +211,7 @@ members = [
     "scirust-algogen",
     "scirust-automl",
     "scirust-opt-core",
+    "scirust-opt-tpe",
     "scirust-rl-algo",
     "scirust-scaffold",
     "scirust-sciagent",
