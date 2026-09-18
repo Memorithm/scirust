@@ -3010,6 +3010,7 @@ version = "0.1.0"
 dependencies = [
  "scirust-core",
  "scirust-evo",
+ "scirust-gp",
  "serde",
  "serde_json",
 ]
