@@ -88,16 +88,20 @@ pub enum TpeError {
 
 impl fmt::Display for TpeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
+        match self
+        {
             Self::InvalidConfig(message) => write!(f, "invalid TPE configuration: {message}"),
-            Self::UnsupportedObjectiveCount(found) => {
+            Self::UnsupportedObjectiveCount(found) =>
+            {
                 write!(f, "reference TPE requires one objective, found {found}")
             },
-            Self::InvalidObservation(param) => {
+            Self::InvalidObservation(param) =>
+            {
                 write!(f, "historical value does not match parameter {param:?}")
             },
             Self::Candidate(source) => write!(f, "candidate assignment failed: {source}"),
-            Self::InvalidNumericalRange(param) => {
+            Self::InvalidNumericalRange(param) =>
+            {
                 write!(f, "invalid numerical Parzen range for {param:?}")
             },
         }
@@ -106,7 +110,8 @@ impl fmt::Display for TpeError {
 
 impl std::error::Error for TpeError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
+        match self
+        {
             Self::Candidate(source) => Some(source),
             _ => None,
         }
@@ -230,11 +235,11 @@ impl NumericalParzen {
         distribution: &Distribution,
         config: TpeConfig,
     ) -> Result<Self, TpeError> {
-        let (adapted_low, adapted_high, kind) = match distribution {
-            Distribution::Uniform { low, high } => {
-                (*low, *high, NumericalKind::LinearFloat)
-            },
-            Distribution::LogUniform { low, high } => {
+        let (adapted_low, adapted_high, kind) = match distribution
+        {
+            Distribution::Uniform { low, high } => (*low, *high, NumericalKind::LinearFloat),
+            Distribution::LogUniform { low, high } =>
+            {
                 (low.ln(), high.ln(), NumericalKind::LogFloat)
             },
             Distribution::IntRange { low, high } => (
@@ -256,7 +261,8 @@ impl NumericalParzen {
         let mut transformed = Vec::with_capacity(observations.len());
         for value in observations
         {
-            let x = match (distribution, value) {
+            let x = match (distribution, value)
+            {
                 (Distribution::Uniform { .. }, ParamValue::Float(value)) => *value,
                 (Distribution::LogUniform { .. }, ParamValue::Float(value)) => value.ln(),
                 (Distribution::IntRange { .. }, ParamValue::Int(value)) => *value as f64,
@@ -274,7 +280,8 @@ impl NumericalParzen {
         if n_observations != 0
         {
             let mut sorted_indices: Vec<usize> = (0..n_observations).collect();
-            sorted_indices.sort_by(|left, right| transformed[*left].total_cmp(&transformed[*right]));
+            sorted_indices
+                .sort_by(|left, right| transformed[*left].total_cmp(&transformed[*right]));
 
             let mut sorted = Vec::with_capacity(n_observations + 2);
             sorted.push(adapted_low);
@@ -284,9 +291,9 @@ impl NumericalParzen {
             let mut sorted_sigmas = Vec::with_capacity(n_observations);
             for index in 1..=n_observations
             {
-                sorted_sigmas.push((sorted[index] - sorted[index - 1]).max(
-                    sorted[index + 1] - sorted[index],
-                ));
+                sorted_sigmas.push(
+                    (sorted[index] - sorted[index - 1]).max(sorted[index + 1] - sorted[index]),
+                );
             }
 
             if !config.consider_endpoints && sorted.len() >= 4
@@ -337,9 +344,10 @@ impl NumericalParzen {
         );
         match self.kind
         {
-            NumericalKind::LinearFloat => ParamValue::Float(
-                transformed.clamp(self.adapted_low, self.adapted_high),
-            ),
+            NumericalKind::LinearFloat =>
+            {
+                ParamValue::Float(transformed.clamp(self.adapted_low, self.adapted_high))
+            },
             NumericalKind::LogFloat => ParamValue::Float(
                 transformed
                     .exp()
@@ -354,7 +362,8 @@ impl NumericalParzen {
     }
 
     fn log_pdf(&self, value: ParamValue) -> f64 {
-        let transformed = match (self.kind, value) {
+        let transformed = match (self.kind, value)
+        {
             (NumericalKind::LinearFloat, ParamValue::Float(value)) => value,
             (NumericalKind::LogFloat, ParamValue::Float(value)) if value > 0.0 => value.ln(),
             (NumericalKind::Integer { .. }, ParamValue::Int(value)) => value as f64,
@@ -371,24 +380,20 @@ impl NumericalParzen {
             }
             let probability = match self.kind
             {
-                NumericalKind::Integer { .. } => {
-                    truncated_discrete_mass(
-                        transformed,
-                        self.mus[index],
-                        self.sigmas[index],
-                        self.adapted_low,
-                        self.adapted_high,
-                    )
-                },
-                NumericalKind::LinearFloat | NumericalKind::LogFloat => {
-                    truncated_normal_pdf(
-                        transformed,
-                        self.mus[index],
-                        self.sigmas[index],
-                        self.adapted_low,
-                        self.adapted_high,
-                    )
-                },
+                NumericalKind::Integer { .. } => truncated_discrete_mass(
+                    transformed,
+                    self.mus[index],
+                    self.sigmas[index],
+                    self.adapted_low,
+                    self.adapted_high,
+                ),
+                NumericalKind::LinearFloat | NumericalKind::LogFloat => truncated_normal_pdf(
+                    transformed,
+                    self.mus[index],
+                    self.sigmas[index],
+                    self.adapted_low,
+                    self.adapted_high,
+                ),
             };
             if probability > 0.0
             {
@@ -502,7 +507,8 @@ impl ParzenModel {
         distribution: &Distribution,
         config: TpeConfig,
     ) -> Result<Self, TpeError> {
-        match distribution {
+        match distribution
+        {
             Distribution::Categorical { cardinality } => Ok(Self::Categorical(
                 CategoricalParzen::new(param, observations, *cardinality, config)?,
             )),
@@ -516,14 +522,16 @@ impl ParzenModel {
     }
 
     fn sample(&self, rng: &mut SplitMix64) -> ParamValue {
-        match self {
+        match self
+        {
             Self::Numerical(model) => model.sample(rng),
             Self::Categorical(model) => model.sample(rng),
         }
     }
 
     fn log_pdf(&self, value: ParamValue) -> f64 {
-        match self {
+        match self
+        {
             Self::Numerical(model) => model.log_pdf(value),
             Self::Categorical(model) => model.log_pdf(value),
         }
@@ -564,13 +572,7 @@ fn normal_inverse_cdf(probability: f64) -> f64 {
     SQRT_2 * erfinv(2.0 * probability - 1.0)
 }
 
-fn sample_truncated_normal(
-    rng: &mut SplitMix64,
-    mu: f64,
-    sigma: f64,
-    low: f64,
-    high: f64,
-) -> f64 {
+fn sample_truncated_normal(rng: &mut SplitMix64, mu: f64, sigma: f64, low: f64, high: f64) -> f64 {
     let lower = normal_cdf((low - mu) / sigma);
     let upper = normal_cdf((high - mu) / sigma);
     let mass = upper - lower;
@@ -587,8 +589,7 @@ fn truncated_normal_pdf(value: f64, mu: f64, sigma: f64, low: f64, high: f64) ->
     {
         return 0.0;
     }
-    let denominator =
-        normal_cdf((high - mu) / sigma) - normal_cdf((low - mu) / sigma);
+    let denominator = normal_cdf((high - mu) / sigma) - normal_cdf((low - mu) / sigma);
     if !(denominator > f64::MIN_POSITIVE)
     {
         return 0.0;
@@ -597,23 +598,15 @@ fn truncated_normal_pdf(value: f64, mu: f64, sigma: f64, low: f64, high: f64) ->
     (-0.5 * z * z).exp() / (SQRT_2PI * sigma * denominator)
 }
 
-fn truncated_discrete_mass(
-    value: f64,
-    mu: f64,
-    sigma: f64,
-    low: f64,
-    high: f64,
-) -> f64 {
+fn truncated_discrete_mass(value: f64, mu: f64, sigma: f64, low: f64, high: f64) -> f64 {
     if !(sigma > 0.0)
     {
         return 0.0;
     }
     let left = value - 0.5;
     let right = value + 0.5;
-    let numerator =
-        normal_cdf((right - mu) / sigma) - normal_cdf((left - mu) / sigma);
-    let denominator =
-        normal_cdf((high - mu) / sigma) - normal_cdf((low - mu) / sigma);
+    let numerator = normal_cdf((right - mu) / sigma) - normal_cdf((left - mu) / sigma);
+    let denominator = normal_cdf((high - mu) / sigma) - normal_cdf((low - mu) / sigma);
     if !(numerator > 0.0 && denominator > f64::MIN_POSITIVE)
     {
         return 0.0;
@@ -626,29 +619,37 @@ fn logsumexp(values: &[f64]) -> f64 {
     {
         return f64::NEG_INFINITY;
     }
-    let max = values
-        .iter()
-        .copied()
-        .fold(f64::NEG_INFINITY, f64::max);
+    let max = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     if max.is_infinite() && max.is_sign_negative()
     {
         return max;
     }
-    max + values.iter().map(|value| (*value - max).exp()).sum::<f64>().ln()
+    max + values
+        .iter()
+        .map(|value| (*value - max).exp())
+        .sum::<f64>()
+        .ln()
 }
 
 fn random_value(rng: &mut SplitMix64, distribution: &Distribution) -> ParamValue {
-    match distribution {
-        Distribution::Uniform { low, high } => ParamValue::Float(low + (high - low) * rng.next_f64()),
-        Distribution::LogUniform { low, high } => {
+    match distribution
+    {
+        Distribution::Uniform { low, high } =>
+        {
+            ParamValue::Float(low + (high - low) * rng.next_f64())
+        },
+        Distribution::LogUniform { low, high } =>
+        {
             let log_value = low.ln() + (high.ln() - low.ln()) * rng.next_f64();
             ParamValue::Float(log_value.exp())
         },
-        Distribution::IntRange { low, high } => {
+        Distribution::IntRange { low, high } =>
+        {
             let width = (*high - *low + 1) as usize;
             ParamValue::Int(*low + rng.index(width) as i64)
         },
-        Distribution::Categorical { cardinality } => {
+        Distribution::Categorical { cardinality } =>
+        {
             ParamValue::Categorical(rng.index(*cardinality as usize) as u32)
         },
     }
@@ -725,7 +726,8 @@ impl TpeSampler {
             .collect::<Vec<_>>();
         ranked.sort_by(|left, right| {
             let objective_order = left.objective.total_cmp(&right.objective);
-            let objective_order = match self.direction {
+            let objective_order = match self.direction
+            {
                 Direction::Minimize => objective_order,
                 Direction::Maximize => objective_order.reverse(),
             };
@@ -793,11 +795,7 @@ impl TpeSampler {
 impl Sampler for TpeSampler {
     type Error = TpeError;
 
-    fn sample(
-        &mut self,
-        study: StudyView<'_>,
-        trial: TrialId,
-    ) -> Result<Candidate, Self::Error> {
+    fn sample(&mut self, study: StudyView<'_>, trial: TrialId) -> Result<Candidate, Self::Error> {
         let objective_count = study.trials().objective_count();
         if objective_count != 1
         {
@@ -821,13 +819,7 @@ impl Sampler for TpeSampler {
             }
             else
             {
-                self.sample_tpe_value(
-                    study,
-                    trial,
-                    &ranked,
-                    spec.id,
-                    &spec.distribution,
-                )?
+                self.sample_tpe_value(study, trial, &ranked, spec.id, &spec.distribution)?
             };
             candidate
                 .set(space, spec.id, value)
@@ -841,18 +833,13 @@ impl Sampler for TpeSampler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use scirust_opt_core::{
-        Condition, ParameterSpec, SearchSpace, Study, TrialOutcome,
-    };
+    use scirust_opt_core::{Condition, ParameterSpec, SearchSpace, Study, TrialOutcome};
 
     fn close(left: f64, right: f64, tolerance: f64) -> bool {
         (left - right).abs() <= tolerance
     }
 
-    fn model(
-        values: Vec<ParamValue>,
-        distribution: Distribution,
-    ) -> ParzenModel {
+    fn model(values: Vec<ParamValue>, distribution: Distribution) -> ParzenModel {
         ParzenModel::new(
             ParamId::new(0),
             &values,
@@ -945,11 +932,7 @@ mod tests {
     #[test]
     fn integer_parzen_log_pdf_matches_optuna_oracle() {
         let parzen = model(
-            vec![
-                ParamValue::Int(1),
-                ParamValue::Int(4),
-                ParamValue::Int(8),
-            ],
+            vec![ParamValue::Int(1), ParamValue::Int(4), ParamValue::Int(8)],
             Distribution::IntRange { low: 1, high: 10 },
         );
         let expected = [
@@ -1101,10 +1084,7 @@ mod tests {
                 .validate_candidate(&proposal.candidate)
                 .unwrap();
             study
-                .tell(
-                    proposal.trial,
-                    TrialOutcome::Complete(vec![index as f64]),
-                )
+                .tell(proposal.trial, TrialOutcome::Complete(vec![index as f64]))
                 .unwrap();
         }
     }
@@ -1141,7 +1121,8 @@ mod tests {
             scirust_opt_core::AskError::Sampler {
                 source: TpeError::UnsupportedObjectiveCount(2),
                 ..
-            } => {},
+            } =>
+            {},
             other => panic!("unexpected error: {other:?}"),
         }
     }
