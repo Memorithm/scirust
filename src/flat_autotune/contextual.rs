@@ -32,7 +32,7 @@ use flat_elastic_kernel::contextual::generate_and_plan_with_context;
 use flat_elastic_kernel::{AdapterError, latency_policy};
 
 /// Exact merged FLAT revision used by the contextual planner rail.
-pub const CONTEXTUAL_FLAT_REVISION: &str = "75d3bd684643aedb98f55a892f93d727a8187cea";
+pub const CONTEXTUAL_FLAT_REVISION: &str = "4529a2079434965e13e90ddd2e98ecc88ee0cb3a";
 /// Exact merged ElasticXxx revision used transitively and directly here.
 pub const CONTEXTUAL_ELASTICXXX_REVISION: &str = "9130a412857335cc5120b013b91552dd0808f9f1";
 
