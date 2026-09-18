@@ -5,6 +5,7 @@
 //! full AutoML orchestrator.  Deterministic via an embedded XorShift64
 //! PRNG (no `rand` crate dependency in this crate).
 
+use scirust_gp::{GaussianProcess as CoreGaussianProcess, GpError, Matern52};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -1824,107 +1825,102 @@ pub fn time_series_cv(
 // 10. Bayesian Optimization (simplified Gaussian Process)
 // =========================================================================
 
-/// Matern 5/2 kernel
-fn matern52_kernel(x1: &[f64], x2: &[f64], length_scale: f64) -> f64 {
-    let dist = euclidean(x1, x2) / length_scale;
-    let sqrt5 = 5.0_f64.sqrt();
-    let d = sqrt5 * dist;
-    (1.0 + d + d * d / 3.0) * (-d).exp()
-}
-
-fn euclidean(a: &[f64], b: &[f64]) -> f64 {
-    a.iter()
-        .zip(b)
-        .map(|(ai, bi)| (ai - bi).powi(2))
-        .sum::<f64>()
-        .sqrt()
-}
-
-/// Simplified Gaussian Process regressor
+/// Compatibility facade over the canonical `scirust-gp` Matérn-5/2 GP.
+///
+/// The previous AutoML-local GP rebuilt the full covariance matrix and solved
+/// `K v = k_*` for every prediction. Bayesian acquisition evaluates many
+/// predictions per trial, so that implementation repeatedly paid an avoidable
+/// O(n^3) factorization cost. This facade keeps the existing AutoML API while
+/// delegating inference to `scirust-gp`, which stores the Cholesky factor once
+/// and reuses triangular solves for every posterior query.
+#[derive(Debug, Clone)]
 pub struct GaussianProcess {
     pub x_train: Vec<Vec<f64>>,
     pub y_train: Vec<f64>,
-    pub alpha: Vec<f64>, // K^{-1} y
+    pub alpha: Vec<f64>,
     pub length_scale: f64,
     pub noise: f64,
+    inner: Option<CoreGaussianProcess<Matern52>>,
 }
 
 impl GaussianProcess {
-    pub fn fit(x: &[Vec<f64>], y: &[f64], length_scale: f64, noise: f64) -> Self {
-        let n = x.len();
-        if n == 0
-        {
-            return Self {
-                x_train: vec![],
-                y_train: vec![],
-                alpha: vec![],
-                length_scale,
-                noise,
-            };
-        }
+    /// Fit through the canonical SciRust GP implementation.
+    ///
+    /// Unlike [`Self::fit`], this checked entry point exposes shape and
+    /// positive-definiteness failures to callers.
+    pub fn try_fit(
+        x: &[Vec<f64>],
+        y: &[f64],
+        length_scale: f64,
+        noise: f64,
+    ) -> Result<Self, GpError> {
+        let kernel = Matern52 {
+            lengthscale: length_scale,
+            variance: 1.0,
+        };
+        let inner = CoreGaussianProcess::fit(x, y, kernel, noise)?;
+        let alpha = inner.alpha().to_vec();
 
-        // Build kernel matrix K + noise * I
-        let mut k = vec![vec![0.0; n]; n];
-        for i in 0..n
-        {
-            for j in 0..n
-            {
-                k[i][j] = matern52_kernel(&x[i], &x[j], length_scale);
-                if i == j
-                {
-                    k[i][j] += noise;
-                }
-            }
-        }
-
-        let alpha = solve_symmetric(&k, y);
-
-        Self {
+        Ok(Self {
             x_train: x.to_vec(),
             y_train: y.to_vec(),
             alpha,
             length_scale,
             noise,
+            inner: Some(inner),
+        })
+    }
+
+    /// Backward-compatible infallible fit.
+    ///
+    /// Empty training data retains the historical prior-only behaviour.
+    /// For a numerically singular zero-noise fit, a minimal positive jitter is
+    /// attempted before falling back to prior-only behaviour rather than
+    /// panicking.
+    pub fn fit(x: &[Vec<f64>], y: &[f64], length_scale: f64, noise: f64) -> Self {
+        if x.is_empty() || y.is_empty()
+        {
+            return Self {
+                x_train: x.to_vec(),
+                y_train: y.to_vec(),
+                alpha: vec![],
+                length_scale,
+                noise,
+                inner: None,
+            };
+        }
+
+        if let Ok(gp) = Self::try_fit(x, y, length_scale, noise)
+        {
+            return gp;
+        }
+
+        if noise <= 0.0
+        {
+            let stabilised_noise = 1e-12;
+            if let Ok(mut gp) = Self::try_fit(x, y, length_scale, stabilised_noise)
+            {
+                gp.noise = noise;
+                return gp;
+            }
+        }
+
+        Self {
+            x_train: x.to_vec(),
+            y_train: y.to_vec(),
+            alpha: vec![],
+            length_scale,
+            noise,
+            inner: None,
         }
     }
 
-    #[allow(clippy::needless_range_loop)]
+    /// Posterior mean and latent variance at one point.
     pub fn predict(&self, x_star: &[f64]) -> (f64, f64) {
-        if self.x_train.is_empty()
-        {
-            return (0.0, 1.0);
-        }
-        let n = self.x_train.len();
-        // k_* = kernel(x_train[i], x_star)
-        let k_star: Vec<f64> = self
-            .x_train
-            .iter()
-            .map(|xi| matern52_kernel(xi, x_star, self.length_scale))
-            .collect();
-
-        // mean = k_*^T * alpha
-        let mean: f64 = k_star.iter().zip(&self.alpha).map(|(k, a)| k * a).sum();
-
-        // variance = k(x_star, x_star) - k_*^T K^{-1} k_*
-        // K^{-1} k_* = solve(K, k_*). We recompute K and solve.
-        let mut k_mat = vec![vec![0.0; n]; n];
-        for i in 0..n
-        {
-            for j in 0..n
-            {
-                k_mat[i][j] =
-                    matern52_kernel(&self.x_train[i], &self.x_train[j], self.length_scale);
-                if i == j
-                {
-                    k_mat[i][j] += self.noise;
-                }
-            }
-        }
-        let v = solve_symmetric(&k_mat, &k_star);
-        let k_ss = matern52_kernel(x_star, x_star, self.length_scale) + self.noise;
-        let var = (k_ss - k_star.iter().zip(&v).map(|(ks, vi)| ks * vi).sum::<f64>()).max(1e-12);
-
-        (mean, var)
+        self.inner
+            .as_ref()
+            .map(|gp| gp.predict(x_star))
+            .unwrap_or((0.0, 1.0))
     }
 }
 
@@ -3802,6 +3798,35 @@ mod tests {
         let (mu, var) = gp.predict(&[1.0]);
         assert!((mu - 2.0).abs() < 0.5, "GP mean diverged: {}", mu);
         assert!(var > 0.0);
+    }
+
+    #[test]
+    fn test_gp_facade_matches_canonical_scirust_gp() {
+        let x = vec![vec![0.0], vec![1.0], vec![2.0]];
+        let y = vec![0.0, 2.0, 4.0];
+        let facade = GaussianProcess::try_fit(&x, &y, 0.5, 1e-6).unwrap();
+        let direct = CoreGaussianProcess::fit(
+            &x,
+            &y,
+            Matern52 {
+                lengthscale: 0.5,
+                variance: 1.0,
+            },
+            1e-6,
+        )
+        .unwrap();
+
+        let (facade_mu, facade_var) = facade.predict(&[1.25]);
+        let (direct_mu, direct_var) = direct.predict(&[1.25]);
+        assert!((facade_mu - direct_mu).abs() < 1e-12);
+        assert!((facade_var - direct_var).abs() < 1e-12);
+        assert_eq!(facade.alpha.as_slice(), direct.alpha());
+    }
+
+    #[test]
+    fn test_gp_empty_fit_preserves_prior_only_behavior() {
+        let gp = GaussianProcess::fit(&[], &[], 0.5, 1e-6);
+        assert_eq!(gp.predict(&[1.0]), (0.0, 1.0));
     }
 
     #[test]
