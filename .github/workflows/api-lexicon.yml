@@ -78,10 +78,12 @@ jobs:
           test -s api-example-audit.json
           test -s api-example-audit.md
 
-      - name: Execute statistics documentation examples
+      - name: Execute reviewed documentation examples
         env:
           RUSTDOCFLAGS: "-D warnings"
-        run: cargo +stable test -p scirust-stats --doc --locked
+        run: |
+          cargo +stable test -p scirust-stats --doc --locked
+          cargo +stable test -p scirust-core --doc --locked
 
       - name: Smoke test capability search and documentation-debt filters
         run: |
