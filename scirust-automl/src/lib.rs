@@ -3816,7 +3816,7 @@ mod tests {
         let (direct_mu, direct_var) = direct.predict(&[1.25]);
         assert!((facade_mu - direct_mu).abs() < 1e-12);
         assert!((facade_var - direct_var).abs() < 1e-12);
-        assert_eq!(facade.alpha, direct.alpha());
+        assert_eq!(facade.alpha.as_slice(), direct.alpha());
     }
 
     #[test]
