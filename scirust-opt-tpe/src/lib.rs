@@ -122,7 +122,7 @@ impl std::error::Error for TpeError {
 ///
 /// Returns `min(ceil(0.1 * n), 25)`.
 pub fn default_gamma(n: usize) -> usize {
-    ((n + 9) / 10).min(25)
+    n.div_ceil(10).min(25)
 }
 
 /// Default chronological observation weights used by the audited TPE.
@@ -193,7 +193,7 @@ impl SplitMix64 {
 
     fn weighted_index(&mut self, weights: &[f64]) -> usize {
         let total: f64 = weights.iter().sum();
-        if !(total > 0.0 && total.is_finite())
+        if !total.is_finite() || total <= 0.0
         {
             return 0;
         }
@@ -253,7 +253,7 @@ impl NumericalParzen {
             Distribution::Categorical { .. } => return Err(TpeError::InvalidObservation(param)),
         };
         let range = adapted_high - adapted_low;
-        if !(range > 0.0 && range.is_finite())
+        if !range.is_finite() || range <= 0.0
         {
             return Err(TpeError::InvalidNumericalRange(param));
         }
@@ -576,7 +576,7 @@ fn sample_truncated_normal(rng: &mut SplitMix64, mu: f64, sigma: f64, low: f64, 
     let lower = normal_cdf((low - mu) / sigma);
     let upper = normal_cdf((high - mu) / sigma);
     let mass = upper - lower;
-    if !(mass > f64::MIN_POSITIVE)
+    if !mass.is_finite() || mass <= f64::MIN_POSITIVE
     {
         return mu.clamp(low, high);
     }
@@ -585,12 +585,12 @@ fn sample_truncated_normal(rng: &mut SplitMix64, mu: f64, sigma: f64, low: f64, 
 }
 
 fn truncated_normal_pdf(value: f64, mu: f64, sigma: f64, low: f64, high: f64) -> f64 {
-    if value < low || value > high || !(sigma > 0.0)
+    if value < low || value > high || !sigma.is_finite() || sigma <= 0.0
     {
         return 0.0;
     }
     let denominator = normal_cdf((high - mu) / sigma) - normal_cdf((low - mu) / sigma);
-    if !(denominator > f64::MIN_POSITIVE)
+    if !denominator.is_finite() || denominator <= f64::MIN_POSITIVE
     {
         return 0.0;
     }
@@ -599,7 +599,7 @@ fn truncated_normal_pdf(value: f64, mu: f64, sigma: f64, low: f64, high: f64) ->
 }
 
 fn truncated_discrete_mass(value: f64, mu: f64, sigma: f64, low: f64, high: f64) -> f64 {
-    if !(sigma > 0.0)
+    if !sigma.is_finite() || sigma <= 0.0
     {
         return 0.0;
     }
@@ -607,7 +607,7 @@ fn truncated_discrete_mass(value: f64, mu: f64, sigma: f64, low: f64, high: f64)
     let right = value + 0.5;
     let numerator = normal_cdf((right - mu) / sigma) - normal_cdf((left - mu) / sigma);
     let denominator = normal_cdf((high - mu) / sigma) - normal_cdf((low - mu) / sigma);
-    if !(numerator > 0.0 && denominator > f64::MIN_POSITIVE)
+    if !numerator.is_finite()\n        || numerator <= 0.0\n        || !denominator.is_finite()\n        || denominator <= f64::MIN_POSITIVE
     {
         return 0.0;
     }
