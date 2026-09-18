@@ -6,7 +6,9 @@
 //! radix-2 FFT. It therefore provides an independently testable optimization
 //! surface without changing the training semantics.
 
-use crate::{LearnedOperator, NeuralOperatorError, Result, SpectralModePlan};
+use crate::{
+    LearnedOperator, NeuralOperatorError, Result, SpectralExecutionPlan, SpectralModePlan,
+};
 use scirust_core::nn::fno::Fno1dInferenceSnapshot;
 use scirust_core::tensor::tensor_nd::TensorND;
 use scirust_signal::{
@@ -85,6 +87,60 @@ impl Fno1dFftInference {
     /// Immutable trained parameter snapshot used by this runtime.
     pub const fn snapshot(&self) -> &Fno1dInferenceSnapshot {
         &self.snapshot
+    }
+
+    /// Predict under a coarse spectral execution plan.
+    pub fn predict_with_spectral_execution(
+        &mut self,
+        input: &[f32],
+        execution: &SpectralExecutionPlan,
+    ) -> Result<Vec<f32>> {
+        match execution
+        {
+            SpectralExecutionPlan::Disabled => self.predict_local_only(input),
+            SpectralExecutionPlan::Modes(plan) => self.predict_with_mode_plan(input, plan),
+        }
+    }
+
+    /// Predict with the complete global spectral branch disabled.
+    ///
+    /// This evaluates only lift -> local -> ReLU -> projection and launches no
+    /// forward FFT, spectral channel mixing or inverse FFT.
+    pub fn predict_local_only(&mut self, input: &[f32]) -> Result<Vec<f32>> {
+        self.validate_input(input)?;
+        linear_into(
+            input,
+            self.snapshot.n,
+            self.snapshot.in_channels(),
+            self.snapshot.width,
+            &self.snapshot.lift_weight,
+            &self.snapshot.lift_bias,
+            &mut self.hidden,
+        );
+        linear_into(
+            &self.hidden,
+            self.snapshot.n,
+            self.snapshot.width,
+            self.snapshot.width,
+            &self.snapshot.local_weight,
+            &self.snapshot.local_bias,
+            &mut self.local,
+        );
+        for (activated, &local) in self.activated.iter_mut().zip(&self.local)
+        {
+            *activated = local.max(0.0);
+        }
+        let mut output = vec![0.0; self.output_len()];
+        linear_into(
+            &self.activated,
+            self.snapshot.n,
+            self.snapshot.width,
+            self.snapshot.out_channels(),
+            &self.snapshot.projection_weight,
+            &self.snapshot.projection_bias,
+            &mut output,
+        );
+        Ok(output)
     }
 
     /// Predict while evaluating only the selected spectral modes.
@@ -467,5 +523,33 @@ mod tests {
             Fno1dFftInference::new(dense.inference_snapshot(), FftInferenceMode::Fast),
             Err(NeuralOperatorError::NonRadix2 { len: 15 })
         ));
+    }
+
+    #[test]
+    fn disabled_spectral_branch_matches_zero_spectral_snapshot() {
+        let cfg = Fno1dConfig {
+            points: 16,
+            in_channels: 2,
+            out_channels: 2,
+            hidden_channels: 5,
+            modes: 6,
+            seed: 101,
+        };
+        let dense = Fno1dOperator::new(cfg).unwrap();
+        let input: Vec<f32> = (0..dense.input_len())
+            .map(|index| (index as f32 * 0.29 - 0.7).sin())
+            .collect();
+        let snapshot = dense.inference_snapshot();
+        let mut routed =
+            Fno1dFftInference::new(snapshot.clone(), FftInferenceMode::Portable).unwrap();
+        let local_only = routed.predict_local_only(&input).unwrap();
+
+        let mut zeroed = snapshot;
+        zeroed.spectral_real.data_mut().fill(0.0);
+        zeroed.spectral_imag.data_mut().fill(0.0);
+        let mut zero_spectral = Fno1dFftInference::new(zeroed, FftInferenceMode::Portable).unwrap();
+        let reference = zero_spectral.predict(&input).unwrap();
+        let error = relative_l2(&local_only, &reference).unwrap();
+        assert!(error < 1e-7, "local-only relative error {error}");
     }
 }

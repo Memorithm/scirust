@@ -49,7 +49,8 @@ pub use spectral::{
     spectral_derivative_1d, spectral_derivative_2d, spectral_laplacian_1d, spectral_laplacian_2d,
 };
 pub use spectral_routing::{
-    BooleanSpectralRouter, SpectralModePlan, SpectralRouterComplexity, SpectralWorkEstimate,
+    BooleanSpectralRouter, SpectralExecutionPlan, SpectralModePlan, SpectralRouterComplexity,
+    SpectralWorkEstimate,
 };
 
 // Existing SciRust operator-learning primitives remain available through the

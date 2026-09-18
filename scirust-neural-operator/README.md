@@ -34,3 +34,5 @@ Planned layers include N-D trainable spectral convolution, tensor-factorized
 spectral weights, geometry-aware operators, physics/dynamics-informed losses,
 uncertainty/OOD gating, multi-fidelity active learning, checkpointing and
 backend-specific CPU/WGPU/CUDA inference.
+
+- Boolean-controlled whole-spectral-branch bypass for FFT inference; disabled plans launch no FFT.
