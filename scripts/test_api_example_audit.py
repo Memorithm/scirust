@@ -157,13 +157,26 @@ class IndexPolicyTests(unittest.TestCase):
         self.source.write_text("// no API\n")
         self.assertTrue(audit.check_policy(self.root, self.policy, []))
 
+    def test_required_symbol_count_detects_missing_same_named_callable(self):
+        self.policy["sources"][0]["required_symbol_counts"] = {"f": 1}
+        self.assertEqual(audit.check_policy(self.root, self.policy, self.entries()), [])
+        self.policy["sources"][0]["required_symbol_counts"] = {"f": 2}
+        problems = audit.check_policy(self.root, self.policy, self.entries())
+        self.assertEqual(len(problems), 1)
+        self.assertIn("occurs 1 times; require exactly 2", problems[0])
+
     def test_invalid_policy_rules_are_rejected(self):
-        for key, value in [("min_runnable_examples", 0), ("min_runnable_examples", True), ("required_symbols", []), ("required_symbols", ["f", "f"])]:
-            saved = self.policy["sources"][0][key]
-            self.policy["sources"][0][key] = value
+        for key, value in [("min_runnable_examples", 0), ("min_runnable_examples", True), ("required_symbols", []), ("required_symbols", ["f", "f"]), ("required_symbol_counts", {"f": 0}), ("required_symbol_counts", {"gone": 1})]:
+            rule = self.policy["sources"][0]
+            marker = object()
+            saved = rule.get(key, marker)
+            rule[key] = value
             with self.subTest(key=key, value=value), self.assertRaises(ValueError):
                 audit.check_policy(self.root, self.policy, self.entries())
-            self.policy["sources"][0][key] = saved
+            if saved is marker:
+                del rule[key]
+            else:
+                rule[key] = saved
         self.policy["sources"].append(dict(self.policy["sources"][0]))
         with self.assertRaisesRegex(ValueError, "duplicate policy"):
             audit.check_policy(self.root, self.policy, self.entries())

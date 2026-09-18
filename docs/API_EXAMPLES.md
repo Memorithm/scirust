@@ -81,7 +81,9 @@ fenced examples. The reviewed DataLoader source adds seven newly documented buil
 requires runnable examples for all ten indexed public callables in that source
 (the seven builder methods plus `DataLoader::builder`, `reset` and `n_batches`).
 Its `prefetch` method is explicitly documented as a currently synchronous
-scheduling hint rather than claiming background work.
+scheduling hint rather than claiming background work. The reviewed activation
+source additionally requires a runnable example for each parameter-free ReLU,
+Sigmoid, Softmax and LogSoftmax constructor.
 The combinatorics fixes and their numerical limits are recorded in the
 [combinatorics audit](audits/COMBINATORICS_2026-09-14.md).
 
