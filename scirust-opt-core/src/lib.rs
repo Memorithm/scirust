@@ -390,7 +390,8 @@ impl SearchSpace {
                 {
                     return Err(CandidateError::InvalidValue(spec.id));
                 },
-                _ => {},
+                _ =>
+                {},
             }
         }
         Ok(())
@@ -984,11 +985,7 @@ pub trait Sampler {
     type Error;
 
     /// Produce a complete, conditionally valid candidate for one reserved trial.
-    fn sample(
-        &mut self,
-        study: StudyView<'_>,
-        trial: TrialId,
-    ) -> Result<Candidate, Self::Error>;
+    fn sample(&mut self, study: StudyView<'_>, trial: TrialId) -> Result<Candidate, Self::Error>;
 }
 
 /// Successful result of [`Study::ask`].
@@ -1051,11 +1048,7 @@ impl<E: fmt::Display> fmt::Display for AskError<E> {
     }
 }
 
-impl<E> std::error::Error for AskError<E>
-where
-    E: std::error::Error + 'static,
-{
-}
+impl<E> std::error::Error for AskError<E> where E: std::error::Error + 'static {}
 
 /// One in-memory optimization study over a compiled search space.
 ///
@@ -1498,7 +1491,10 @@ mod tests {
 
         assert_eq!(sampler.seen_running, vec![0, 1, 2]);
         assert_eq!(
-            proposals.iter().map(|proposal| proposal.trial.get()).collect::<Vec<_>>(),
+            proposals
+                .iter()
+                .map(|proposal| proposal.trial.get())
+                .collect::<Vec<_>>(),
             vec![0, 1, 2]
         );
         assert_eq!(study.trials().count_state(TrialState::Running), 3);
