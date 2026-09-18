@@ -334,3 +334,31 @@ research_engine_integrated_consumer_2026_09_16:
     failure_diagnostic: CUBLAS_STATUS_NOT_INITIALIZED_at_cublasLtMatmulAlgoGetHeuristic
   integration_scope: paired_statistics_sensitivity_and_actual_report_exports
   next: qualify_upstream_then_pin_actual_merge_SHA_and_requalify_TDI
+
+adaptive_search_2026_09_18:
+  status: implemented_public_development_candidate_qualification_pending
+  forge_pull_request: https://github.com/Memorithm/Forge/pull/40
+  forge_source_revision: e23f945d4f8bcc283f09826f513f208836efc1c4
+  tdi_pull_request: https://github.com/Memorithm/TDI/pull/500
+  tdi_protocol_revision_before_execution: ac1fcdafddbe8ff3de96fd09a3aa3ddb61d9cff5
+  numerical_dependency: Memorithm/scirust/scirust-gp
+  numerical_source_revision: 146575107005c24a47682dcaa08c4cd9464d1cc3
+  contracts: [forge-finite-tpe/v1, forge-finite-gp/v1]
+  ownership:
+    categorical_kernel_acquisition_and_proposals: Memorithm/Forge
+    Cholesky_and_GP_posterior: Memorithm/scirust
+    comparison_oracles_budgets_and_interpretation: Memorithm/TDI
+  evidence_before_comparison:
+    - 56_Forge_bridge_tests_format_clippy_and_actual_process_checks_passed
+    - 15_pinned_SciRust_GP_numerical_tests_and_one_doc_example_passed_in_isolated_package
+    - eight_TDI_methodology_tests_and_unchanged_historical_report_verification_passed
+  comparison: six_public_tasks_twenty_seeds_six_arms_32_evaluations_each_23040_total
+  comparator: Optuna_5_0_0_random_independent_TPE_and_multivariate_TPE
+  constraints:
+    - successful_verified_measurements_only_after_baseline_qualification
+    - no_oracle_or_final_payload_in_proposals
+    - no_inferred_numeric_geometry_from_categorical_labels
+    - no_distribution_summary_cache_after_negative_ANEE_D4_evidence
+    - no_general_superiority_production_GPU_confirmatory_or_maturity_promotion
+  pending: [actual_Development_comparison, exact_head_CI, material_review_resolution]
+  coordination_note: dated_2026_09_16_entries_remain_historical_observations_not_live_dependency_status
