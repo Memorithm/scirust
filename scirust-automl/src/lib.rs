@@ -1878,7 +1878,8 @@ impl GaussianProcess {
     /// attempted before falling back to prior-only behaviour rather than
     /// panicking.
     pub fn fit(x: &[Vec<f64>], y: &[f64], length_scale: f64, noise: f64) -> Self {
-        if x.is_empty() || y.is_empty() {
+        if x.is_empty() || y.is_empty()
+        {
             return Self {
                 x_train: x.to_vec(),
                 y_train: y.to_vec(),
@@ -1889,13 +1890,16 @@ impl GaussianProcess {
             };
         }
 
-        if let Ok(gp) = Self::try_fit(x, y, length_scale, noise) {
+        if let Ok(gp) = Self::try_fit(x, y, length_scale, noise)
+        {
             return gp;
         }
 
-        if noise <= 0.0 {
+        if noise <= 0.0
+        {
             let stabilised_noise = 1e-12;
-            if let Ok(mut gp) = Self::try_fit(x, y, length_scale, stabilised_noise) {
+            if let Ok(mut gp) = Self::try_fit(x, y, length_scale, stabilised_noise)
+            {
                 gp.noise = noise;
                 return gp;
             }
