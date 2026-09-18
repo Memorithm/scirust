@@ -1,0 +1,11 @@
+[package]
+name = "scirust-opt-tpe"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Reference Tree-structured Parzen Estimator sampler for the SciRust optimization runtime"
+license = "PolyForm-Noncommercial-1.0.0"
+
+[dependencies]
+scirust-opt-core = { path = "../scirust-opt-core" }
+scirust-special = { path = "../scirust-special" }
