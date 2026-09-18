@@ -27,6 +27,19 @@
         "permutations",
         "multichoose"
       ]
+    },
+    {
+      "source": "scirust-core/src/data/dataloader.rs",
+      "min_runnable_examples": 1,
+      "required_symbols": [
+        "new",
+        "batch_size",
+        "shuffle",
+        "seed",
+        "prefetch",
+        "drop_last",
+        "build"
+      ]
     }
   ]
 }

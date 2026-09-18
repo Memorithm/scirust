@@ -60,9 +60,10 @@ examples**. Full Rustdoc semantics remain authoritative.
 
 ## Reviewed source gate
 
-`docs/api-example-policy.json` currently requires **two ordinary runnable
-candidates for every indexed public callable in `scirust-stats/src/describe.rs`
-and `scirust-stats/src/comb.rs`**.
+`docs/api-example-policy.json` requires **two ordinary runnable candidates**
+for every indexed public callable in `scirust-stats/src/describe.rs` and
+`scirust-stats/src/comb.rs`, and **at least one ordinary runnable candidate**
+for every builder callable in `scirust-core/src/data/dataloader.rs`.
 Its required-symbol list prevents deletion/empty-scope accidents from making
 the check pass. Any newly declared public callable in that source is also
 subject to the minimum. This initial gate does not pretend that all workspace
@@ -75,9 +76,13 @@ particular, the mean/variance reduction still has documented intermediate
 overflow risks; this documentation change does not fix or hide them.
 
 The six combinatorics functions are `factorial`, `ln_factorial`, `binomial`,
-`ln_binomial`, `permutations` and `multichoose`. Together the two reviewed
-sources contain 15 functions and 30 ordinary fenced examples. The combinatorics
-fixes and their numerical limits are recorded in the
+`ln_binomial`, `permutations` and `multichoose`. Together the two statistics sources contain 15 functions and 30 ordinary
+fenced examples. The reviewed DataLoader source adds seven newly documented builder callables and
+requires runnable examples for all ten indexed public callables in that source
+(the seven builder methods plus `DataLoader::builder`, `reset` and `n_batches`).
+Its `prefetch` method is explicitly documented as a currently synchronous
+scheduling hint rather than claiming background work.
+The combinatorics fixes and their numerical limits are recorded in the
 [combinatorics audit](audits/COMBINATORICS_2026-09-14.md).
 
 To extend coverage, review another complete source, add meaningful examples
@@ -93,6 +98,7 @@ Presence and execution are separate steps:
 ```bash
 python3 scripts/test_api_example_audit.py -v
 RUSTDOCFLAGS='-D warnings' cargo +stable test -p scirust-stats --doc --locked
+RUSTDOCFLAGS='-D warnings' cargo +stable test -p scirust-core --doc --locked
 ```
 
 The existing API-lexicon workflow now performs both steps, emits the full

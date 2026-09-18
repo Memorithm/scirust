@@ -1,23 +1,26 @@
-//! Parallel DataLoader with batching, shuffling, and prefetch.
+//! Mini-batch DataLoader with deterministic shuffling and a prefetch configuration hint.
 //!
 //! Builds on the `Dataset` trait to provide ergonomic mini-batch iteration
 //! with optional shuffle via Fisher-Yates and deterministic seeding.
 //!
 //! # Example
 //!
-//! ```ignore
-//! use scirust_core::data::{Dataset, InMemoryDataset, dataloader::DataLoader};
+//! ```
+//! use scirust_core::data::{InMemoryDataset, dataloader::DataLoader};
 //!
-//! let dataset = InMemoryDataset::new(features, labels, in_dim, out_dim);
+//! let dataset = InMemoryDataset::new(
+//!     vec![1.0, 2.0, 3.0, 4.0],
+//!     vec![0.0, 1.0],
+//!     2,
+//!     1,
+//! );
 //! let loader = DataLoader::builder(dataset)
-//!     .batch_size(32)
-//!     .shuffle(true)
+//!     .batch_size(1)
+//!     .shuffle(false)
 //!     .build();
-//!
-//! for (batch_x, batch_y) in &mut loader {
-//!     // batch_x: Vec<f32> of shape [batch_size * in_features]
-//!     // batch_y: Vec<f32> of shape [batch_size * out_features]
-//! }
+//! let batches: Vec<_> = loader.collect();
+//! assert_eq!(batches.len(), 2);
+//! assert_eq!(batches[0].0, vec![1.0, 2.0]);
 //! ```
 
 use crate::data::Dataset;
@@ -57,6 +60,18 @@ pub struct DataLoaderBuilder<D: Dataset> {
 }
 
 impl<D: Dataset> DataLoaderBuilder<D> {
+    /// Start a builder with [`DataLoaderConfig::default`].
+    ///
+    /// The dataset is moved into the builder and later into the constructed loader.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scirust_core::data::{InMemoryDataset, dataloader::DataLoaderBuilder};
+    /// let ds = InMemoryDataset::new(vec![1.0], vec![2.0], 1, 1);
+    /// let loader = DataLoaderBuilder::new(ds).shuffle(false).build();
+    /// assert_eq!(loader.n_batches(), 1);
+    /// ```
     pub fn new(dataset: D) -> Self {
         Self {
             dataset,
@@ -64,31 +79,114 @@ impl<D: Dataset> DataLoaderBuilder<D> {
         }
     }
 
+    /// Set the number of samples emitted per mini-batch.
+    ///
+    /// `n` must be strictly positive. The last batch may contain fewer samples
+    /// unless [`Self::drop_last`] is enabled.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `n == 0`; a zero-sized batch cannot advance the iterator.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scirust_core::data::{InMemoryDataset, dataloader::DataLoader};
+    /// let ds = InMemoryDataset::new(vec![1.0, 2.0, 3.0], vec![0.0, 0.0, 0.0], 1, 1);
+    /// let loader = DataLoader::builder(ds).batch_size(2).shuffle(false).build();
+    /// assert_eq!(loader.n_batches(), 2);
+    /// ```
     pub fn batch_size(mut self, n: usize) -> Self {
+        assert!(
+            n > 0,
+            "DataLoaderBuilder::batch_size: batch size must be > 0"
+        );
         self.config.batch_size = n;
         self
     }
 
+    /// Enable or disable Fisher-Yates shuffling at each [`DataLoader::reset`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scirust_core::data::{InMemoryDataset, dataloader::DataLoader};
+    /// let ds = InMemoryDataset::new(vec![1.0, 2.0], vec![0.0, 1.0], 1, 1);
+    /// let batches: Vec<_> = DataLoader::builder(ds).shuffle(false).batch_size(1).build().collect();
+    /// assert_eq!(batches[0].0, vec![1.0]);
+    /// assert_eq!(batches[1].0, vec![2.0]);
+    /// ```
     pub fn shuffle(mut self, yes: bool) -> Self {
         self.config.shuffle = yes;
         self
     }
 
+    /// Set the deterministic PCG seed used by epoch shuffling.
+    ///
+    /// Two loaders with identical datasets, configuration and seed generate the
+    /// same shuffled order. Each reset advances the loader's RNG state.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scirust_core::data::{InMemoryDataset, dataloader::DataLoader};
+    /// let ds = InMemoryDataset::new(vec![1.0, 2.0, 3.0], vec![0.0; 3], 1, 1);
+    /// let a: Vec<_> = DataLoader::builder(ds.clone()).seed(7).batch_size(3).build().collect();
+    /// let b: Vec<_> = DataLoader::builder(ds).seed(7).batch_size(3).build().collect();
+    /// assert_eq!(a, b);
+    /// ```
     pub fn seed(mut self, seed: u64) -> Self {
         self.config.seed = seed;
         self
     }
 
+    /// Record the requested prefetch depth in the loader configuration.
+    ///
+    /// The current iterator is synchronous: this value is a forward-compatible
+    /// scheduling hint and does not spawn a background prefetch worker yet.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scirust_core::data::{InMemoryDataset, dataloader::DataLoader};
+    /// let ds = InMemoryDataset::new(vec![1.0], vec![0.0], 1, 1);
+    /// let batches: Vec<_> = DataLoader::builder(ds).prefetch(2).shuffle(false).build().collect();
+    /// assert_eq!(batches.len(), 1);
+    /// ```
     pub fn prefetch(mut self, n: usize) -> Self {
         self.config.prefetch = n;
         self
     }
 
+    /// Choose whether an incomplete final mini-batch is omitted.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scirust_core::data::{InMemoryDataset, dataloader::DataLoader};
+    /// let ds = InMemoryDataset::new(vec![1.0, 2.0, 3.0], vec![0.0; 3], 1, 1);
+    /// let loader = DataLoader::builder(ds).batch_size(2).drop_last(true).shuffle(false).build();
+    /// assert_eq!(loader.n_batches(), 1);
+    /// assert_eq!(loader.count(), 1);
+    /// ```
     pub fn drop_last(mut self, yes: bool) -> Self {
         self.config.drop_last = yes;
         self
     }
 
+    /// Build a loader and seed its deterministic shuffle engine.
+    ///
+    /// Indices are initialized lazily on the first call to [`Iterator::next`] or
+    /// explicitly by [`DataLoader::reset`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scirust_core::data::{InMemoryDataset, dataloader::DataLoader};
+    /// let ds = InMemoryDataset::new(vec![1.0, 2.0], vec![0.0, 1.0], 1, 1);
+    /// let mut loader = DataLoader::builder(ds).batch_size(1).shuffle(false).build();
+    /// assert_eq!(loader.next().unwrap().0, vec![1.0]);
+    /// ```
     pub fn build(self) -> DataLoader<D> {
         let seed = self.config.seed;
         DataLoader {
@@ -111,12 +209,36 @@ pub struct DataLoader<D: Dataset> {
 }
 
 impl<D: Dataset> DataLoader<D> {
-    /// Create a DataLoader builder.
+    /// Create a [`DataLoaderBuilder`] for `dataset`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scirust_core::data::{InMemoryDataset, dataloader::DataLoader};
+    /// let ds = InMemoryDataset::new(vec![1.0, 2.0], vec![0.0, 1.0], 1, 1);
+    /// let loader = DataLoader::builder(ds).batch_size(2).shuffle(false).build();
+    /// assert_eq!(loader.n_batches(), 1);
+    /// ```
     pub fn builder(dataset: D) -> DataLoaderBuilder<D> {
         DataLoaderBuilder::new(dataset)
     }
 
     /// Reset the loader for a new epoch (re-shuffles if configured).
+    ///
+    /// With shuffling disabled, a reset reproduces the same sample order. With
+    /// shuffling enabled the same RNG instance advances to the next deterministic
+    /// epoch permutation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scirust_core::data::{InMemoryDataset, dataloader::DataLoader};
+    /// let ds = InMemoryDataset::new(vec![1.0, 2.0], vec![0.0, 1.0], 1, 1);
+    /// let mut loader = DataLoader::builder(ds).batch_size(1).shuffle(false).build();
+    /// assert_eq!(loader.next().unwrap().0, vec![1.0]);
+    /// loader.reset();
+    /// assert_eq!(loader.next().unwrap().0, vec![1.0]);
+    /// ```
     pub fn reset(&mut self) {
         let n = self.dataset.n_samples();
         self.indices = (0..n).collect();
@@ -134,7 +256,21 @@ impl<D: Dataset> DataLoader<D> {
         self.current = 0;
     }
 
-    /// Number of batches in one epoch.
+    /// Return the number of mini-batches in one epoch.
+    ///
+    /// The result is a ceiling division when incomplete batches are retained and
+    /// a floor division when [`DataLoaderBuilder::drop_last`] is enabled.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scirust_core::data::{InMemoryDataset, dataloader::DataLoader};
+    /// let ds = InMemoryDataset::new(vec![1.0, 2.0, 3.0], vec![0.0; 3], 1, 1);
+    /// let keep = DataLoader::builder(ds.clone()).batch_size(2).shuffle(false).build();
+    /// let drop = DataLoader::builder(ds).batch_size(2).drop_last(true).shuffle(false).build();
+    /// assert_eq!(keep.n_batches(), 2);
+    /// assert_eq!(drop.n_batches(), 1);
+    /// ```
     pub fn n_batches(&self) -> usize {
         let n = self.dataset.n_samples();
         let bs = self.config.batch_size;
@@ -262,6 +398,13 @@ mod tests {
         let b2 = loader2.next().unwrap();
         assert_eq!(b1.0, b2.0);
         assert_eq!(b1.1, b2.1);
+    }
+
+    #[test]
+    #[should_panic(expected = "batch size must be > 0")]
+    fn builder_rejects_zero_batch_size() {
+        let dataset = make_dataset(2, 1, 1);
+        let _ = DataLoader::builder(dataset).batch_size(0);
     }
 
     #[test]
