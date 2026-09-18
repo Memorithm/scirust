@@ -40,6 +40,13 @@
         "drop_last",
         "build"
       ]
+    },
+    {
+      "source": "scirust-core/src/nn/activation.rs",
+      "min_runnable_examples": 1,
+      "required_symbols": [
+        "new"
+      ]
     }
   ]
 }
