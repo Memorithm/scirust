@@ -25,7 +25,7 @@ The benchmark matrix must include at least:
 - Optuna CMA-ES and NSGA-II/III where applicable.
 - Rustuna current release when the tested feature exists.
 - SciRust random/QMC controls.
-- Objective-cost regimes: near-zero, `1 ms and expensive objectives.
+- Objective-cost regimes: near-zero, about 1 ms, and expensive objectives.
 - Single worker and rolling asynchronous multi-worker execution.
 - Continuous, integer, categorical, mixed, conditional, constrained, noisy and
   multi-objective spaces.
