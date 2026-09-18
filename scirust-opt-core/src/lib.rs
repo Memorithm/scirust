@@ -1026,6 +1026,18 @@ impl TrialStore {
         self.parameter_columns.get(param.index())?.get(row)
     }
 
+    /// Return one completed objective value without allocating an outcome vector.
+    pub fn objective_value(&self, id: TrialId, objective: usize) -> Option<f64> {
+        let row = self.row(id)?;
+        if self.states[row] != TrialState::Complete || !self.objective_present[row]
+        {
+            return None;
+        }
+        self.objective_columns
+            .get(objective)
+            .map(|column| column[row])
+    }
+
     /// Number of configured objective columns.
     pub fn objective_count(&self) -> usize {
         self.objective_columns.len()
