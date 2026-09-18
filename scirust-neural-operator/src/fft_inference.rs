@@ -266,10 +266,14 @@ fn validate_snapshot(snapshot: &Fno1dInferenceSnapshot) -> Result<()> {
             got: snapshot.modes,
         });
     }
+    validate_tensor_rank("FFT lift weight rank", &snapshot.lift_weight, 2)?;
+    validate_tensor_rank("FFT projection weight rank", &snapshot.projection_weight, 2)?;
+    let in_channels = snapshot.lift_weight.shape[0];
+    let out_channels = snapshot.projection_weight.shape[1];
     validate_tensor_shape(
         "FFT lift weight",
         &snapshot.lift_weight,
-        &[snapshot.in_channels(), snapshot.width],
+        &[in_channels, snapshot.width],
     )?;
     validate_tensor_shape("FFT lift bias", &snapshot.lift_bias, &[1, snapshot.width])?;
     validate_tensor_shape(
@@ -291,13 +295,25 @@ fn validate_snapshot(snapshot: &Fno1dInferenceSnapshot) -> Result<()> {
     validate_tensor_shape(
         "FFT projection weight",
         &snapshot.projection_weight,
-        &[snapshot.width, snapshot.out_channels()],
+        &[snapshot.width, out_channels],
     )?;
     validate_tensor_shape(
         "FFT projection bias",
         &snapshot.projection_bias,
-        &[1, snapshot.out_channels()],
+        &[1, out_channels],
     )?;
+    Ok(())
+}
+
+fn validate_tensor_rank(what: &'static str, tensor: &TensorND, expected_rank: usize) -> Result<()> {
+    if tensor.shape.len() != expected_rank
+    {
+        return Err(NeuralOperatorError::ShapeMismatch {
+            what,
+            expected: expected_rank,
+            got: tensor.shape.len(),
+        });
+    }
     Ok(())
 }
 
@@ -396,6 +412,44 @@ mod tests {
         let observed = runtime.predict_with_mode_plan(&input, &plan).unwrap();
         let error = relative_l2(&observed, &expected).unwrap();
         assert!(error < 2e-5, "selected-mode relative error {error}");
+    }
+
+    #[test]
+    fn fft_inference_rejects_malformed_snapshot_ranks_without_panicking() {
+        let dense = Fno1dOperator::new(Fno1dConfig {
+            points: 16,
+            in_channels: 2,
+            out_channels: 3,
+            hidden_channels: 4,
+            modes: 6,
+            seed: 19,
+        })
+        .unwrap();
+
+        let mut missing_lift_rank = dense.inference_snapshot();
+        missing_lift_rank.lift_weight.shape.clear();
+        assert!(matches!(
+            Fno1dFftInference::new(missing_lift_rank, FftInferenceMode::Fast),
+            Err(NeuralOperatorError::ShapeMismatch {
+                what: "FFT lift weight rank",
+                expected: 2,
+                got: 0,
+            })
+        ));
+
+        let mut truncated_projection_rank = dense.inference_snapshot();
+        truncated_projection_rank
+            .projection_weight
+            .shape
+            .truncate(1);
+        assert!(matches!(
+            Fno1dFftInference::new(truncated_projection_rank, FftInferenceMode::Portable),
+            Err(NeuralOperatorError::ShapeMismatch {
+                what: "FFT projection weight rank",
+                expected: 2,
+                got: 1,
+            })
+        ));
     }
 
     #[test]
