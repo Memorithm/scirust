@@ -108,6 +108,19 @@ impl ParallelTape {
     /// # Panics
     ///
     /// Panics if the internal node-count or gradient `RwLock` is poisoned.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scirust_core::autodiff::parallel::ParallelTape;
+    /// use scirust_core::autodiff::parallel_access::ParallelTapeAccessError;
+    ///
+    /// let tape = ParallelTape::new();
+    /// assert_eq!(
+    ///     tape.try_grad(4),
+    ///     Err(ParallelTapeAccessError::NodeOutOfBounds { index: 4, node_count: 0 })
+    /// );
+    /// ```
     pub fn try_grad(&self, idx: usize) -> Result<f64, ParallelTapeAccessError> {
         let node_count = self.num_nodes();
         if idx >= node_count
@@ -137,6 +150,22 @@ impl ParallelTape {
     /// Panics if an internal `RwLock` is poisoned. Lock poisoning remains a
     /// compatibility-level fail-loud contract; this method does not recover from
     /// potentially inconsistent shared state.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scirust_core::autodiff::parallel::ParallelTape;
+    /// use scirust_core::autodiff::parallel_access::ParallelTapeAccessError;
+    /// use scirust_core::autodiff::reverse::{Node, Op, SavedData};
+    ///
+    /// let tape = ParallelTape::new();
+    /// let x = tape.alloc_node(Node { op: Op::Input, shape: (1, 2), saved: SavedData::None });
+    /// assert_eq!(
+    ///     tape.try_set_value(x, &[1.0]),
+    ///     Err(ParallelTapeAccessError::ValueLengthMismatch { index: x, expected: 2, actual: 1 })
+    /// );
+    /// assert_eq!(tape.try_value(x).unwrap().data, vec![0.0, 0.0]);
+    /// ```
     pub fn try_set_value(&self, idx: usize, data: &[f32]) -> Result<(), ParallelTapeAccessError> {
         let current = self.try_value(idx)?;
         let expected = current.data.len();

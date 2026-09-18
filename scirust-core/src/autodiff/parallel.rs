@@ -41,8 +41,30 @@ use std::sync::{Arc, RwLock};
 /// - `values`    : forward tensor values (needed during backward)
 /// - `grads`     : scalar f64 gradients (one per node, set by backward())
 ///
+/// Cloning a `ParallelTape` clones the three `Arc` handles: the clone therefore
+/// shares graph, values, gradients, and node count with the original. It is not
+/// an independent tape snapshot.
+///
 /// ParallelTape automatically implements Send + Sync because all fields
 /// use Arc<RwLock<…>> of types that are themselves Send + Sync.
+///
+/// # Examples
+///
+/// ```
+/// use scirust_core::autodiff::parallel::ParallelTape;
+/// use scirust_core::autodiff::reverse::{Node, Op, SavedData};
+///
+/// let tape = ParallelTape::new();
+/// let x = tape.alloc_node(Node {
+///     op: Op::Input,
+///     shape: (1, 1),
+///     saved: SavedData::None,
+/// });
+/// let clone = tape.clone();
+/// clone.set_value(x, &[3.0]);
+/// assert_eq!(tape.value(x).data, vec![3.0]);
+/// assert_eq!(clone.num_nodes(), tape.num_nodes());
+/// ```
 #[derive(Debug, Clone)]
 pub struct ParallelTape {
     nodes: Arc<RwLock<Vec<Node>>>,
@@ -63,6 +85,23 @@ impl ParallelTape {
     /// Append a node and return its index.
     /// Initialises the corresponding value slot with zeros
     /// and the gradient slot with 0.0.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any internal `RwLock` is poisoned. Poisoning remains fail-loud
+    /// because this proof/test tape does not attempt to recover shared state.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scirust_core::autodiff::parallel::ParallelTape;
+    /// use scirust_core::autodiff::reverse::{Node, Op, SavedData};
+    ///
+    /// let tape = ParallelTape::new();
+    /// let idx = tape.alloc_node(Node { op: Op::Input, shape: (1, 2), saved: SavedData::None });
+    /// assert_eq!(idx, 0);
+    /// assert_eq!(tape.num_nodes(), 1);
+    /// ```
     pub fn alloc_node(&self, node: Node) -> usize {
         let mut nodes = self
             .nodes
@@ -85,6 +124,14 @@ impl ParallelTape {
     }
 
     /// Set the forward value of node `idx`.
+    ///
+    /// Prefer [`ParallelTape::try_set_value`] when caller-controlled indices or
+    /// value lengths must be reported as typed errors.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `idx` is out of range, when `data` does not match the fixed
+    /// node shape, or when the values `RwLock` is poisoned.
     pub fn set_value(&self, idx: usize, data: &[f32]) {
         let mut vals = self
             .values
@@ -96,6 +143,12 @@ impl ParallelTape {
     }
 
     /// Get the forward value of node `idx`.
+    ///
+    /// Prefer [`ParallelTape::try_value`] for a typed out-of-range error.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `idx` is out of range or when the values `RwLock` is poisoned.
     pub fn value(&self, idx: usize) -> Tensor {
         self.values
             .read()
@@ -104,11 +157,21 @@ impl ParallelTape {
     }
 
     /// Get the scalar gradient of node `idx`.
+    ///
+    /// Prefer [`ParallelTape::try_grad`] for a typed out-of-range error.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `idx` is out of range or when the gradients `RwLock` is poisoned.
     pub fn grad(&self, idx: usize) -> f64 {
         self.grads.read().expect("ParallelTape grads lock poisoned")[idx]
     }
 
-    /// Return all scalar gradients.
+    /// Return a cloned snapshot of all scalar gradients.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the gradients `RwLock` is poisoned.
     pub fn grads(&self) -> Vec<f64> {
         self.grads
             .read()
@@ -116,7 +179,11 @@ impl ParallelTape {
             .clone()
     }
 
-    /// Return the number of nodes.
+    /// Return the number of nodes currently shared by this tape and its clones.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the nodes `RwLock` is poisoned.
     pub fn num_nodes(&self) -> usize {
         self.nodes
             .read()
@@ -125,10 +192,34 @@ impl ParallelTape {
     }
 
     /// Run backward from `output_idx`, computing scalar gradients
-    /// for every node.  The algorithm is identical to the sequential
+    /// for every node.  The algorithm mirrors the sequential
     /// [`Tape::backward`](super::reverse::Tape::backward) but stores
     /// the result as a single `f64` per node (the sum of the full
     /// tensor gradient).
+    ///
+    /// The `match` over [`Op`] deliberately has no wildcard arm. Adding a new
+    /// operation therefore fails compilation here until its parallel behavior is
+    /// explicitly implemented or explicitly refused.
+    ///
+    /// # Panics
+    ///
+    /// This proof/test API intentionally fails loudly in these families:
+    ///
+    /// - `output_idx` does not identify an allocated node;
+    /// - the nodes, values, or gradients `RwLock` is poisoned;
+    /// - an `Op::QuantumExpectations` node reaches this tape (quantum adjoints are
+    ///   supported only by the sequential tape);
+    /// - `Op::Broadcast` uses a source/target shape outside the supported exact,
+    ///   row, column, or scalar broadcast cases;
+    /// - `Op::FlashAttention`, `Op::Conv2dTransposeForward`, or `Op::TtContract`
+    ///   reaches backward; these fused backward kernels live on the sequential tape;
+    /// - a manually constructed malformed graph violates a lower-level tensor shape
+    ///   invariant while evaluating an otherwise supported operation.
+    ///
+    /// These unsupported-operation panics are distinct from caller boundary
+    /// validation. Use the fallible accessors in
+    /// [`crate::autodiff::parallel_access`] for index/shape-sensitive value and
+    /// gradient access.
     pub fn backward(&self, output_idx: usize) {
         let nodes = self.nodes.read().expect("ParallelTape nodes lock poisoned");
         let values = self
@@ -1173,7 +1264,11 @@ impl ParallelTape {
         }
     }
 
-    /// Reset all gradients to zero.
+    /// Reset all scalar gradients to zero.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the gradients `RwLock` is poisoned.
     pub fn reset(&self) {
         let mut grads = self
             .grads
