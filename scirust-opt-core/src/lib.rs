@@ -79,11 +79,14 @@ pub enum Distribution {
 
 impl Distribution {
     fn accepts(&self, value: ParamValue) -> bool {
-        match (self, value) {
-            (Self::Uniform { low, high }, ParamValue::Float(v)) => {
+        match (self, value)
+        {
+            (Self::Uniform { low, high }, ParamValue::Float(v)) =>
+            {
                 v.is_finite() && v >= *low && v <= *high
             },
-            (Self::LogUniform { low, high }, ParamValue::Float(v)) => {
+            (Self::LogUniform { low, high }, ParamValue::Float(v)) =>
+            {
                 v.is_finite() && v > 0.0 && v >= *low && v <= *high
             },
             (Self::IntRange { low, high }, ParamValue::Int(v)) => v >= *low && v <= *high,
@@ -93,9 +96,11 @@ impl Distribution {
     }
 
     fn validate(&self) -> bool {
-        match self {
+        match self
+        {
             Self::Uniform { low, high } => low.is_finite() && high.is_finite() && low < high,
-            Self::LogUniform { low, high } => {
+            Self::LogUniform { low, high } =>
+            {
                 low.is_finite() && high.is_finite() && *low > 0.0 && low < high
             },
             Self::IntRange { low, high } => low <= high,
@@ -204,22 +209,37 @@ pub enum SpaceError {
 
 impl fmt::Display for SpaceError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NonDenseId { position, found } => {
-                write!(f, "parameter at position {position} has non-dense id {found:?}")
+        match self
+        {
+            Self::NonDenseId { position, found } =>
+            {
+                write!(
+                    f,
+                    "parameter at position {position} has non-dense id {found:?}"
+                )
             },
             Self::DuplicateName(name) => write!(f, "duplicate parameter name `{name}`"),
             Self::InvalidDistribution(id) => write!(f, "invalid distribution for {id:?}"),
-            Self::InvalidConditionParent { child, parent } => {
+            Self::InvalidConditionParent { child, parent } =>
+            {
                 write!(f, "invalid condition parent {parent:?} for child {child:?}")
             },
-            Self::ConditionTypeMismatch { child, parent } => {
-                write!(f, "condition type mismatch between {child:?} and {parent:?}")
+            Self::ConditionTypeMismatch { child, parent } =>
+            {
+                write!(
+                    f,
+                    "condition type mismatch between {child:?} and {parent:?}"
+                )
             },
-            Self::ConditionChoiceOutOfRange { child, parent } => {
-                write!(f, "categorical condition for {child:?} is outside {parent:?}")
+            Self::ConditionChoiceOutOfRange { child, parent } =>
+            {
+                write!(
+                    f,
+                    "categorical condition for {child:?} is outside {parent:?}"
+                )
             },
-            Self::ConditionValueOutOfRange { child, parent } => {
+            Self::ConditionValueOutOfRange { child, parent } =>
+            {
                 write!(f, "integer condition for {child:?} is outside {parent:?}")
             },
         }
@@ -237,17 +257,23 @@ pub struct SearchSpace {
 impl SearchSpace {
     /// Validate and compile a parameter list.
     pub fn compile(params: Vec<ParameterSpec>) -> Result<Self, SpaceError> {
-        for (position, param) in params.iter().enumerate() {
-            if param.id.index() != position {
+        for (position, param) in params.iter().enumerate()
+        {
+            if param.id.index() != position
+            {
                 return Err(SpaceError::NonDenseId {
                     position,
                     found: param.id,
                 });
             }
-            if !param.distribution.validate() {
+            if !param.distribution.validate()
+            {
                 return Err(SpaceError::InvalidDistribution(param.id));
             }
-            if params[..position].iter().any(|previous| previous.name == param.name) {
+            if params[..position]
+                .iter()
+                .any(|previous| previous.name == param.name)
+            {
                 return Err(SpaceError::DuplicateName(param.name.clone()));
             }
             Self::validate_condition(&params, position, param)?;
@@ -260,43 +286,50 @@ impl SearchSpace {
         position: usize,
         child: &ParameterSpec,
     ) -> Result<(), SpaceError> {
-        let (parent, condition_kind) = match child.condition {
+        let (parent, condition_kind) = match child.condition
+        {
             Condition::Always => return Ok(()),
             Condition::CategoricalEquals { parent, choice } => (parent, Some((choice, None))),
             Condition::IntEquals { parent, value } => (parent, Some((0, Some(value)))),
         };
 
-        if parent.index() >= position {
+        if parent.index() >= position
+        {
             return Err(SpaceError::InvalidConditionParent {
                 child: child.id,
                 parent,
             });
         }
-        let Some(parent_spec) = params.get(parent.index()) else {
+        let Some(parent_spec) = params.get(parent.index())
+        else
+        {
             return Err(SpaceError::InvalidConditionParent {
                 child: child.id,
                 parent,
             });
         };
 
-        match (child.condition, &parent_spec.distribution, condition_kind) {
+        match (child.condition, &parent_spec.distribution, condition_kind)
+        {
             (
                 Condition::CategoricalEquals { choice, .. },
                 Distribution::Categorical { cardinality },
                 _,
             ) if choice < *cardinality => Ok(()),
-            (Condition::CategoricalEquals { .. }, Distribution::Categorical { .. }, _) => {
+            (Condition::CategoricalEquals { .. }, Distribution::Categorical { .. }, _) =>
+            {
                 Err(SpaceError::ConditionChoiceOutOfRange {
                     child: child.id,
                     parent,
                 })
             },
-            (
-                Condition::IntEquals { value, .. },
-                Distribution::IntRange { low, high },
-                _,
-            ) if value >= *low && value <= *high => Ok(()),
-            (Condition::IntEquals { .. }, Distribution::IntRange { .. }, _) => {
+            (Condition::IntEquals { value, .. }, Distribution::IntRange { low, high }, _)
+                if value >= *low && value <= *high =>
+            {
+                Ok(())
+            },
+            (Condition::IntEquals { .. }, Distribution::IntRange { .. }, _) =>
+            {
                 Err(SpaceError::ConditionValueOutOfRange {
                     child: child.id,
                     parent,
@@ -339,15 +372,20 @@ impl SearchSpace {
         id: ParamId,
         mut lookup: impl FnMut(ParamId) -> Option<ParamValue>,
     ) -> bool {
-        let Some(spec) = self.parameter(id) else {
+        let Some(spec) = self.parameter(id)
+        else
+        {
             return false;
         };
-        match spec.condition {
+        match spec.condition
+        {
             Condition::Always => true,
-            Condition::CategoricalEquals { parent, choice } => {
+            Condition::CategoricalEquals { parent, choice } =>
+            {
                 lookup(parent) == Some(ParamValue::Categorical(choice))
             },
-            Condition::IntEquals { parent, value } => {
+            Condition::IntEquals { parent, value } =>
+            {
                 lookup(parent) == Some(ParamValue::Int(value))
             },
         }
@@ -375,13 +413,17 @@ impl Candidate {
         id: ParamId,
         value: ParamValue,
     ) -> Result<(), CandidateError> {
-        let Some(spec) = space.parameter(id) else {
+        let Some(spec) = space.parameter(id)
+        else
+        {
             return Err(CandidateError::UnknownParameter(id));
         };
-        if !space.is_active(id, self) {
+        if !space.is_active(id, self)
+        {
             return Err(CandidateError::InactiveParameter(id));
         }
-        if !spec.distribution.accepts(value) {
+        if !spec.distribution.accepts(value)
+        {
             return Err(CandidateError::InvalidValue(id));
         }
         self.values[id.index()] = Some(value);
@@ -417,7 +459,8 @@ pub enum CandidateError {
 
 impl fmt::Display for CandidateError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
+        match self
+        {
             Self::UnknownParameter(id) => write!(f, "unknown parameter {id:?}"),
             Self::InactiveParameter(id) => write!(f, "inactive parameter {id:?}"),
             Self::InvalidValue(id) => write!(f, "invalid value for parameter {id:?}"),
@@ -487,7 +530,8 @@ enum ParamColumn {
 
 impl ParamColumn {
     fn new(distribution: &Distribution) -> Self {
-        match distribution {
+        match distribution
+        {
             Distribution::Uniform { .. } | Distribution::LogUniform { .. } => Self::Float {
                 values: Vec::new(),
                 present: Vec::new(),
@@ -504,16 +548,20 @@ impl ParamColumn {
     }
 
     fn push_missing(&mut self) {
-        match self {
-            Self::Float { values, present } => {
+        match self
+        {
+            Self::Float { values, present } =>
+            {
                 values.push(0.0);
                 present.push(false);
             },
-            Self::Int { values, present } => {
+            Self::Int { values, present } =>
+            {
                 values.push(0);
                 present.push(false);
             },
-            Self::Categorical { values, present } => {
+            Self::Categorical { values, present } =>
+            {
                 values.push(0);
                 present.push(false);
             },
@@ -521,18 +569,22 @@ impl ParamColumn {
     }
 
     fn set(&mut self, row: usize, value: ParamValue) -> bool {
-        match (self, value) {
-            (Self::Float { values, present }, ParamValue::Float(v)) => {
+        match (self, value)
+        {
+            (Self::Float { values, present }, ParamValue::Float(v)) =>
+            {
                 values[row] = v;
                 present[row] = true;
                 true
             },
-            (Self::Int { values, present }, ParamValue::Int(v)) => {
+            (Self::Int { values, present }, ParamValue::Int(v)) =>
+            {
                 values[row] = v;
                 present[row] = true;
                 true
             },
-            (Self::Categorical { values, present }, ParamValue::Categorical(v)) => {
+            (Self::Categorical { values, present }, ParamValue::Categorical(v)) =>
+            {
                 values[row] = v;
                 present[row] = true;
                 true
@@ -542,7 +594,8 @@ impl ParamColumn {
     }
 
     fn get(&self, row: usize) -> Option<ParamValue> {
-        match self {
+        match self
+        {
             Self::Float { values, present } => present
                 .get(row)
                 .copied()
@@ -606,10 +659,12 @@ impl TrialStore {
             .ok_or(TrialError::TrialIdExhausted)?;
         self.ids.push(id);
         self.states.push(TrialState::Reserved);
-        for column in &mut self.parameter_columns {
+        for column in &mut self.parameter_columns
+        {
             column.push_missing();
         }
-        for column in &mut self.objective_columns {
+        for column in &mut self.objective_columns
+        {
             column.push(0.0);
         }
         self.objective_present.push(false);
@@ -629,36 +684,52 @@ impl TrialStore {
         outcome: TrialOutcome,
     ) -> Result<(), TrialError> {
         let current = self.states[row];
-        if matches!(current, TrialState::Complete | TrialState::Pruned | TrialState::Failed) {
-            let existing = self.outcome_by_row(row).expect("terminal trial has an outcome");
-            return if existing == outcome {
+        if matches!(
+            current,
+            TrialState::Complete | TrialState::Pruned | TrialState::Failed
+        )
+        {
+            let existing = self
+                .outcome_by_row(row)
+                .expect("terminal trial has an outcome");
+            return if existing == outcome
+            {
                 Ok(())
-            } else {
+            }
+            else
+            {
                 Err(TrialError::ConflictingTell(id))
             };
         }
 
-        match outcome {
-            TrialOutcome::Complete(values) => {
-                if values.len() != self.objective_columns.len() {
+        match outcome
+        {
+            TrialOutcome::Complete(values) =>
+            {
+                if values.len() != self.objective_columns.len()
+                {
                     return Err(TrialError::ObjectiveCountMismatch {
                         expected: self.objective_columns.len(),
                         found: values.len(),
                     });
                 }
-                if values.iter().any(|value| !value.is_finite()) {
+                if values.iter().any(|value| !value.is_finite())
+                {
                     return Err(TrialError::NonFiniteObjective);
                 }
-                for (column, value) in self.objective_columns.iter_mut().zip(values) {
+                for (column, value) in self.objective_columns.iter_mut().zip(values)
+                {
                     column[row] = value;
                 }
                 self.objective_present[row] = true;
                 self.states[row] = TrialState::Complete;
             },
-            TrialOutcome::Pruned => {
+            TrialOutcome::Pruned =>
+            {
                 self.states[row] = TrialState::Pruned;
             },
-            TrialOutcome::Failed => {
+            TrialOutcome::Failed =>
+            {
                 self.states[row] = TrialState::Failed;
             },
         }
@@ -666,7 +737,8 @@ impl TrialStore {
     }
 
     fn outcome_by_row(&self, row: usize) -> Option<TrialOutcome> {
-        match self.states.get(row).copied()? {
+        match self.states.get(row).copied()?
+        {
             TrialState::Complete if self.objective_present[row] => Some(TrialOutcome::Complete(
                 self.objective_columns
                     .iter()
@@ -720,7 +792,8 @@ pub enum StudyError {
 
 impl fmt::Display for StudyError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
+        match self
+        {
             Self::ZeroObjectives => write!(f, "a study requires at least one objective"),
         }
     }
@@ -770,17 +843,21 @@ pub enum TrialError {
 
 impl fmt::Display for TrialError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
+        match self
+        {
             Self::UnknownTrial(id) => write!(f, "unknown trial {id:?}"),
             Self::UnknownParameter(id) => write!(f, "unknown parameter {id:?}"),
-            Self::InactiveParameter { trial, param } => {
+            Self::InactiveParameter { trial, param } =>
+            {
                 write!(f, "parameter {param:?} is inactive for trial {trial:?}")
             },
             Self::InvalidParameterValue(id) => write!(f, "invalid parameter value for {id:?}"),
-            Self::InvalidTransition { trial, from, to } => {
+            Self::InvalidTransition { trial, from, to } =>
+            {
                 write!(f, "invalid transition for {trial:?}: {from:?} -> {to:?}")
             },
-            Self::ObjectiveCountMismatch { expected, found } => {
+            Self::ObjectiveCountMismatch { expected, found } =>
+            {
                 write!(f, "expected {expected} objective values, found {found}")
             },
             Self::NonFiniteObjective => write!(f, "objective values must be finite"),
@@ -805,7 +882,8 @@ pub struct Study {
 impl Study {
     /// Create a study with a fixed objective count.
     pub fn new(space: SearchSpace, objective_count: usize) -> Result<Self, StudyError> {
-        if objective_count == 0 {
+        if objective_count == 0
+        {
             return Err(StudyError::ZeroObjectives);
         }
         let store = TrialStore::new(&space, objective_count);
@@ -835,8 +913,10 @@ impl Study {
             .store
             .row(trial)
             .ok_or(TrialError::UnknownTrial(trial))?;
-        match self.store.states[row] {
-            TrialState::Reserved => {
+        match self.store.states[row]
+        {
+            TrialState::Reserved =>
+            {
                 self.store.states[row] = TrialState::Running;
                 Ok(())
             },
@@ -864,26 +944,32 @@ impl Study {
             .row(trial)
             .ok_or(TrialError::UnknownTrial(trial))?;
         let state = self.store.states[row];
-        if !matches!(state, TrialState::Reserved | TrialState::Running) {
+        if !matches!(state, TrialState::Reserved | TrialState::Running)
+        {
             return Err(TrialError::InvalidTransition {
                 trial,
                 from: state,
                 to: state,
             });
         }
-        let Some(spec) = self.space.parameter(param) else {
+        let Some(spec) = self.space.parameter(param)
+        else
+        {
             return Err(TrialError::UnknownParameter(param));
         };
         let active = self
             .space
             .is_active_with(param, |parent| self.store.param_value(trial, parent));
-        if !active {
+        if !active
+        {
             return Err(TrialError::InactiveParameter { trial, param });
         }
-        if !spec.distribution.accepts(value) {
+        if !spec.distribution.accepts(value)
+        {
             return Err(TrialError::InvalidParameterValue(param));
         }
-        if !self.store.set_param(row, param, value) {
+        if !self.store.set_param(row, param, value)
+        {
             return Err(TrialError::InvalidParameterValue(param));
         }
         Ok(())
