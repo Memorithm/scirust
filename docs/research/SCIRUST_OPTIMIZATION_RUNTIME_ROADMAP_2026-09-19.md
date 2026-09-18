@@ -68,6 +68,8 @@ matrix for each candidate prediction.
 
 ## Phase 2 — `scirust-opt-core`
 
+Status: **active implementation**.
+
 Create a dedicated optimizer crate with:
 
 - typed `ParamId`-based SearchSpace IR;
