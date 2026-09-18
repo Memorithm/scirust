@@ -2039,10 +2039,7 @@ mod tests {
             StudyEvent::TrialStarted { trial },
         ];
         let err = Study::replay(conditional_space(), 1, &events).unwrap_err();
-        assert_eq!(
-            err,
-            ReplayError::NonCanonicalEvent { event_index: 2 }
-        );
+        assert_eq!(err, ReplayError::NonCanonicalEvent { event_index: 2 });
     }
 
     #[test]
