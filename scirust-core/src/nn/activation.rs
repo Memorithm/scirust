@@ -15,6 +15,21 @@ use crate::nn::module::Module;
 pub struct ReLU;
 
 impl ReLU {
+    /// Construct a parameter-free rectified-linear activation.
+    ///
+    /// The module applies `max(0, x)` elementwise and therefore has no trainable
+    /// parameter indices to synchronize.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scirust_core::autodiff::reverse::{Tape, Tensor};
+    /// use scirust_core::nn::{Module, ReLU};
+    /// let tape = Tape::new();
+    /// let x = tape.input(Tensor::from_vec(vec![-1.0, 2.0], 1, 2));
+    /// let y = ReLU::new().forward(&tape, x);
+    /// assert_eq!(tape.value(y.idx()).data, vec![0.0, 2.0]);
+    /// ```
     pub fn new() -> Self {
         ReLU
     }
@@ -42,6 +57,20 @@ impl Module for ReLU {
 pub struct Sigmoid;
 
 impl Sigmoid {
+    /// Construct a parameter-free logistic sigmoid activation.
+    ///
+    /// The forward pass maps each finite input through `1 / (1 + exp(-x))`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scirust_core::autodiff::reverse::{Tape, Tensor};
+    /// use scirust_core::nn::{Module, Sigmoid};
+    /// let tape = Tape::new();
+    /// let x = tape.input(Tensor::from_vec(vec![0.0], 1, 1));
+    /// let y = Sigmoid::new().forward(&tape, x);
+    /// assert!((tape.value(y.idx()).data[0] - 0.5).abs() < 1e-6);
+    /// ```
     pub fn new() -> Self {
         Sigmoid
     }
@@ -79,6 +108,25 @@ pub struct Softmax {
 }
 
 impl Softmax {
+    /// Construct a softmax module normalized along `axis`.
+    ///
+    /// The axis is validated by the fallible [`Module::try_forward`] path; the
+    /// compatibility [`Module::forward`] path unwraps that result and therefore
+    /// panics for an unsupported axis. Do not place this module before a loss that
+    /// already incorporates softmax (for example cross entropy).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scirust_core::autodiff::reverse::{Tape, Tensor};
+    /// use scirust_core::nn::Module;
+    /// use scirust_core::nn::activation::Softmax;
+    /// let tape = Tape::new();
+    /// let x = tape.input(Tensor::from_vec(vec![1.0, 2.0, 3.0], 1, 3));
+    /// let y = Softmax::new(1).forward(&tape, x);
+    /// let sum: f32 = tape.value(y.idx()).data.iter().sum();
+    /// assert!((sum - 1.0).abs() < 1e-5);
+    /// ```
     pub fn new(axis: u8) -> Self {
         Softmax { axis }
     }
@@ -121,6 +169,23 @@ pub struct LogSoftmax {
 }
 
 impl LogSoftmax {
+    /// Construct a log-softmax module normalized along `axis`.
+    ///
+    /// This is the explicit log-probability companion for NLL-style losses. The
+    /// axis is validated by [`Module::try_forward`]; the compatibility
+    /// [`Module::forward`] method unwraps that result.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scirust_core::autodiff::reverse::{Tape, Tensor};
+    /// use scirust_core::nn::Module;
+    /// use scirust_core::nn::activation::LogSoftmax;
+    /// let tape = Tape::new();
+    /// let x = tape.input(Tensor::from_vec(vec![1.0, 2.0, 3.0], 1, 3));
+    /// let y = LogSoftmax::new(1).forward(&tape, x);
+    /// assert!(tape.value(y.idx()).data.iter().all(|v| *v <= 0.0));
+    /// ```
     pub fn new(axis: u8) -> Self {
         LogSoftmax { axis }
     }
