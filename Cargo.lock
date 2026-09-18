@@ -3687,6 +3687,14 @@ name = "scirust-opt-core"
 version = "0.1.0"
 
 [[package]]
+name = "scirust-opt-tpe"
+version = "0.1.0"
+dependencies = [
+ "scirust-opt-core",
+ "scirust-special",
+]
+
+[[package]]
 name = "scirust-pdm"
 version = "0.1.0"
 dependencies = [
