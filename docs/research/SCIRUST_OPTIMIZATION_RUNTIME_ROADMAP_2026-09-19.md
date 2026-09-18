@@ -98,6 +98,21 @@ representation.
 
 ## Phase 3 — TPE parity baseline
 
+Status: **active implementation**.
+
+Implemented reference slice:
+- independent/univariate single-objective TPE in `scirust-opt-tpe`;
+- Optuna-v5 default startup/candidate/gamma/prior/magic-clip/endpoint constants;
+- continuous, log-continuous, integer and categorical Parzen models;
+- conditional search-space proposals;
+- rolling-batch running-trial inclusion for constant-liar-style penalization;
+- four numerical density oracles generated from the audited Optuna 5 snapshot;
+- allocation-free objective lookup from `scirust-opt-core`.
+
+Still required for full Phase 3 parity: pruned-trial intermediate ranking,
+constraints, multivariate joint modeling, group decomposition and
+multi-objective TPE.
+
 Implement a reference TPE sufficiently aligned with Optuna 5 to support
 differential testing:
 
