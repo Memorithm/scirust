@@ -180,7 +180,10 @@ jobs:
           deadline=$((SECONDS + 18000))
           settled=0
           while (( settled < 10#$SCIRUST_THOR_IDLE_SETTLE_SECONDS )); do
-            training="$(pgrep -af '[c]uda_pretrain' || true)"
+            # Match the executable name, not arbitrary command arguments. A workspace
+            # rustfmt/cargo command may legitimately mention `cuda_pretrain.rs` and must
+            # not be misclassified as active model training.
+            training="$(pgrep -a -x cuda_pretrain || true)"
             active="$(compute_processes)"
             if [[ -n "${training//[[:space:]]/}" || -n "${active//[[:space:]]/}" ]]; then
               echo "Thor busy; restarting M54 idle window."
@@ -215,7 +218,9 @@ jobs:
 
             contaminated=0
             while kill -0 "$bench_pid" 2>/dev/null; do
-              if pgrep -af '[c]uda_pretrain' >/tmp/m54-training.txt; then
+              # Keep the timed-run contamination check on the exact process name;
+              # `pgrep -f` would also match tools merely formatting/building the source.
+              if pgrep -a -x cuda_pretrain >/tmp/m54-training.txt; then
                 echo "::error::SciAgent training appeared during M54 timing"
                 cat /tmp/m54-training.txt
                 contaminated=1
