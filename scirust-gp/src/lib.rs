@@ -361,6 +361,15 @@ impl<K: Kernel> GaussianProcess<K> {
         xs.iter().map(|x| self.predict(x)).collect()
     }
 
+    /// Return the precomputed solution `α = K⁻¹y`.
+    ///
+    /// This read-only view is primarily intended for higher-level adapters that
+    /// need to preserve an existing public GP facade without recomputing the
+    /// factorization. New GP consumers normally only need [`Self::predict`].
+    pub fn alpha(&self) -> &[f64] {
+        &self.alpha
+    }
+
     /// Log marginal likelihood of the training data under the fitted model.
     ///
     /// `log p(y | X) = −½ yᵀα − Σ_i ln L_ii − (n/2) ln(2π)`, where `α = K⁻¹ y`
