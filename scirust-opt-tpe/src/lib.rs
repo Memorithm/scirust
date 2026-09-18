@@ -607,7 +607,10 @@ fn truncated_discrete_mass(value: f64, mu: f64, sigma: f64, low: f64, high: f64)
     let right = value + 0.5;
     let numerator = normal_cdf((right - mu) / sigma) - normal_cdf((left - mu) / sigma);
     let denominator = normal_cdf((high - mu) / sigma) - normal_cdf((low - mu) / sigma);
-    if !numerator.is_finite()\n        || numerator <= 0.0\n        || !denominator.is_finite()\n        || denominator <= f64::MIN_POSITIVE
+    if !numerator.is_finite()
+        || numerator <= 0.0
+        || !denominator.is_finite()
+        || denominator <= f64::MIN_POSITIVE
     {
         return 0.0;
     }
