@@ -362,3 +362,26 @@ adaptive_search_2026_09_18:
     - no_general_superiority_production_GPU_confirmatory_or_maturity_promotion
   pending: [actual_Development_comparison, exact_head_CI, material_review_resolution]
   coordination_note: dated_2026_09_16_entries_remain_historical_observations_not_live_dependency_status
+
+adaptive_search_results_2026_09_18:
+  source_status: merged_exact_head_and_post_merge_CI_green
+  forge_pull_request: https://github.com/Memorithm/Forge/pull/40
+  forge_qualified_head: 3abf5d10a48d5d9e656cae94d9aea8e615d964a2
+  forge_merge: d696da3e7e7448989503e3ca6f6c58272131af0e
+  benchmark_status: completed_all_evaluations_artifacts_published_TDI_CI_pending
+  tdi_pull_request: https://github.com/Memorithm/TDI/pull/500
+  tdi_evidence_head: c205525860d25b6ea80fa6065f01a02dcf6e7562
+  executed_tdi_source: ac1fcdafddbe8ff3de96fd09a3aa3ddb61d9cff5
+  executed_forge_source: e23f945d4f8bcc283f09826f513f208836efc1c4
+  source_difference: final_Forge_qualification_adds_equivalent_Clippy_spelling_and_exact_head_CI_checkout_only
+  report_identity: 0395d4a740d9c9d1435676de130d9eceb053c982231a049060bfad0ad53b6e62
+  evidence_path: docs/engineering/benchmarks/2026-09-18-forge-adaptive-development.md
+  completed: {smoke_evaluations: 1152, development_evaluations: 23040, development_runs: 720}
+  historical_trajectory_replay: all_180_overlapping_task_seed_arm_parameter_loss_incumbent_sequences_match
+  observations:
+    - both_adaptive_Forge_policies_lower_median_final_regret_than_multivariate_Optuna_TPE_on_four_of_five_discriminating_tasks
+    - Optuna_multivariate_TPE_wins_rotated_valley
+    - normalized_incumbent_AUC_favors_Forge_on_only_two_of_five_tasks
+    - observed_Forge_subprocess_replay_adapter_cost_remains_substantially_higher_than_inprocess_Optuna
+    - sixth_task_baseline_was_already_optimal_retained_as_documented_design_limitation_not_discriminating_evidence
+  interpretation: descriptive_public_Development_only_no_general_superiority_confirmation_GPU_or_maturity_promotion
