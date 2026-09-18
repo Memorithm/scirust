@@ -728,7 +728,8 @@ impl fmt::Display for ReplayError {
                 event_index,
                 source,
             } => write!(f, "event {event_index} failed: {source}"),
-            Self::NonCanonicalEvent { event_index } => {
+            Self::NonCanonicalEvent { event_index } =>
+            {
                 write!(f, "event {event_index} is not a canonical state transition")
             },
         }
@@ -1319,12 +1320,12 @@ impl Study {
                     value,
                 } =>
                 {
-                    study
-                        .set_param(*trial, *param, *value)
-                        .map_err(|source| ReplayError::Trial {
+                    study.set_param(*trial, *param, *value).map_err(|source| {
+                        ReplayError::Trial {
                             event_index,
                             source,
-                        })?;
+                        }
+                    })?;
                 },
                 StudyEvent::TrialCompleted { trial, values } =>
                 {
@@ -1337,21 +1338,21 @@ impl Study {
                 },
                 StudyEvent::TrialPruned { trial } =>
                 {
-                    study
-                        .tell(*trial, TrialOutcome::Pruned)
-                        .map_err(|source| ReplayError::Trial {
+                    study.tell(*trial, TrialOutcome::Pruned).map_err(|source| {
+                        ReplayError::Trial {
                             event_index,
                             source,
-                        })?;
+                        }
+                    })?;
                 },
                 StudyEvent::TrialFailed { trial } =>
                 {
-                    study
-                        .tell(*trial, TrialOutcome::Failed)
-                        .map_err(|source| ReplayError::Trial {
+                    study.tell(*trial, TrialOutcome::Failed).map_err(|source| {
+                        ReplayError::Trial {
                             event_index,
                             source,
-                        })?;
+                        }
+                    })?;
                 },
             }
 
@@ -1583,8 +1584,7 @@ impl Study {
             .row(trial)
             .ok_or(TrialError::UnknownTrial(trial))?;
         let already_terminal = self.store.outcome_by_row(row).is_some();
-        self.store
-            .commit_outcome(row, trial, outcome.clone())?;
+        self.store.commit_outcome(row, trial, outcome.clone())?;
         if !already_terminal
         {
             let event = match outcome
@@ -2001,26 +2001,21 @@ mod tests {
         };
         let proposals = original.ask_batch(&mut sampler, 2).unwrap();
         original
-            .tell(
-                proposals[0].trial,
-                TrialOutcome::Complete(vec![0.5]),
-            )
+            .tell(proposals[0].trial, TrialOutcome::Complete(vec![0.5]))
             .unwrap();
         original
             .tell(proposals[1].trial, TrialOutcome::Pruned)
             .unwrap();
 
-        let replayed = Study::replay(
-            conditional_space(),
-            1,
-            original.events(),
-        )
-        .unwrap();
+        let replayed = Study::replay(conditional_space(), 1, original.events()).unwrap();
 
         assert_eq!(replayed.events(), original.events());
         for trial in original.trials().trial_ids()
         {
-            assert_eq!(replayed.trials().state(trial), original.trials().state(trial));
+            assert_eq!(
+                replayed.trials().state(trial),
+                original.trials().state(trial)
+            );
             for param in original.search_space().parameters()
             {
                 assert_eq!(
