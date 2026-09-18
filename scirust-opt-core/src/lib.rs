@@ -362,6 +362,41 @@ impl SearchSpace {
         self.params.iter()
     }
 
+    /// Validate a completed sampler proposal against this search space.
+    ///
+    /// Every active parameter must be assigned, every inactive parameter must
+    /// remain absent, and every assigned value must match its distribution.
+    /// This final validation is intentionally separate from [`Candidate::set`]:
+    /// a sampler may change a parent after assigning a conditional child, so
+    /// only the finished proposal can certify global conditional consistency.
+    pub fn validate_candidate(&self, candidate: &Candidate) -> Result<(), CandidateError> {
+        if candidate.len() != self.len()
+        {
+            return Err(CandidateError::ShapeMismatch {
+                expected: self.len(),
+                found: candidate.len(),
+            });
+        }
+
+        for spec in &self.params
+        {
+            let active = self.is_active(spec.id, candidate);
+            let value = candidate.value(spec.id);
+            match (active, value)
+            {
+                (true, None) => return Err(CandidateError::MissingActiveParameter(spec.id)),
+                (false, Some(_)) => return Err(CandidateError::InactiveParameter(spec.id)),
+                (_, Some(value)) if !spec.distribution.accepts(value) =>
+                {
+                    return Err(CandidateError::InvalidValue(spec.id));
+                },
+                _ =>
+                {},
+            }
+        }
+        Ok(())
+    }
+
     /// Test whether a parameter is active for a row-oriented candidate.
     pub fn is_active(&self, id: ParamId, candidate: &Candidate) -> bool {
         self.is_active_with(id, |parent| candidate.value(parent))
@@ -444,13 +479,38 @@ impl Candidate {
     pub fn is_empty(&self) -> bool {
         self.values.is_empty()
     }
+
+    /// Iterate over assigned values in increasing [`ParamId`] order.
+    pub fn assigned_values(&self) -> impl Iterator<Item = (ParamId, ParamValue)> + '_ {
+        self.values
+            .iter()
+            .copied()
+            .enumerate()
+            .filter_map(|(index, value)| {
+                value.map(|value| {
+                    (
+                        ParamId::new(u32::try_from(index).expect("candidate index fits ParamId")),
+                        value,
+                    )
+                })
+            })
+    }
 }
 
-/// Candidate construction failure.
+/// Candidate construction or final-validation failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CandidateError {
     /// Unknown parameter identifier.
     UnknownParameter(ParamId),
+    /// Candidate shape did not match the compiled search space.
+    ShapeMismatch {
+        /// Number of parameter slots expected by the search space.
+        expected: usize,
+        /// Number of parameter slots present in the candidate.
+        found: usize,
+    },
+    /// An active parameter was not assigned by the sampler.
+    MissingActiveParameter(ParamId),
     /// Parameter is inactive because its condition is not currently satisfied.
     InactiveParameter(ParamId),
     /// Value had the wrong type or was outside the parameter domain.
@@ -462,6 +522,11 @@ impl fmt::Display for CandidateError {
         match self
         {
             Self::UnknownParameter(id) => write!(f, "unknown parameter {id:?}"),
+            Self::ShapeMismatch { expected, found } =>
+            {
+                write!(f, "candidate has {found} slots, expected {expected}")
+            },
+            Self::MissingActiveParameter(id) => write!(f, "missing active parameter {id:?}"),
             Self::InactiveParameter(id) => write!(f, "inactive parameter {id:?}"),
             Self::InvalidValue(id) => write!(f, "invalid value for parameter {id:?}"),
         }
@@ -761,6 +826,20 @@ impl TrialStore {
         self.ids.is_empty()
     }
 
+    /// Iterate over trial identifiers in monotone reservation order.
+    pub fn trial_ids(&self) -> impl ExactSizeIterator<Item = TrialId> + '_ {
+        self.ids.iter().copied()
+    }
+
+    /// Count trials currently in one lifecycle state.
+    pub fn count_state(&self, state: TrialState) -> usize {
+        self.states
+            .iter()
+            .copied()
+            .filter(|current| *current == state)
+            .count()
+    }
+
     /// Return one trial's lifecycle state.
     pub fn state(&self, id: TrialId) -> Option<TrialState> {
         self.row(id).map(|row| self.states[row])
@@ -869,6 +948,108 @@ impl fmt::Display for TrialError {
 
 impl std::error::Error for TrialError {}
 
+/// Read-only study state supplied to a sampler.
+///
+/// A sampler sees reservations and running trials that already exist in the
+/// store. During [`Study::ask`], the identifier currently being sampled is
+/// already present in state [`TrialState::Reserved`]; the sampler receives that
+/// identifier separately so it can exclude its own empty reservation.
+#[derive(Debug, Clone, Copy)]
+pub struct StudyView<'a> {
+    space: &'a SearchSpace,
+    trials: &'a TrialStore,
+}
+
+impl<'a> StudyView<'a> {
+    fn new(space: &'a SearchSpace, trials: &'a TrialStore) -> Self {
+        Self { space, trials }
+    }
+
+    /// Return the compiled search space.
+    pub const fn search_space(self) -> &'a SearchSpace {
+        self.space
+    }
+
+    /// Return the read-only trial store.
+    pub const fn trials(self) -> &'a TrialStore {
+        self.trials
+    }
+}
+
+/// Proposal algorithm used by [`Study::ask`] and [`Study::ask_batch`].
+///
+/// Algorithms own their mutable state. The study supplies an immutable view of
+/// completed and pending history plus the freshly reserved [`TrialId`].
+pub trait Sampler {
+    /// Algorithm-specific error type.
+    type Error;
+
+    /// Produce a complete, conditionally valid candidate for one reserved trial.
+    fn sample(&mut self, study: StudyView<'_>, trial: TrialId) -> Result<Candidate, Self::Error>;
+}
+
+/// Successful result of [`Study::ask`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct TrialProposal {
+    /// Reserved trial identifier, already transitioned to Running.
+    pub trial: TrialId,
+    /// Complete candidate assigned to the trial.
+    pub candidate: Candidate,
+}
+
+/// Failure while reserving or constructing an asked trial.
+#[derive(Debug)]
+pub enum AskError<E> {
+    /// The trial identifier could not be reserved.
+    Reservation(TrialError),
+    /// The sampler failed after reservation. The reserved trial is marked Failed.
+    Sampler {
+        /// Reserved trial that failed.
+        trial: TrialId,
+        /// Algorithm-specific failure.
+        source: E,
+    },
+    /// The sampler returned a candidate that failed final validation. The trial
+    /// is marked Failed.
+    InvalidCandidate {
+        /// Reserved trial that failed.
+        trial: TrialId,
+        /// Candidate validation failure.
+        source: CandidateError,
+    },
+    /// A validated candidate could not be committed to the trial store. The
+    /// trial is marked Failed.
+    Commit {
+        /// Reserved trial that failed.
+        trial: TrialId,
+        /// Storage/lifecycle failure.
+        source: TrialError,
+    },
+}
+
+impl<E: fmt::Display> fmt::Display for AskError<E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self
+        {
+            Self::Reservation(source) => write!(f, "trial reservation failed: {source}"),
+            Self::Sampler { trial, source } =>
+            {
+                write!(f, "sampler failed for {trial:?}: {source}")
+            },
+            Self::InvalidCandidate { trial, source } =>
+            {
+                write!(f, "invalid candidate for {trial:?}: {source}")
+            },
+            Self::Commit { trial, source } =>
+            {
+                write!(f, "candidate commit failed for {trial:?}: {source}")
+            },
+        }
+    }
+}
+
+impl<E> std::error::Error for AskError<E> where E: std::error::Error + 'static {}
+
 /// One in-memory optimization study over a compiled search space.
 ///
 /// Persistent/distributed backends can mirror these semantics while replacing
@@ -903,6 +1084,86 @@ impl Study {
     /// Reserve the next monotone trial identifier.
     pub fn reserve(&mut self) -> Result<TrialId, TrialError> {
         self.store.reserve()
+    }
+
+    fn fail_reserved(&mut self, trial: TrialId) {
+        if let Some(row) = self.store.row(trial)
+        {
+            self.store.states[row] = TrialState::Failed;
+        }
+    }
+
+    /// Reserve, sample, validate, assign and start one trial.
+    ///
+    /// Reservation happens before the sampler is called. This makes the fresh
+    /// identifier visible as Reserved and makes proposals returned by earlier
+    /// calls visible as Running, which is the substrate required by
+    /// pending-aware parallel samplers.
+    pub fn ask<S>(&mut self, sampler: &mut S) -> Result<TrialProposal, AskError<S::Error>>
+    where
+        S: Sampler,
+    {
+        let trial = self.reserve().map_err(AskError::Reservation)?;
+        let candidate = {
+            let view = StudyView::new(&self.space, &self.store);
+            match sampler.sample(view, trial)
+            {
+                Ok(candidate) => candidate,
+                Err(source) =>
+                {
+                    self.fail_reserved(trial);
+                    return Err(AskError::Sampler { trial, source });
+                },
+            }
+        };
+
+        if let Err(source) = self.space.validate_candidate(&candidate)
+        {
+            self.fail_reserved(trial);
+            return Err(AskError::InvalidCandidate { trial, source });
+        }
+
+        for (param, value) in candidate.assigned_values()
+        {
+            if let Err(source) = self.set_param(trial, param, value)
+            {
+                self.fail_reserved(trial);
+                return Err(AskError::Commit { trial, source });
+            }
+        }
+        if let Err(source) = self.start(trial)
+        {
+            self.fail_reserved(trial);
+            return Err(AskError::Commit { trial, source });
+        }
+
+        Ok(TrialProposal { trial, candidate })
+    }
+
+    /// Produce a rolling batch of running proposals.
+    ///
+    /// Proposals are generated sequentially without a synchronization barrier.
+    /// After each successful proposal is committed and marked Running, the next
+    /// sampler call sees it in [`StudyView`]. This permits constant-liar,
+    /// fantasy and other pending-aware strategies without a separate side
+    /// channel.
+    ///
+    /// If one proposal fails, earlier proposals remain Running and are visible
+    /// through [`Self::trials`]; the failing reservation is marked Failed.
+    pub fn ask_batch<S>(
+        &mut self,
+        sampler: &mut S,
+        batch_size: usize,
+    ) -> Result<Vec<TrialProposal>, AskError<S::Error>>
+    where
+        S: Sampler,
+    {
+        let mut proposals = Vec::with_capacity(batch_size);
+        for _ in 0..batch_size
+        {
+            proposals.push(self.ask(sampler)?);
+        }
+        Ok(proposals)
     }
 
     /// Mark a reserved trial as running.
@@ -1176,5 +1437,148 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    struct PendingAwareSampler {
+        seen_running: Vec<usize>,
+        choice: u32,
+    }
+
+    impl Sampler for PendingAwareSampler {
+        type Error = &'static str;
+
+        fn sample(
+            &mut self,
+            study: StudyView<'_>,
+            _trial: TrialId,
+        ) -> Result<Candidate, Self::Error> {
+            self.seen_running
+                .push(study.trials().count_state(TrialState::Running));
+            let mut candidate = Candidate::empty(study.search_space());
+            candidate
+                .set(
+                    study.search_space(),
+                    ParamId::new(0),
+                    ParamValue::Categorical(self.choice),
+                )
+                .map_err(|_| "categorical assignment failed")?;
+            if self.choice == 1
+            {
+                candidate
+                    .set(study.search_space(), ParamId::new(1), ParamValue::Int(4))
+                    .map_err(|_| "conditional assignment failed")?;
+            }
+            candidate
+                .set(
+                    study.search_space(),
+                    ParamId::new(2),
+                    ParamValue::Float(1e-3),
+                )
+                .map_err(|_| "float assignment failed")?;
+            Ok(candidate)
+        }
+    }
+
+    #[test]
+    fn ask_batch_exposes_previous_proposals_as_running() {
+        let mut study = Study::new(conditional_space(), 1).unwrap();
+        let mut sampler = PendingAwareSampler {
+            seen_running: Vec::new(),
+            choice: 1,
+        };
+
+        let proposals = study.ask_batch(&mut sampler, 3).unwrap();
+
+        assert_eq!(sampler.seen_running, vec![0, 1, 2]);
+        assert_eq!(
+            proposals
+                .iter()
+                .map(|proposal| proposal.trial.get())
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+        assert_eq!(study.trials().count_state(TrialState::Running), 3);
+        assert_eq!(study.trials().count_state(TrialState::Reserved), 0);
+    }
+
+    struct IncompleteSampler;
+
+    impl Sampler for IncompleteSampler {
+        type Error = &'static str;
+
+        fn sample(
+            &mut self,
+            study: StudyView<'_>,
+            _trial: TrialId,
+        ) -> Result<Candidate, Self::Error> {
+            Ok(Candidate::empty(study.search_space()))
+        }
+    }
+
+    #[test]
+    fn invalid_sampler_candidate_marks_reservation_failed() {
+        let mut study = Study::new(conditional_space(), 1).unwrap();
+        let err = study.ask(&mut IncompleteSampler).unwrap_err();
+        let trial = match err
+        {
+            AskError::InvalidCandidate {
+                trial,
+                source: CandidateError::MissingActiveParameter(ParamId(0)),
+            } => trial,
+            other => panic!("unexpected ask error: {other:?}"),
+        };
+        assert_eq!(study.trials().state(trial), Some(TrialState::Failed));
+    }
+
+    struct FailingSampler;
+
+    impl Sampler for FailingSampler {
+        type Error = &'static str;
+
+        fn sample(
+            &mut self,
+            _study: StudyView<'_>,
+            _trial: TrialId,
+        ) -> Result<Candidate, Self::Error> {
+            Err("synthetic sampler failure")
+        }
+    }
+
+    #[test]
+    fn sampler_failure_marks_reservation_failed() {
+        let mut study = Study::new(conditional_space(), 1).unwrap();
+        let err = study.ask(&mut FailingSampler).unwrap_err();
+        let trial = match err
+        {
+            AskError::Sampler {
+                trial,
+                source: "synthetic sampler failure",
+            } => trial,
+            other => panic!("unexpected ask error: {other:?}"),
+        };
+        assert_eq!(study.trials().state(trial), Some(TrialState::Failed));
+    }
+
+    #[test]
+    fn final_candidate_validation_catches_parent_rewrite() {
+        let space = conditional_space();
+        let mut candidate = Candidate::empty(&space);
+        candidate
+            .set(&space, ParamId::new(0), ParamValue::Categorical(1))
+            .unwrap();
+        candidate
+            .set(&space, ParamId::new(1), ParamValue::Int(4))
+            .unwrap();
+        candidate
+            .set(&space, ParamId::new(0), ParamValue::Categorical(0))
+            .unwrap();
+        candidate
+            .set(&space, ParamId::new(2), ParamValue::Float(1e-3))
+            .unwrap();
+
+        assert_eq!(
+            space.validate_candidate(&candidate),
+            Err(CandidateError::InactiveParameter(ParamId::new(1)))
+        );
     }
 }
