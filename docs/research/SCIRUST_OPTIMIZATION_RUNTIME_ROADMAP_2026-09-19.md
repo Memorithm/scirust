@@ -70,6 +70,17 @@ matrix for each candidate prediction.
 
 Status: **active implementation**.
 
+Implemented foundation:
+- typed SearchSpace/ParamId IR and column-oriented TrialStore;
+- monotone reservation plus idempotent tell semantics;
+- pending-aware `ask` / rolling `ask_batch`;
+- deterministic random-access/sequential seed derivation;
+- canonical append-only StudyEvent stream;
+- deterministic replay, in-memory snapshots and watermark-based event deltas.
+
+Remaining in this phase: persistence-backend abstraction and a process-safe atomic
+reservation implementation; those contracts will build on the same event model.
+
 Create a dedicated optimizer crate with:
 
 - typed `ParamId`-based SearchSpace IR;
