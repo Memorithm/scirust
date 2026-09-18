@@ -46,7 +46,10 @@
       "min_runnable_examples": 1,
       "required_symbols": [
         "new"
-      ]
+      ],
+      "required_symbol_counts": {
+        "new": 4
+      }
     }
   ]
 }

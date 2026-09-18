@@ -189,6 +189,14 @@ def check_policy(root: Path, policy: dict, entries: list[dict]) -> list[str]:
                 or any(not isinstance(s, str) or not s for s in required)
                 or len(set(required)) != len(required)):
             raise ValueError("required_symbols must be a nonempty list of unique names")
+        required_counts = rule.get("required_symbol_counts", {})
+        if (not isinstance(required_counts, dict)
+                or any(not isinstance(symbol, str) or not symbol for symbol in required_counts)
+                or any(type(count) is not int or count < 1 for count in required_counts.values())
+                or any(symbol not in required for symbol in required_counts)):
+            raise ValueError(
+                "required_symbol_counts must map required symbol names to positive integers"
+            )
         selected = [entry for entry in entries if entry["source"] == source]
         actual_lines = {
             n for n, text in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
@@ -197,9 +205,16 @@ def check_policy(root: Path, policy: dict, entries: list[dict]) -> list[str]:
         indexed_lines = {entry["line"] for entry in selected}
         if not actual_lines or actual_lines != indexed_lines:
             problems.append(f"{source}: policy source is empty or incompletely indexed")
-        missing = set(required) - {entry["symbol"] for entry in selected}
+        symbol_counts = Counter(entry["symbol"] for entry in selected)
+        missing = set(required) - set(symbol_counts)
         if missing:
             problems.append(f"{source}: required symbols absent: {', '.join(sorted(missing))}")
+        for symbol, expected in sorted(required_counts.items()):
+            actual = symbol_counts[symbol]
+            if actual != expected:
+                problems.append(
+                    f"{source}: required symbol {symbol} occurs {actual} times; require exactly {expected}"
+                )
         for entry in selected:
             count = entry["examples"]["runnable_candidates"]
             if count < minimum:
