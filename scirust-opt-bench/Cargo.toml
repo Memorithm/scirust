@@ -1,0 +1,11 @@
+[package]
+name = "scirust-opt-bench"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Reproducible optimizer overhead microbenchmarks for SciRust, Optuna, and Rustuna"
+license = "PolyForm-Noncommercial-1.0.0"
+
+[dependencies]
+scirust-opt-core = { path = "../scirust-opt-core" }
+scirust-opt-tpe = { path = "../scirust-opt-tpe" }
