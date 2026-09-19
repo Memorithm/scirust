@@ -381,11 +381,16 @@ impl NumericalParzen {
                 }
             };
             log_component_factors.push(log_factor);
-            component_factors.push(if log_factor.is_finite() {
-                log_factor.exp()
-            } else {
-                0.0
-            });
+            component_factors.push(
+                if log_factor.is_finite()
+                {
+                    log_factor.exp()
+                }
+                else
+                {
+                    0.0
+                },
+            );
         }
 
         Self {
@@ -1595,13 +1600,8 @@ mod tests {
         probes: &[ParamValue],
     ) {
         let param = ParamId::new(0);
-        let parzen = NumericalParzen::new(
-            param,
-            observations,
-            &distribution,
-            TpeConfig::default(),
-        )
-        .unwrap();
+        let parzen =
+            NumericalParzen::new(param, observations, &distribution, TpeConfig::default()).unwrap();
         for probe in probes.iter().copied()
         {
             let transformed = ParamHistoryCache::transform(param, probe, &distribution)
