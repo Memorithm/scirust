@@ -916,14 +916,6 @@ impl NumericalParzen {
         }
     }
 
-    #[cfg(test)]
-    fn log_pdf_batch(&self, values: &[ParamValue]) -> Vec<f64> {
-        let mut transformed = Vec::new();
-        let mut density = Vec::new();
-        self.log_pdf_batch_into(values, &mut transformed, &mut density);
-        density
-    }
-
     fn log_pdf_stable_transformed(&self, transformed: f64) -> f64 {
         let mut max_term = f64::NEG_INFINITY;
         let mut scaled_sum = 0.0_f64;
