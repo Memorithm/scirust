@@ -132,6 +132,23 @@ deviation from the Optuna reference.
 
 ## Phase 4 — native numerical kernels
 
+Status: **active implementation**.
+
+Measured progress:
+- cached numerical/categorical observation ordering is in place;
+- truncated-normal normalization is precomputed once per mixture component;
+- numerical log-density uses allocation-free streaming log-sum-exp;
+- controlled Thor benchmark at 1000 trials: SciRust is 13.7x–18.2x faster
+  than Optuna 5.0.0 in the tested univariate regime;
+- controlled Thor benchmark at 1000 trials: SciRust remains 1.33x–1.41x
+  slower than Rustuna 0.1.0, which is the immediate latency target;
+- SciRust median process peak RSS remains about 2.5–3.25 MiB versus
+  15–17 MiB Rustuna and about 49–51 MiB Optuna in those cells.
+
+Next measured kernel step: direct density accumulation with stable log-domain
+fallback, followed by batched/SIMD candidate scoring only if the scalar step
+does not close the Rustuna gap.
+
 Move sampler hot paths into contiguous kernels:
 
 - truncated normal sample/CDF/log-mass;
@@ -147,6 +164,22 @@ Targets: x86_64 and AArch64 first; GPU dispatch only after CPU crossover
 benchmarks demonstrate benefit.
 
 ## Phase 5 — Streaming-TPE
+
+Status: **foundation started**.
+
+Implemented foundations:
+- TPE consumes StudyEvent deltas from a sampler watermark;
+- objective-ranked completed trials and running trials are maintained
+  incrementally;
+- below/above groups are maintained incrementally and exposed to Parzen models
+  in chronological TrialId order, matching Optuna's trial-number weighting;
+- per-parameter observations are cached in chronological and numerical-value
+  order.
+
+The history/ranking cache alone was benchmarked as approximately neutral in
+proposal latency; the dominant cost was mixture density evaluation. It is kept
+because it removes repeated global reconstruction and is required for the later
+fully incremental Parzen update.
 
 Replace history-wide reconstruction with incremental state:
 

@@ -219,17 +219,173 @@ enum NumericalKind {
     Integer { low: i64, high: i64 },
 }
 
+#[derive(Debug, Clone, Copy)]
+struct SortedNumericObservation {
+    transformed: f64,
+    trial: TrialId,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ParamHistoryCache {
+    chronological: Vec<(TrialId, ParamValue)>,
+    numeric_sorted: Vec<SortedNumericObservation>,
+}
+
+impl ParamHistoryCache {
+    fn transform(
+        param: ParamId,
+        value: ParamValue,
+        distribution: &Distribution,
+    ) -> Result<Option<f64>, TpeError> {
+        let transformed = match (distribution, value)
+        {
+            (Distribution::Uniform { .. }, ParamValue::Float(value)) => Some(value),
+            (Distribution::LogUniform { .. }, ParamValue::Float(value)) if value > 0.0 =>
+            {
+                Some(value.ln())
+            },
+            (Distribution::IntRange { .. }, ParamValue::Int(value)) => Some(value as f64),
+            (Distribution::Categorical { cardinality }, ParamValue::Categorical(choice))
+                if choice < *cardinality =>
+            {
+                None
+            },
+            _ => return Err(TpeError::InvalidObservation(param)),
+        };
+        if transformed.is_some_and(|value| !value.is_finite())
+        {
+            return Err(TpeError::InvalidObservation(param));
+        }
+        Ok(transformed)
+    }
+
+    fn sorted_numeric_position(&self, transformed: f64, trial: TrialId) -> Result<usize, usize> {
+        self.numeric_sorted.binary_search_by(|probe| {
+            probe
+                .transformed
+                .total_cmp(&transformed)
+                .then_with(|| probe.trial.cmp(&trial))
+        })
+    }
+
+    fn remove_numeric(&mut self, transformed: f64, trial: TrialId) {
+        if let Ok(position) = self.sorted_numeric_position(transformed, trial)
+        {
+            self.numeric_sorted.remove(position);
+        }
+    }
+
+    fn upsert(
+        &mut self,
+        param: ParamId,
+        trial: TrialId,
+        value: ParamValue,
+        distribution: &Distribution,
+    ) -> Result<(), TpeError> {
+        let transformed = Self::transform(param, value, distribution)?;
+        match self
+            .chronological
+            .binary_search_by_key(&trial, |(stored, _)| *stored)
+        {
+            Ok(position) =>
+            {
+                let old = self.chronological[position].1;
+                if let Some(old_transformed) = Self::transform(param, old, distribution)?
+                {
+                    self.remove_numeric(old_transformed, trial);
+                }
+                self.chronological[position].1 = value;
+            },
+            Err(position) => self.chronological.insert(position, (trial, value)),
+        }
+
+        if let Some(transformed) = transformed
+        {
+            let position = self
+                .sorted_numeric_position(transformed, trial)
+                .unwrap_or_else(|position| position);
+            self.numeric_sorted
+                .insert(position, SortedNumericObservation { transformed, trial });
+        }
+        Ok(())
+    }
+
+    fn selected_count(&self, mask: &[bool]) -> usize {
+        self.chronological
+            .iter()
+            .filter(|(trial, _)| mask_contains(mask, *trial))
+            .count()
+    }
+}
+
+fn mask_contains(mask: &[bool], trial: TrialId) -> bool {
+    usize::try_from(trial.get())
+        .ok()
+        .and_then(|index| mask.get(index))
+        .copied()
+        .unwrap_or(false)
+}
+
 #[derive(Debug, Clone)]
 struct NumericalParzen {
     weights: Vec<f64>,
     mus: Vec<f64>,
     sigmas: Vec<f64>,
+    log_component_factors: Vec<f64>,
     adapted_low: f64,
     adapted_high: f64,
     kind: NumericalKind,
 }
 
 impl NumericalParzen {
+    fn from_components(
+        weights: Vec<f64>,
+        mus: Vec<f64>,
+        sigmas: Vec<f64>,
+        adapted_low: f64,
+        adapted_high: f64,
+        kind: NumericalKind,
+    ) -> Self {
+        let log_component_factors = weights
+            .iter()
+            .copied()
+            .zip(mus.iter().copied())
+            .zip(sigmas.iter().copied())
+            .map(|((weight, mu), sigma)| {
+                if weight <= 0.0 || !sigma.is_finite() || sigma <= 0.0
+                {
+                    return f64::NEG_INFINITY;
+                }
+                let denominator = normal_cdf((adapted_high - mu) / sigma)
+                    - normal_cdf((adapted_low - mu) / sigma);
+                if !denominator.is_finite() || denominator <= f64::MIN_POSITIVE
+                {
+                    return f64::NEG_INFINITY;
+                }
+                let base = weight.ln() - denominator.ln();
+                match kind
+                {
+                    NumericalKind::Integer { .. } => base,
+                    NumericalKind::LinearFloat | NumericalKind::LogFloat =>
+                    {
+                        base - (SQRT_2PI * sigma).ln()
+                    },
+                }
+            })
+            .collect();
+
+        Self {
+            weights,
+            mus,
+            sigmas,
+            log_component_factors,
+            adapted_low,
+            adapted_high,
+            kind,
+        }
+    }
+
+    #[cfg(test)]
     fn new(
         param: ParamId,
         observations: &[ParamValue],
@@ -324,14 +480,182 @@ impl NumericalParzen {
         sigmas.push(range);
 
         let weights = mixture_weights(n_observations, config.prior_weight);
-        Ok(Self {
+        Ok(Self::from_components(
             weights,
             mus,
             sigmas,
             adapted_low,
             adapted_high,
             kind,
-        })
+        ))
+    }
+
+    fn new_cached(
+        param: ParamId,
+        history: &ParamHistoryCache,
+        mask: &[bool],
+        distribution: &Distribution,
+        config: TpeConfig,
+    ) -> Result<Self, TpeError> {
+        let (adapted_low, adapted_high, kind) = match distribution
+        {
+            Distribution::Uniform { low, high } => (*low, *high, NumericalKind::LinearFloat),
+            Distribution::LogUniform { low, high } =>
+            {
+                (low.ln(), high.ln(), NumericalKind::LogFloat)
+            },
+            Distribution::IntRange { low, high } => (
+                *low as f64 - 0.5,
+                *high as f64 + 0.5,
+                NumericalKind::Integer {
+                    low: *low,
+                    high: *high,
+                },
+            ),
+            Distribution::Categorical { .. } => return Err(TpeError::InvalidObservation(param)),
+        };
+        let range = adapted_high - adapted_low;
+        if !range.is_finite() || range <= 0.0
+        {
+            return Err(TpeError::InvalidNumericalRange(param));
+        }
+
+        let n_observations = history.selected_count(mask);
+        if n_observations == 0
+        {
+            return Ok(Self::from_components(
+                vec![1.0],
+                vec![0.5 * (adapted_low + adapted_high)],
+                vec![range],
+                adapted_low,
+                adapted_high,
+                kind,
+            ));
+        }
+
+        let chronological_weights = default_weights(n_observations);
+        let mut weight_by_trial = vec![0.0; mask.len()];
+        let mut chronological_index = 0;
+        for (trial, _) in &history.chronological
+        {
+            if !mask_contains(mask, *trial)
+            {
+                continue;
+            }
+            let trial_index =
+                usize::try_from(trial.get()).map_err(|_| TpeError::InvalidObservation(param))?;
+            let Some(slot) = weight_by_trial.get_mut(trial_index)
+            else
+            {
+                return Err(TpeError::InvalidObservation(param));
+            };
+            *slot = chronological_weights[chronological_index];
+            chronological_index += 1;
+        }
+
+        let selected_sorted = history
+            .numeric_sorted
+            .iter()
+            .copied()
+            .filter(|observation| mask_contains(mask, observation.trial))
+            .collect::<Vec<_>>();
+        if selected_sorted.len() != n_observations
+        {
+            return Err(TpeError::InvalidObservation(param));
+        }
+
+        let min_sigma = if config.consider_magic_clip
+        {
+            let n_kernels = n_observations + 1;
+            range / (100.0_f64.min(1.0 + n_kernels as f64))
+        }
+        else
+        {
+            f64::EPSILON
+        };
+        let mut sigma_by_trial = vec![range; mask.len()];
+        for (position, observation) in selected_sorted.iter().enumerate()
+        {
+            let left_gap = if position == 0
+            {
+                observation.transformed - adapted_low
+            }
+            else
+            {
+                observation.transformed - selected_sorted[position - 1].transformed
+            };
+            let right_gap = if position + 1 == n_observations
+            {
+                adapted_high - observation.transformed
+            }
+            else
+            {
+                selected_sorted[position + 1].transformed - observation.transformed
+            };
+            let mut sigma = left_gap.max(right_gap);
+            if !config.consider_endpoints && n_observations >= 2
+            {
+                if position == 0
+                {
+                    sigma = selected_sorted[1].transformed - observation.transformed;
+                }
+                else if position + 1 == n_observations
+                {
+                    sigma =
+                        observation.transformed - selected_sorted[n_observations - 2].transformed;
+                }
+            }
+            let trial_index = usize::try_from(observation.trial.get())
+                .map_err(|_| TpeError::InvalidObservation(param))?;
+            let Some(slot) = sigma_by_trial.get_mut(trial_index)
+            else
+            {
+                return Err(TpeError::InvalidObservation(param));
+            };
+            *slot = sigma.clamp(min_sigma, range);
+        }
+
+        let mut mus = Vec::with_capacity(n_observations + 1);
+        let mut sigmas = Vec::with_capacity(n_observations + 1);
+        let mut weights = Vec::with_capacity(n_observations + 1);
+        for (trial, value) in &history.chronological
+        {
+            if !mask_contains(mask, *trial)
+            {
+                continue;
+            }
+            let Some(transformed) = ParamHistoryCache::transform(param, *value, distribution)?
+            else
+            {
+                return Err(TpeError::InvalidObservation(param));
+            };
+            let trial_index =
+                usize::try_from(trial.get()).map_err(|_| TpeError::InvalidObservation(param))?;
+            mus.push(transformed);
+            sigmas.push(sigma_by_trial[trial_index]);
+            weights.push(weight_by_trial[trial_index]);
+        }
+
+        mus.push(0.5 * (adapted_low + adapted_high));
+        sigmas.push(range);
+        weights.push(config.prior_weight);
+        let weight_sum: f64 = weights.iter().sum();
+        if weight_sum > 0.0
+        {
+            for weight in &mut weights
+            {
+                *weight /= weight_sum;
+            }
+        }
+
+        Ok(Self::from_components(
+            weights,
+            mus,
+            sigmas,
+            adapted_low,
+            adapted_high,
+            kind,
+        ))
     }
 
     fn sample(&self, rng: &mut SplitMix64) -> ParamValue {
@@ -370,38 +694,69 @@ impl NumericalParzen {
             (NumericalKind::Integer { .. }, ParamValue::Int(value)) => value as f64,
             _ => return f64::NEG_INFINITY,
         };
-
-        let mut terms = Vec::with_capacity(self.weights.len());
-        for index in 0..self.weights.len()
+        if transformed < self.adapted_low || transformed > self.adapted_high
         {
-            let weight = self.weights[index];
-            if weight <= 0.0
+            return f64::NEG_INFINITY;
+        }
+
+        let mut max_term = f64::NEG_INFINITY;
+        let mut scaled_sum = 0.0_f64;
+        for index in 0..self.log_component_factors.len()
+        {
+            let base = self.log_component_factors[index];
+            if !base.is_finite()
             {
                 continue;
             }
-            let probability = match self.kind
+            let term = match self.kind
             {
-                NumericalKind::Integer { .. } => truncated_discrete_mass(
-                    transformed,
-                    self.mus[index],
-                    self.sigmas[index],
-                    self.adapted_low,
-                    self.adapted_high,
-                ),
-                NumericalKind::LinearFloat | NumericalKind::LogFloat => truncated_normal_pdf(
-                    transformed,
-                    self.mus[index],
-                    self.sigmas[index],
-                    self.adapted_low,
-                    self.adapted_high,
-                ),
+                NumericalKind::Integer { .. } =>
+                {
+                    let sigma = self.sigmas[index];
+                    let mu = self.mus[index];
+                    let left = transformed - 0.5;
+                    let right = transformed + 0.5;
+                    let numerator =
+                        normal_cdf((right - mu) / sigma) - normal_cdf((left - mu) / sigma);
+                    if !numerator.is_finite() || numerator <= 0.0
+                    {
+                        continue;
+                    }
+                    base + numerator.ln()
+                },
+                NumericalKind::LinearFloat | NumericalKind::LogFloat =>
+                {
+                    let z = (transformed - self.mus[index]) / self.sigmas[index];
+                    base - 0.5 * z * z
+                },
             };
-            if probability > 0.0
+
+            if term > max_term
             {
-                terms.push(weight.ln() + probability.ln());
+                scaled_sum = if max_term.is_finite()
+                {
+                    scaled_sum * (max_term - term).exp() + 1.0
+                }
+                else
+                {
+                    1.0
+                };
+                max_term = term;
+            }
+            else
+            {
+                scaled_sum += (term - max_term).exp();
             }
         }
-        logsumexp(&terms)
+
+        if !max_term.is_finite() || scaled_sum <= 0.0
+        {
+            f64::NEG_INFINITY
+        }
+        else
+        {
+            max_term + scaled_sum.ln()
+        }
     }
 }
 
@@ -413,6 +768,7 @@ struct CategoricalParzen {
 }
 
 impl CategoricalParzen {
+    #[cfg(test)]
     fn new(
         param: ParamId,
         observations: &[ParamValue],
@@ -464,6 +820,74 @@ impl CategoricalParzen {
         })
     }
 
+    fn new_cached(
+        param: ParamId,
+        history: &ParamHistoryCache,
+        mask: &[bool],
+        cardinality: u32,
+        config: TpeConfig,
+    ) -> Result<Self, TpeError> {
+        let cardinality = cardinality as usize;
+        let n_observations = history.selected_count(mask);
+        if n_observations == 0
+        {
+            return Ok(Self {
+                weights: vec![1.0],
+                component_probabilities: vec![vec![1.0 / cardinality as f64; cardinality]],
+                cardinality,
+            });
+        }
+
+        let n_kernels = n_observations + 1;
+        let base = config.prior_weight / n_kernels as f64;
+        let mut rows = Vec::with_capacity(n_kernels);
+        for (trial, observation) in &history.chronological
+        {
+            if !mask_contains(mask, *trial)
+            {
+                continue;
+            }
+            let ParamValue::Categorical(choice) = observation
+            else
+            {
+                return Err(TpeError::InvalidObservation(param));
+            };
+            let choice = *choice as usize;
+            if choice >= cardinality
+            {
+                return Err(TpeError::InvalidObservation(param));
+            }
+            let mut row = vec![base; cardinality];
+            row[choice] += 1.0;
+            let sum: f64 = row.iter().sum();
+            if sum > 0.0
+            {
+                for value in &mut row
+                {
+                    *value /= sum;
+                }
+            }
+            rows.push(row);
+        }
+
+        let mut prior = vec![base; cardinality];
+        let prior_sum: f64 = prior.iter().sum();
+        if prior_sum > 0.0
+        {
+            for value in &mut prior
+            {
+                *value /= prior_sum;
+            }
+        }
+        rows.push(prior);
+
+        Ok(Self {
+            weights: mixture_weights(n_observations, config.prior_weight),
+            component_probabilities: rows,
+            cardinality,
+        })
+    }
+
     fn sample(&self, rng: &mut SplitMix64) -> ParamValue {
         let component = rng.weighted_index(&self.weights);
         let choice = rng.weighted_index(&self.component_probabilities[component]);
@@ -502,6 +926,7 @@ enum ParzenModel {
 }
 
 impl ParzenModel {
+    #[cfg(test)]
     fn new(
         param: ParamId,
         observations: &[ParamValue],
@@ -516,6 +941,28 @@ impl ParzenModel {
             _ => Ok(Self::Numerical(NumericalParzen::new(
                 param,
                 observations,
+                distribution,
+                config,
+            )?)),
+        }
+    }
+
+    fn new_cached(
+        param: ParamId,
+        history: &ParamHistoryCache,
+        mask: &[bool],
+        distribution: &Distribution,
+        config: TpeConfig,
+    ) -> Result<Self, TpeError> {
+        match distribution
+        {
+            Distribution::Categorical { cardinality } => Ok(Self::Categorical(
+                CategoricalParzen::new_cached(param, history, mask, *cardinality, config)?,
+            )),
+            _ => Ok(Self::Numerical(NumericalParzen::new_cached(
+                param,
+                history,
+                mask,
                 distribution,
                 config,
             )?)),
@@ -585,39 +1032,6 @@ fn sample_truncated_normal(rng: &mut SplitMix64, mu: f64, sigma: f64, low: f64, 
     (mu + sigma * normal_inverse_cdf(probability)).clamp(low, high)
 }
 
-fn truncated_normal_pdf(value: f64, mu: f64, sigma: f64, low: f64, high: f64) -> f64 {
-    if value < low || value > high || !sigma.is_finite() || sigma <= 0.0
-    {
-        return 0.0;
-    }
-    let denominator = normal_cdf((high - mu) / sigma) - normal_cdf((low - mu) / sigma);
-    if !denominator.is_finite() || denominator <= f64::MIN_POSITIVE
-    {
-        return 0.0;
-    }
-    let z = (value - mu) / sigma;
-    (-0.5 * z * z).exp() / (SQRT_2PI * sigma * denominator)
-}
-
-fn truncated_discrete_mass(value: f64, mu: f64, sigma: f64, low: f64, high: f64) -> f64 {
-    if !sigma.is_finite() || sigma <= 0.0
-    {
-        return 0.0;
-    }
-    let left = value - 0.5;
-    let right = value + 0.5;
-    let numerator = normal_cdf((right - mu) / sigma) - normal_cdf((left - mu) / sigma);
-    let denominator = normal_cdf((high - mu) / sigma) - normal_cdf((low - mu) / sigma);
-    if !numerator.is_finite()
-        || numerator <= 0.0
-        || !denominator.is_finite()
-        || denominator <= f64::MIN_POSITIVE
-    {
-        return 0.0;
-    }
-    numerator / denominator
-}
-
 fn logsumexp(values: &[f64]) -> f64 {
     if values.is_empty()
     {
@@ -675,45 +1089,6 @@ fn compare_ranked(direction: Direction, left: &RankedTrial, right: &RankedTrial)
     objective_order.then_with(|| left.id.cmp(&right.id))
 }
 
-fn merge_trial_ids(completed: &BTreeSet<TrialId>, running: &BTreeSet<TrialId>) -> Vec<TrialId> {
-    let mut completed = completed.iter().copied().peekable();
-    let mut running = running.iter().copied().peekable();
-    let mut merged = Vec::with_capacity(completed.len() + running.len());
-
-    loop
-    {
-        match (completed.peek().copied(), running.peek().copied())
-        {
-            (Some(left), Some(right)) if left <= right =>
-            {
-                merged.push(left);
-                completed.next();
-                if left == right
-                {
-                    running.next();
-                }
-            },
-            (Some(_), Some(right)) =>
-            {
-                merged.push(right);
-                running.next();
-            },
-            (Some(left), None) =>
-            {
-                merged.push(left);
-                completed.next();
-            },
-            (None, Some(right)) =>
-            {
-                merged.push(right);
-                running.next();
-            },
-            (None, None) => break,
-        }
-    }
-    merged
-}
-
 /// Correctness-oriented independent TPE sampler.
 #[derive(Debug, Clone)]
 pub struct TpeSampler {
@@ -726,6 +1101,7 @@ pub struct TpeSampler {
     below_complete: BTreeSet<TrialId>,
     above_complete: BTreeSet<TrialId>,
     running: BTreeSet<TrialId>,
+    param_history: Vec<ParamHistoryCache>,
 }
 
 impl TpeSampler {
@@ -745,6 +1121,7 @@ impl TpeSampler {
             below_complete: BTreeSet::new(),
             above_complete: BTreeSet::new(),
             running: BTreeSet::new(),
+            param_history: Vec::new(),
         }
     }
 
@@ -786,6 +1163,7 @@ impl TpeSampler {
         self.below_complete.clear();
         self.above_complete.clear();
         self.running.clear();
+        self.param_history.clear();
     }
 
     fn insert_complete(&mut self, trial: RankedTrial) {
@@ -835,7 +1213,14 @@ impl TpeSampler {
         }
     }
 
-    fn apply_event(&mut self, event: &StudyEvent) {
+    fn ensure_param_history(&mut self, study: StudyView<'_>) {
+        if self.param_history.len() != study.search_space().len()
+        {
+            self.param_history = vec![ParamHistoryCache::default(); study.search_space().len()];
+        }
+    }
+
+    fn apply_event(&mut self, study: StudyView<'_>, event: &StudyEvent) -> Result<(), TpeError> {
         match event
         {
             StudyEvent::TrialStarted { trial } =>
@@ -857,51 +1242,64 @@ impl TpeSampler {
             {
                 self.running.remove(trial);
             },
-            StudyEvent::TrialReserved { .. } | StudyEvent::ParameterAssigned { .. } =>
+            StudyEvent::ParameterAssigned {
+                trial,
+                param,
+                value,
+            } =>
+            {
+                let Some(spec) = study.search_space().parameter(*param)
+                else
+                {
+                    return Err(TpeError::InvalidObservation(*param));
+                };
+                let Some(history) = self.param_history.get_mut(param.index())
+                else
+                {
+                    return Err(TpeError::InvalidObservation(*param));
+                };
+                history.upsert(*param, *trial, *value, &spec.distribution)?;
+            },
+            StudyEvent::TrialReserved { .. } =>
             {},
         }
+        Ok(())
     }
 
-    fn sync_history(&mut self, study: StudyView<'_>) {
+    fn sync_history(&mut self, study: StudyView<'_>) -> Result<(), TpeError> {
         let prefix_matches = self.event_cursor == 0
             || study.events().get(self.event_cursor.saturating_sub(1)) == self.last_event.as_ref();
         if study.events().len() < self.event_cursor || !prefix_matches
         {
             self.reset_history();
         }
+        self.ensure_param_history(study);
 
         if let Some(events) = study.events_since(self.event_cursor)
         {
             for event in events
             {
-                self.apply_event(event);
+                self.apply_event(study, event)?;
             }
             self.event_cursor = study.events().len();
             self.last_event = study.events().last().cloned();
         }
-    }
-
-    fn observations_for(study: StudyView<'_>, ids: &[TrialId], param: ParamId) -> Vec<ParamValue> {
-        ids.iter()
-            .copied()
-            .filter_map(|id| study.trials().param_value(id, param))
-            .collect()
+        Ok(())
     }
 
     fn sample_tpe_value(
         config: TpeConfig,
         rng: &mut SplitMix64,
-        study: StudyView<'_>,
-        below_ids: &[TrialId],
-        above_ids: &[TrialId],
+        history: &ParamHistoryCache,
+        below_mask: &[bool],
+        above_mask: &[bool],
         param: ParamId,
         distribution: &Distribution,
     ) -> Result<ParamValue, TpeError> {
-        let below = Self::observations_for(study, below_ids, param);
-        let above = Self::observations_for(study, above_ids, param);
-
-        let below_model = ParzenModel::new(param, &below, distribution, config)?;
-        let above_model = ParzenModel::new(param, &above, distribution, config)?;
+        let below_model =
+            ParzenModel::new_cached(param, history, below_mask, distribution, config)?;
+        let above_model =
+            ParzenModel::new_cached(param, history, above_mask, distribution, config)?;
 
         let mut best_value = below_model.sample(rng);
         let mut best_score = below_model.log_pdf(best_value) - above_model.log_pdf(best_value);
@@ -929,17 +1327,38 @@ impl Sampler for TpeSampler {
             return Err(TpeError::UnsupportedObjectiveCount(objective_count));
         }
 
-        self.sync_history(study);
+        self.sync_history(study)?;
         let use_random = self.ranked_complete.len() < self.config.n_startup_trials;
-        let below_ids = self.below_complete.iter().copied().collect::<Vec<_>>();
-        let above_ids = if self.config.constant_liar
+        let trial_count = study.trials().len();
+        let mut below_mask = vec![false; trial_count];
+        let mut above_mask = vec![false; trial_count];
+        for trial in &self.below_complete
         {
-            merge_trial_ids(&self.above_complete, &self.running)
+            if let Ok(index) = usize::try_from(trial.get())
+                && let Some(slot) = below_mask.get_mut(index)
+            {
+                *slot = true;
+            }
         }
-        else
+        for trial in &self.above_complete
         {
-            self.above_complete.iter().copied().collect::<Vec<_>>()
-        };
+            if let Ok(index) = usize::try_from(trial.get())
+                && let Some(slot) = above_mask.get_mut(index)
+            {
+                *slot = true;
+            }
+        }
+        if self.config.constant_liar
+        {
+            for trial in &self.running
+            {
+                if let Ok(index) = usize::try_from(trial.get())
+                    && let Some(slot) = above_mask.get_mut(index)
+                {
+                    *slot = true;
+                }
+            }
+        }
 
         let space = study.search_space();
         let mut candidate = Candidate::empty(space);
@@ -956,12 +1375,17 @@ impl Sampler for TpeSampler {
             }
             else
             {
+                let Some(history) = self.param_history.get(spec.id.index())
+                else
+                {
+                    return Err(TpeError::InvalidObservation(spec.id));
+                };
                 Self::sample_tpe_value(
                     config,
                     &mut self.rng,
-                    study,
-                    &below_ids,
-                    &above_ids,
+                    history,
+                    &below_mask,
+                    &above_mask,
                     spec.id,
                     &spec.distribution,
                 )?
@@ -1136,6 +1560,114 @@ mod tests {
             Condition::Always,
         )])
         .unwrap()
+    }
+
+    fn cached_model(
+        values: &[ParamValue],
+        selected: &[bool],
+        distribution: Distribution,
+    ) -> (ParzenModel, ParzenModel) {
+        let param = ParamId::new(0);
+        let mut history = ParamHistoryCache::default();
+        for (index, value) in values.iter().copied().enumerate()
+        {
+            history
+                .upsert(param, TrialId::new(index as u64), value, &distribution)
+                .unwrap();
+        }
+        let selected_values = values
+            .iter()
+            .copied()
+            .zip(selected.iter().copied())
+            .filter_map(|(value, selected)| selected.then_some(value))
+            .collect::<Vec<_>>();
+        let reference =
+            ParzenModel::new(param, &selected_values, &distribution, TpeConfig::default()).unwrap();
+        let cached = ParzenModel::new_cached(
+            param,
+            &history,
+            selected,
+            &distribution,
+            TpeConfig::default(),
+        )
+        .unwrap();
+        (reference, cached)
+    }
+
+    #[test]
+    fn cached_numerical_parzen_preserves_reference_sampling_sequence() {
+        let values = (0..30)
+            .map(|index| {
+                let raw = ((index * 17) % 29) as f64 / 29.0;
+                ParamValue::Float(raw)
+            })
+            .collect::<Vec<_>>();
+        let selected = (0..30).map(|index| index % 4 != 1).collect::<Vec<_>>();
+        let (reference, cached) = cached_model(
+            &values,
+            &selected,
+            Distribution::Uniform {
+                low: 0.0,
+                high: 1.0,
+            },
+        );
+
+        for probe in [0.01, 0.17, 0.43, 0.77, 0.99]
+        {
+            assert!(
+                close(
+                    reference.log_pdf(ParamValue::Float(probe)),
+                    cached.log_pdf(ParamValue::Float(probe)),
+                    1e-14,
+                ),
+                "probe={probe}"
+            );
+        }
+
+        let mut reference_rng = SplitMix64::new(0x1234);
+        let mut cached_rng = SplitMix64::new(0x1234);
+        for _ in 0..64
+        {
+            assert_eq!(
+                reference.sample(&mut reference_rng),
+                cached.sample(&mut cached_rng)
+            );
+        }
+    }
+
+    #[test]
+    fn cached_categorical_parzen_preserves_reference_sampling_sequence() {
+        let values = (0..36)
+            .map(|index| ParamValue::Categorical(((index * 5) % 4) as u32))
+            .collect::<Vec<_>>();
+        let selected = (0..36).map(|index| index % 5 != 2).collect::<Vec<_>>();
+        let (reference, cached) = cached_model(
+            &values,
+            &selected,
+            Distribution::Categorical { cardinality: 4 },
+        );
+
+        for choice in 0..4
+        {
+            assert!(
+                close(
+                    reference.log_pdf(ParamValue::Categorical(choice)),
+                    cached.log_pdf(ParamValue::Categorical(choice)),
+                    1e-14,
+                ),
+                "choice={choice}"
+            );
+        }
+
+        let mut reference_rng = SplitMix64::new(0x5678);
+        let mut cached_rng = SplitMix64::new(0x5678);
+        for _ in 0..64
+        {
+            assert_eq!(
+                reference.sample(&mut reference_rng),
+                cached.sample(&mut cached_rng)
+            );
+        }
     }
 
     #[test]
