@@ -252,6 +252,12 @@ struct NumericalBuildScratch {
     sigma_by_trial: Vec<f64>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct GroupMasks<'a> {
+    below: &'a [bool],
+    above: &'a [bool],
+}
+
 #[derive(Debug, Clone, Default)]
 struct ParamHistoryCache {
     chronological: Vec<(TrialId, ParamValue)>,
@@ -1533,15 +1539,14 @@ impl TpeSampler {
         rng: &mut SplitMix64,
         scratch: &mut NumericalBuildScratch,
         history: &ParamHistoryCache,
-        below_mask: &[bool],
-        above_mask: &[bool],
+        masks: GroupMasks<'_>,
         param: ParamId,
         distribution: &Distribution,
     ) -> Result<ParamValue, TpeError> {
         let below_model =
-            ParzenModel::new_cached(param, history, below_mask, distribution, config, scratch)?;
+            ParzenModel::new_cached(param, history, masks.below, distribution, config, scratch)?;
         let above_model =
-            ParzenModel::new_cached(param, history, above_mask, distribution, config, scratch)?;
+            ParzenModel::new_cached(param, history, masks.above, distribution, config, scratch)?;
 
         let candidates = (0..config.n_ei_candidates)
             .map(|_| below_model.sample(rng))
@@ -1634,8 +1639,10 @@ impl Sampler for TpeSampler {
                     &mut self.rng,
                     &mut self.build_scratch,
                     history,
-                    &self.below_mask,
-                    &self.above_mask,
+                    GroupMasks {
+                        below: &self.below_mask,
+                        above: &self.above_mask,
+                    },
                     spec.id,
                     &spec.distribution,
                 )?
