@@ -219,6 +219,122 @@ enum NumericalKind {
     Integer { low: i64, high: i64 },
 }
 
+#[derive(Debug, Clone, Copy)]
+struct SortedNumericObservation {
+    transformed: f64,
+    trial: TrialId,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ParamHistoryCache {
+    chronological: Vec<(TrialId, ParamValue)>,
+    numeric_sorted: Vec<SortedNumericObservation>,
+}
+
+impl ParamHistoryCache {
+    fn transform(
+        param: ParamId,
+        value: ParamValue,
+        distribution: &Distribution,
+    ) -> Result<Option<f64>, TpeError> {
+        let transformed = match (distribution, value)
+        {
+            (Distribution::Uniform { .. }, ParamValue::Float(value)) => Some(value),
+            (Distribution::LogUniform { .. }, ParamValue::Float(value)) if value > 0.0 =>
+            {
+                Some(value.ln())
+            },
+            (Distribution::IntRange { .. }, ParamValue::Int(value)) => Some(value as f64),
+            (Distribution::Categorical { cardinality }, ParamValue::Categorical(choice))
+                if choice < *cardinality =>
+            {
+                None
+            },
+            _ => return Err(TpeError::InvalidObservation(param)),
+        };
+        if transformed.is_some_and(|value| !value.is_finite())
+        {
+            return Err(TpeError::InvalidObservation(param));
+        }
+        Ok(transformed)
+    }
+
+    fn sorted_numeric_position(
+        &self,
+        transformed: f64,
+        trial: TrialId,
+    ) -> Result<usize, usize> {
+        self.numeric_sorted.binary_search_by(|probe| {
+            probe
+                .transformed
+                .total_cmp(&transformed)
+                .then_with(|| probe.trial.cmp(&trial))
+        })
+    }
+
+    fn remove_numeric(&mut self, transformed: f64, trial: TrialId) {
+        if let Ok(position) = self.sorted_numeric_position(transformed, trial)
+        {
+            self.numeric_sorted.remove(position);
+        }
+    }
+
+    fn upsert(
+        &mut self,
+        param: ParamId,
+        trial: TrialId,
+        value: ParamValue,
+        distribution: &Distribution,
+    ) -> Result<(), TpeError> {
+        let transformed = Self::transform(param, value, distribution)?;
+        match self
+            .chronological
+            .binary_search_by_key(&trial, |(stored, _)| *stored)
+        {
+            Ok(position) =>
+            {
+                let old = self.chronological[position].1;
+                if let Some(old_transformed) = Self::transform(param, old, distribution)?
+                {
+                    self.remove_numeric(old_transformed, trial);
+                }
+                self.chronological[position].1 = value;
+            },
+            Err(position) => self.chronological.insert(position, (trial, value)),
+        }
+
+        if let Some(transformed) = transformed
+        {
+            let position = self
+                .sorted_numeric_position(transformed, trial)
+                .unwrap_or_else(|position| position);
+            self.numeric_sorted.insert(
+                position,
+                SortedNumericObservation {
+                    transformed,
+                    trial,
+                },
+            );
+        }
+        Ok(())
+    }
+
+    fn selected_count(&self, mask: &[bool]) -> usize {
+        self.chronological
+            .iter()
+            .filter(|(trial, _)| mask_contains(mask, *trial))
+            .count()
+    }
+}
+
+fn mask_contains(mask: &[bool], trial: TrialId) -> bool {
+    usize::try_from(trial.get())
+        .ok()
+        .and_then(|index| mask.get(index))
+        .copied()
+        .unwrap_or(false)
+}
+
 #[derive(Debug, Clone)]
 struct NumericalParzen {
     weights: Vec<f64>,
