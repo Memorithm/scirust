@@ -1,7 +1,7 @@
-# Exploratory optimizer microbenchmark — NVIDIA Thor — seed 23063
+# Exploratory optimizer microbenchmark — NVIDIA Thor
 
-Date: 2026-09-19
-Evidence class: exploratory, single seed
+Date: 2026-09-19  
+Evidence class: exploratory, repeated process-level measurements  
 Protocol: `docs/research/SCIRUST_OPTUNA_RUSTUNA_MICROBENCH_V1.md`
 
 ## Environment
@@ -12,12 +12,19 @@ Protocol: `docs/research/SCIRUST_OPTUNA_RUSTUNA_MICROBENCH_V1.md`
 - Python 3.12.3
 - Optuna 5.0.0
 - Rustuna 0.1.0
-- SciRust benchmark branch head used for this exploratory run
-- all measured processes pinned to CPU 0 with `taskset -c 0`
+- SciRust post-cache benchmark code head: `d1c7490e65a29e8245e826717c241103f8630b51`
+- measured processes pinned to CPU 0 with `taskset -c 0`
+- five-seed post-cache campaign ran with CPU 0 governor set to `performance`
+  for each engine campaign and restored afterward
 
-## Result summary
+Raw post-cache process records are in
+`thor-five-seed-post-cache.csv`. The older
+`thor-seed23063-exploratory.csv` records the pre-cache reference slice.
 
-Proposal time per trial:
+## Pre-cache exploratory signal
+
+The first single-seed run exposed history reconstruction as the dominant SciRust
+problem. Proposal time per trial was:
 
 | dimensions | trials | SciRust | Optuna 5.0.0 | Rustuna 0.1.0 |
 |---:|---:|---:|---:|---:|
@@ -28,40 +35,82 @@ Proposal time per trial:
 | 10 | 100 | 3.057 ms | 6.625 ms | 0.256 ms |
 | 10 | 1000 | 22.133 ms | 33.690 ms | 1.585 ms |
 
-On this single exploratory run, SciRust proposal generation is faster than
-Optuna Python in every measured cell, but materially slower than Rustuna. At
-1000 trials the SciRust/Rustuna proposal-time ratio is approximately 13.7x,
-14.2x and 14.0x for 1, 5 and 10 dimensions respectively.
+That run motivated event-watermark history state plus cached parameter
+observations and Parzen construction.
 
-Peak process RSS:
+## Post-cache five-seed medians
 
-| dimensions | trials | SciRust | Optuna | Rustuna |
-|---:|---:|---:|---:|---:|
-| 1 | 1000 | 2.4 MiB | 49.0 MiB | 15.1 MiB |
-| 5 | 1000 | 2.6 MiB | 49.9 MiB | 15.9 MiB |
-| 10 | 1000 | 2.9 MiB | 51.3 MiB | 17.0 MiB |
+The following values are medians across seeds 23063–23067. All three engines in
+these tables used the same host, CPU affinity, objective, dimensions, trial
+count and performance-governor policy.
 
-The process-RSS comparison includes Python interpreter/import footprint for the
-Python bindings, so it is an end-to-end process metric rather than a pure
-sampler-allocation metric.
+### Proposal time per trial
 
-## Interpretation
+| dimensions | trials | SciRust | Optuna 5.0.0 | Rustuna 0.1.0 | Optuna / SciRust | SciRust / Rustuna |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 100 | 0.0412 ms | 0.766 ms | 0.0310 ms | 18.57x | 1.33x |
+| 5 | 100 | 0.208 ms | 3.301 ms | 0.132 ms | 15.84x | 1.58x |
+| 10 | 100 | 0.441 ms | 7.172 ms | 0.257 ms | 16.27x | 1.71x |
+| 1 | 1000 | 0.219 ms | 2.974 ms | 0.165 ms | 13.57x | 1.33x |
+| 5 | 1000 | 1.089 ms | 16.432 ms | 0.768 ms | 15.09x | 1.42x |
+| 10 | 1000 | 2.164 ms | 39.099 ms | 1.556 ms | 18.07x | 1.39x |
 
-The growth from 100 to 1000 trials is the most actionable signal. SciRust's
-proposal cost increases much more than would be explained by the fixed 24
-candidate count alone. The current reference implementation rebuilds ranked
-history and Parzen observation/model state for every proposal. That behavior is
-therefore the first optimization target.
+The result is a major change from the initial reference implementation:
+SciRust is now in the same order of magnitude as Rustuna rather than roughly
+14x slower at 1000 trials. Rustuna remains faster in every currently measured
+post-cache cell, by about 1.33x–1.71x.
 
-SIMD is not the first response to this result. The next implementation step is
-to remove history-wide reconstruction through incremental sampler state/event
-watermarks. SIMD remains important after the algorithmic history cost is
-reduced.
+The pre-cache and post-cache files were not produced under an identical
+documented governor policy, so the approximately order-of-magnitude difference
+between them is an exploratory engineering signal, not a controlled attribution
+of the full speedup to one code change.
+
+### Tell time per trial
+
+At 1000 trials the median SciRust terminal-commit cost is only about
+0.166–0.226 microseconds/trial across 1–10 dimensions. Rustuna is about
+1.49–3.29 microseconds and Optuna about 85.6–218.6 microseconds in the same
+campaign. The optimization bottleneck is therefore proposal generation, not
+`tell`, for this workload.
+
+### Peak process RSS at 1000 trials
+
+| dimensions | SciRust | Optuna | Rustuna |
+|---:|---:|---:|---:|
+| 1 | 2.50 MiB | 49.00 MiB | 15.13 MiB |
+| 5 | 2.88 MiB | 49.94 MiB | 15.88 MiB |
+| 10 | 3.25 MiB | 51.29 MiB | 17.00 MiB |
+
+This is end-to-end process RSS. Python interpreter/import footprint is included
+for the Python Optuna and Rustuna bindings, so these numbers are not a pure
+sampler-allocation comparison.
+
+## Interpretation and next target
+
+The event watermark and observation caches removed the dominant repeated
+history reconstruction. The remaining Rustuna gap has two visible components:
+
+1. At 100 trials the gap grows with dimension, indicating fixed/per-parameter
+   proposal overhead.
+2. At 1000 trials SciRust remains about 1.33x–1.42x slower, indicating remaining
+   per-observation density work.
+
+The current numerical Parzen path still evaluates candidate log densities
+candidate-by-candidate and performs repeated truncated-normal sampling-bound
+CDF work. The next optimization should therefore target batched numerical
+candidate scoring and reusable/precomputed truncation terms before introducing
+architecture-specific SIMD. SIMD should accelerate a batched kernel, not mask an
+avoidable scalar layout.
 
 ## Limitations
 
-This is one seed and therefore not confirmatory evidence. The preregistered five
-seeds and 5000-trial cells remain to be run after the first incremental-state
-optimization so the before/after comparison can be performed with the same
-protocol. Best-objective values in this file are descriptive only and must not
-be used to rank sample efficiency from a single seed.
+These measurements remain exploratory rather than confirmatory:
+
+- five seeds are repeated, but no confidence interval or preregistered acceptance
+  decision has yet been attached;
+- 5000-trial cells have not yet been completed;
+- this is a continuous independent/univariate TPE workload only;
+- best-objective values are descriptive and must not be used to rank sample
+  efficiency from this microbenchmark;
+- Optuna 5.1.0.dev remains the differential/oracle source snapshot, whereas the
+  executable comparison uses released Optuna 5.0.0 and Rustuna 0.1.0.
