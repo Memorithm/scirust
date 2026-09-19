@@ -77,6 +77,7 @@ pub mod market;
 pub mod marketmaking;
 pub mod metrics;
 pub mod microstructure;
+pub mod mission;
 pub mod ml_baselines;
 pub mod ml_dataset;
 pub mod model;
