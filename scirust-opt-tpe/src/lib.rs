@@ -819,10 +819,7 @@ impl NumericalParzen {
             let transformed = match (self.kind, value)
             {
                 (NumericalKind::LinearFloat, ParamValue::Float(value)) => value,
-                (NumericalKind::LogFloat, ParamValue::Float(value)) if value > 0.0 =>
-                {
-                    value.ln()
-                },
+                (NumericalKind::LogFloat, ParamValue::Float(value)) if value > 0.0 => value.ln(),
                 (NumericalKind::Integer { .. }, ParamValue::Int(value)) => value as f64,
                 _ => return f64::NAN,
             };
