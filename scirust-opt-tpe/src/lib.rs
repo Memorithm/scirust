@@ -331,6 +331,7 @@ struct NumericalParzen {
     weights: Vec<f64>,
     mus: Vec<f64>,
     sigmas: Vec<f64>,
+    component_factors: Vec<f64>,
     log_component_factors: Vec<f64>,
     adapted_low: f64,
     adapted_high: f64,
@@ -372,12 +373,18 @@ impl NumericalParzen {
                     },
                 }
             })
+            .collect::<Vec<_>>();
+        let component_factors = log_component_factors
+            .iter()
+            .copied()
+            .map(|factor| if factor.is_finite() { factor.exp() } else { 0.0 })
             .collect();
 
         Self {
             weights,
             mus,
             sigmas,
+            component_factors,
             log_component_factors,
             adapted_low,
             adapted_high,
@@ -686,19 +693,7 @@ impl NumericalParzen {
         }
     }
 
-    fn log_pdf(&self, value: ParamValue) -> f64 {
-        let transformed = match (self.kind, value)
-        {
-            (NumericalKind::LinearFloat, ParamValue::Float(value)) => value,
-            (NumericalKind::LogFloat, ParamValue::Float(value)) if value > 0.0 => value.ln(),
-            (NumericalKind::Integer { .. }, ParamValue::Int(value)) => value as f64,
-            _ => return f64::NEG_INFINITY,
-        };
-        if transformed < self.adapted_low || transformed > self.adapted_high
-        {
-            return f64::NEG_INFINITY;
-        }
-
+    fn stable_log_pdf_transformed(&self, transformed: f64) -> f64 {
         let mut max_term = f64::NEG_INFINITY;
         let mut scaled_sum = 0.0_f64;
         for index in 0..self.log_component_factors.len()
@@ -756,6 +751,68 @@ impl NumericalParzen {
         else
         {
             max_term + scaled_sum.ln()
+        }
+    }
+
+    fn log_pdf(&self, value: ParamValue) -> f64 {
+        let transformed = match (self.kind, value)
+        {
+            (NumericalKind::LinearFloat, ParamValue::Float(value)) => value,
+            (NumericalKind::LogFloat, ParamValue::Float(value)) if value > 0.0 => value.ln(),
+            (NumericalKind::Integer { .. }, ParamValue::Int(value)) => value as f64,
+            _ => return f64::NEG_INFINITY,
+        };
+        if transformed < self.adapted_low || transformed > self.adapted_high
+        {
+            return f64::NEG_INFINITY;
+        }
+
+        let mut density = 0.0_f64;
+        match self.kind
+        {
+            NumericalKind::Integer { .. } =>
+            {
+                for index in 0..self.component_factors.len()
+                {
+                    let factor = self.component_factors[index];
+                    if factor <= 0.0
+                    {
+                        continue;
+                    }
+                    let sigma = self.sigmas[index];
+                    let mu = self.mus[index];
+                    let left = transformed - 0.5;
+                    let right = transformed + 0.5;
+                    let numerator =
+                        normal_cdf((right - mu) / sigma) - normal_cdf((left - mu) / sigma);
+                    if numerator.is_finite() && numerator > 0.0
+                    {
+                        density = factor.mul_add(numerator, density);
+                    }
+                }
+            },
+            NumericalKind::LinearFloat | NumericalKind::LogFloat =>
+            {
+                for index in 0..self.component_factors.len()
+                {
+                    let factor = self.component_factors[index];
+                    if factor <= 0.0
+                    {
+                        continue;
+                    }
+                    let z = (transformed - self.mus[index]) / self.sigmas[index];
+                    density = factor.mul_add((-0.5 * z * z).exp(), density);
+                }
+            },
+        }
+
+        if density.is_finite() && density > 0.0
+        {
+            density.ln()
+        }
+        else
+        {
+            self.stable_log_pdf_transformed(transformed)
         }
     }
 }
@@ -905,17 +962,22 @@ impl CategoricalParzen {
         {
             return f64::NEG_INFINITY;
         }
-        let mut terms = Vec::with_capacity(self.weights.len());
-        for index in 0..self.weights.len()
+
+        let probability = self
+            .weights
+            .iter()
+            .copied()
+            .zip(&self.component_probabilities)
+            .map(|(weight, row)| weight * row[choice])
+            .sum::<f64>();
+        if probability > 0.0
         {
-            let weight = self.weights[index];
-            let probability = self.component_probabilities[index][choice];
-            if weight > 0.0 && probability > 0.0
-            {
-                terms.push(weight.ln() + probability.ln());
-            }
+            probability.ln()
         }
-        logsumexp(&terms)
+        else
+        {
+            f64::NEG_INFINITY
+        }
     }
 }
 
@@ -1666,6 +1728,62 @@ mod tests {
             assert_eq!(
                 reference.sample(&mut reference_rng),
                 cached.sample(&mut cached_rng)
+            );
+        }
+    }
+
+    #[test]
+    fn direct_density_matches_stable_logsumexp_for_large_mixtures() {
+        let values = (0..256)
+            .map(|index| {
+                let value = ((index * 73) % 251) as f64 / 251.0;
+                ParamValue::Float(value)
+            })
+            .collect::<Vec<_>>();
+        let distribution = Distribution::Uniform {
+            low: 0.0,
+            high: 1.0,
+        };
+        let model = NumericalParzen::new(
+            ParamId::new(0),
+            &values,
+            &distribution,
+            TpeConfig::default(),
+        )
+        .unwrap();
+
+        for probe in [0.0, 1e-6, 0.01, 0.17, 0.5, 0.83, 0.99, 1.0]
+        {
+            let fast = model.log_pdf(ParamValue::Float(probe));
+            let stable = model.stable_log_pdf_transformed(probe);
+            assert!(
+                close(fast, stable, 2e-13),
+                "probe={probe} fast={fast} stable={stable}"
+            );
+        }
+    }
+
+    #[test]
+    fn direct_integer_density_matches_stable_logsumexp() {
+        let values = (0..128)
+            .map(|index| ParamValue::Int(((index * 17) % 41) as i64 - 20))
+            .collect::<Vec<_>>();
+        let distribution = Distribution::IntRange { low: -20, high: 20 };
+        let model = NumericalParzen::new(
+            ParamId::new(0),
+            &values,
+            &distribution,
+            TpeConfig::default(),
+        )
+        .unwrap();
+
+        for probe in [-20, -13, -1, 0, 7, 19, 20]
+        {
+            let fast = model.log_pdf(ParamValue::Int(probe));
+            let stable = model.stable_log_pdf_transformed(probe as f64);
+            assert!(
+                close(fast, stable, 2e-13),
+                "probe={probe} fast={fast} stable={stable}"
             );
         }
     }
