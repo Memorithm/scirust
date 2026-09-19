@@ -372,24 +372,23 @@ impl NumericalParzen {
             sampling_lower_cdf.push(lower_cdf);
             sampling_cdf_mass.push(denominator);
 
-            let log_factor = if weight <= 0.0
-                || !denominator.is_finite()
-                || denominator <= f64::MIN_POSITIVE
-            {
-                f64::NEG_INFINITY
-            }
-            else
-            {
-                let base = weight.ln() - denominator.ln();
-                match kind
+            let log_factor =
+                if weight <= 0.0 || !denominator.is_finite() || denominator <= f64::MIN_POSITIVE
                 {
-                    NumericalKind::Integer { .. } => base,
-                    NumericalKind::LinearFloat | NumericalKind::LogFloat =>
-                    {
-                        base - (SQRT_2PI * sigma).ln()
-                    },
+                    f64::NEG_INFINITY
                 }
-            };
+                else
+                {
+                    let base = weight.ln() - denominator.ln();
+                    match kind
+                    {
+                        NumericalKind::Integer { .. } => base,
+                        NumericalKind::LinearFloat | NumericalKind::LogFloat =>
+                        {
+                            base - (SQRT_2PI * sigma).ln()
+                        },
+                    }
+                };
             log_component_factors.push(log_factor);
             component_factors.push(
                 if log_factor.is_finite()
@@ -1231,13 +1230,7 @@ fn normal_inverse_cdf(probability: f64) -> f64 {
 }
 
 #[cfg(test)]
-fn sample_truncated_normal(
-    rng: &mut SplitMix64,
-    mu: f64,
-    sigma: f64,
-    low: f64,
-    high: f64,
-) -> f64 {
+fn sample_truncated_normal(rng: &mut SplitMix64, mu: f64, sigma: f64, low: f64, high: f64) -> f64 {
     let lower = normal_cdf((low - mu) / sigma);
     let upper = normal_cdf((high - mu) / sigma);
     sample_truncated_normal_from_cdf(rng, mu, sigma, low, high, lower, upper - lower)
