@@ -337,6 +337,7 @@ struct NumericalParzen {
 }
 
 impl NumericalParzen {
+    #[cfg(test)]
     fn new(
         param: ParamId,
         observations: &[ParamValue],
@@ -688,6 +689,7 @@ struct CategoricalParzen {
 }
 
 impl CategoricalParzen {
+    #[cfg(test)]
     fn new(
         param: ParamId,
         observations: &[ParamValue],
@@ -845,6 +847,7 @@ enum ParzenModel {
 }
 
 impl ParzenModel {
+    #[cfg(test)]
     fn new(
         param: ParamId,
         observations: &[ParamValue],
