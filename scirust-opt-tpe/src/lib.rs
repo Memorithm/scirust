@@ -331,12 +331,61 @@ struct NumericalParzen {
     weights: Vec<f64>,
     mus: Vec<f64>,
     sigmas: Vec<f64>,
+    log_component_factors: Vec<f64>,
     adapted_low: f64,
     adapted_high: f64,
     kind: NumericalKind,
 }
 
 impl NumericalParzen {
+    fn from_components(
+        weights: Vec<f64>,
+        mus: Vec<f64>,
+        sigmas: Vec<f64>,
+        adapted_low: f64,
+        adapted_high: f64,
+        kind: NumericalKind,
+    ) -> Self {
+        let log_component_factors = weights
+            .iter()
+            .copied()
+            .zip(mus.iter().copied())
+            .zip(sigmas.iter().copied())
+            .map(|((weight, mu), sigma)| {
+                if weight <= 0.0 || !sigma.is_finite() || sigma <= 0.0
+                {
+                    return f64::NEG_INFINITY;
+                }
+                let denominator =
+                    normal_cdf((adapted_high - mu) / sigma)
+                        - normal_cdf((adapted_low - mu) / sigma);
+                if !denominator.is_finite() || denominator <= f64::MIN_POSITIVE
+                {
+                    return f64::NEG_INFINITY;
+                }
+                let base = weight.ln() - denominator.ln();
+                match kind
+                {
+                    NumericalKind::Integer { .. } => base,
+                    NumericalKind::LinearFloat | NumericalKind::LogFloat =>
+                    {
+                        base - (SQRT_2PI * sigma).ln()
+                    },
+                }
+            })
+            .collect();
+
+        Self {
+            weights,
+            mus,
+            sigmas,
+            log_component_factors,
+            adapted_low,
+            adapted_high,
+            kind,
+        }
+    }
+
     #[cfg(test)]
     fn new(
         param: ParamId,
