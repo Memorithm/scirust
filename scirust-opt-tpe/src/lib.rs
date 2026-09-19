@@ -1733,6 +1733,62 @@ mod tests {
     }
 
     #[test]
+    fn direct_density_matches_stable_logsumexp_for_large_mixtures() {
+        let values = (0..256)
+            .map(|index| {
+                let value = ((index * 73) % 251) as f64 / 251.0;
+                ParamValue::Float(value)
+            })
+            .collect::<Vec<_>>();
+        let distribution = Distribution::Uniform {
+            low: 0.0,
+            high: 1.0,
+        };
+        let model = NumericalParzen::new(
+            ParamId::new(0),
+            &values,
+            &distribution,
+            TpeConfig::default(),
+        )
+        .unwrap();
+
+        for probe in [0.0, 1e-6, 0.01, 0.17, 0.5, 0.83, 0.99, 1.0]
+        {
+            let fast = model.log_pdf(ParamValue::Float(probe));
+            let stable = model.stable_log_pdf_transformed(probe);
+            assert!(
+                close(fast, stable, 2e-13),
+                "probe={probe} fast={fast} stable={stable}"
+            );
+        }
+    }
+
+    #[test]
+    fn direct_integer_density_matches_stable_logsumexp() {
+        let values = (0..128)
+            .map(|index| ParamValue::Int(((index * 17) % 41) as i64 - 20))
+            .collect::<Vec<_>>();
+        let distribution = Distribution::IntRange { low: -20, high: 20 };
+        let model = NumericalParzen::new(
+            ParamId::new(0),
+            &values,
+            &distribution,
+            TpeConfig::default(),
+        )
+        .unwrap();
+
+        for probe in [-20, -13, -1, 0, 7, 19, 20]
+        {
+            let fast = model.log_pdf(ParamValue::Int(probe));
+            let stable = model.stable_log_pdf_transformed(probe as f64);
+            assert!(
+                close(fast, stable, 2e-13),
+                "probe={probe} fast={fast} stable={stable}"
+            );
+        }
+    }
+
+    #[test]
     fn startup_and_tpe_are_reproducible() {
         fn run() -> Vec<f64> {
             let mut study = Study::new(one_dimensional_space(), 1).unwrap();
