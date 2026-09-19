@@ -1526,12 +1526,7 @@ mod tests {
         for (index, value) in values.iter().copied().enumerate()
         {
             history
-                .upsert(
-                    param,
-                    TrialId::new(index as u64),
-                    value,
-                    &distribution,
-                )
+                .upsert(param, TrialId::new(index as u64), value, &distribution)
                 .unwrap();
         }
         let selected_values = values
@@ -1540,13 +1535,8 @@ mod tests {
             .zip(selected.iter().copied())
             .filter_map(|(value, selected)| selected.then_some(value))
             .collect::<Vec<_>>();
-        let reference = ParzenModel::new(
-            param,
-            &selected_values,
-            &distribution,
-            TpeConfig::default(),
-        )
-        .unwrap();
+        let reference =
+            ParzenModel::new(param, &selected_values, &distribution, TpeConfig::default()).unwrap();
         let cached = ParzenModel::new_cached(
             param,
             &history,
@@ -1566,9 +1556,7 @@ mod tests {
                 ParamValue::Float(raw)
             })
             .collect::<Vec<_>>();
-        let selected = (0..30)
-            .map(|index| index % 4 != 1)
-            .collect::<Vec<_>>();
+        let selected = (0..30).map(|index| index % 4 != 1).collect::<Vec<_>>();
         let (reference, cached) = cached_model(
             &values,
             &selected,
@@ -1606,9 +1594,7 @@ mod tests {
         let values = (0..36)
             .map(|index| ParamValue::Categorical(((index * 5) % 4) as u32))
             .collect::<Vec<_>>();
-        let selected = (0..36)
-            .map(|index| index % 5 != 2)
-            .collect::<Vec<_>>();
+        let selected = (0..36).map(|index| index % 5 != 2).collect::<Vec<_>>();
         let (reference, cached) = cached_model(
             &values,
             &selected,
