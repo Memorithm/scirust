@@ -1516,6 +1516,128 @@ mod tests {
         .unwrap()
     }
 
+    fn cached_model(
+        values: &[ParamValue],
+        selected: &[bool],
+        distribution: Distribution,
+    ) -> (ParzenModel, ParzenModel) {
+        let param = ParamId::new(0);
+        let mut history = ParamHistoryCache::default();
+        for (index, value) in values.iter().copied().enumerate()
+        {
+            history
+                .upsert(
+                    param,
+                    TrialId::new(index as u64),
+                    value,
+                    &distribution,
+                )
+                .unwrap();
+        }
+        let selected_values = values
+            .iter()
+            .copied()
+            .zip(selected.iter().copied())
+            .filter_map(|(value, selected)| selected.then_some(value))
+            .collect::<Vec<_>>();
+        let reference = ParzenModel::new(
+            param,
+            &selected_values,
+            &distribution,
+            TpeConfig::default(),
+        )
+        .unwrap();
+        let cached = ParzenModel::new_cached(
+            param,
+            &history,
+            selected,
+            &distribution,
+            TpeConfig::default(),
+        )
+        .unwrap();
+        (reference, cached)
+    }
+
+    #[test]
+    fn cached_numerical_parzen_preserves_reference_sampling_sequence() {
+        let values = (0..30)
+            .map(|index| {
+                let raw = ((index * 17) % 29) as f64 / 29.0;
+                ParamValue::Float(raw)
+            })
+            .collect::<Vec<_>>();
+        let selected = (0..30)
+            .map(|index| index % 4 != 1)
+            .collect::<Vec<_>>();
+        let (reference, cached) = cached_model(
+            &values,
+            &selected,
+            Distribution::Uniform {
+                low: 0.0,
+                high: 1.0,
+            },
+        );
+
+        for probe in [0.01, 0.17, 0.43, 0.77, 0.99]
+        {
+            assert!(
+                close(
+                    reference.log_pdf(ParamValue::Float(probe)),
+                    cached.log_pdf(ParamValue::Float(probe)),
+                    1e-14,
+                ),
+                "probe={probe}"
+            );
+        }
+
+        let mut reference_rng = SplitMix64::new(0x1234);
+        let mut cached_rng = SplitMix64::new(0x1234);
+        for _ in 0..64
+        {
+            assert_eq!(
+                reference.sample(&mut reference_rng),
+                cached.sample(&mut cached_rng)
+            );
+        }
+    }
+
+    #[test]
+    fn cached_categorical_parzen_preserves_reference_sampling_sequence() {
+        let values = (0..36)
+            .map(|index| ParamValue::Categorical(((index * 5) % 4) as u32))
+            .collect::<Vec<_>>();
+        let selected = (0..36)
+            .map(|index| index % 5 != 2)
+            .collect::<Vec<_>>();
+        let (reference, cached) = cached_model(
+            &values,
+            &selected,
+            Distribution::Categorical { cardinality: 4 },
+        );
+
+        for choice in 0..4
+        {
+            assert!(
+                close(
+                    reference.log_pdf(ParamValue::Categorical(choice)),
+                    cached.log_pdf(ParamValue::Categorical(choice)),
+                    1e-14,
+                ),
+                "choice={choice}"
+            );
+        }
+
+        let mut reference_rng = SplitMix64::new(0x5678);
+        let mut cached_rng = SplitMix64::new(0x5678);
+        for _ in 0..64
+        {
+            assert_eq!(
+                reference.sample(&mut reference_rng),
+                cached.sample(&mut cached_rng)
+            );
+        }
+    }
+
     #[test]
     fn startup_and_tpe_are_reproducible() {
         fn run() -> Vec<f64> {
