@@ -1055,44 +1055,6 @@ fn compare_ranked(direction: Direction, left: &RankedTrial, right: &RankedTrial)
     objective_order.then_with(|| left.id.cmp(&right.id))
 }
 
-fn merge_trial_ids(completed: &BTreeSet<TrialId>, running: &BTreeSet<TrialId>) -> Vec<TrialId> {
-    let mut completed = completed.iter().copied().peekable();
-    let mut running = running.iter().copied().peekable();
-    let mut merged = Vec::with_capacity(completed.len() + running.len());
-
-    loop
-    {
-        match (completed.peek().copied(), running.peek().copied())
-        {
-            (Some(left), Some(right)) if left <= right =>
-            {
-                merged.push(left);
-                completed.next();
-                if left == right
-                {
-                    running.next();
-                }
-            },
-            (Some(_), Some(right)) =>
-            {
-                merged.push(right);
-                running.next();
-            },
-            (Some(left), None) =>
-            {
-                merged.push(left);
-                completed.next();
-            },
-            (None, Some(right)) =>
-            {
-                merged.push(right);
-                running.next();
-            },
-            (None, None) => break,
-        }
-    }
-    merged
-}
 
 /// Correctness-oriented independent TPE sampler.
 #[derive(Debug, Clone)]
@@ -1106,6 +1068,7 @@ pub struct TpeSampler {
     below_complete: BTreeSet<TrialId>,
     above_complete: BTreeSet<TrialId>,
     running: BTreeSet<TrialId>,
+    param_history: Vec<ParamHistoryCache>,
 }
 
 impl TpeSampler {
@@ -1125,6 +1088,7 @@ impl TpeSampler {
             below_complete: BTreeSet::new(),
             above_complete: BTreeSet::new(),
             running: BTreeSet::new(),
+            param_history: Vec::new(),
         }
     }
 
@@ -1166,6 +1130,7 @@ impl TpeSampler {
         self.below_complete.clear();
         self.above_complete.clear();
         self.running.clear();
+        self.param_history.clear();
     }
 
     fn insert_complete(&mut self, trial: RankedTrial) {
@@ -1215,7 +1180,18 @@ impl TpeSampler {
         }
     }
 
-    fn apply_event(&mut self, event: &StudyEvent) {
+    fn ensure_param_history(&mut self, study: StudyView<'_>) {
+        if self.param_history.len() != study.search_space().len()
+        {
+            self.param_history = vec![ParamHistoryCache::default(); study.search_space().len()];
+        }
+    }
+
+    fn apply_event(
+        &mut self,
+        study: StudyView<'_>,
+        event: &StudyEvent,
+    ) -> Result<(), TpeError> {
         match event
         {
             StudyEvent::TrialStarted { trial } =>
@@ -1237,51 +1213,63 @@ impl TpeSampler {
             {
                 self.running.remove(trial);
             },
-            StudyEvent::TrialReserved { .. } | StudyEvent::ParameterAssigned { .. } =>
-            {},
+            StudyEvent::ParameterAssigned {
+                trial,
+                param,
+                value,
+            } =>
+            {
+                let Some(spec) = study.search_space().parameter(*param)
+                else
+                {
+                    return Err(TpeError::InvalidObservation(*param));
+                };
+                let Some(history) = self.param_history.get_mut(param.index())
+                else
+                {
+                    return Err(TpeError::InvalidObservation(*param));
+                };
+                history.upsert(*param, *trial, *value, &spec.distribution)?;
+            },
+            StudyEvent::TrialReserved { .. } => {},
         }
+        Ok(())
     }
 
-    fn sync_history(&mut self, study: StudyView<'_>) {
+    fn sync_history(&mut self, study: StudyView<'_>) -> Result<(), TpeError> {
         let prefix_matches = self.event_cursor == 0
             || study.events().get(self.event_cursor.saturating_sub(1)) == self.last_event.as_ref();
         if study.events().len() < self.event_cursor || !prefix_matches
         {
             self.reset_history();
         }
+        self.ensure_param_history(study);
 
         if let Some(events) = study.events_since(self.event_cursor)
         {
             for event in events
             {
-                self.apply_event(event);
+                self.apply_event(study, event)?;
             }
             self.event_cursor = study.events().len();
             self.last_event = study.events().last().cloned();
         }
-    }
-
-    fn observations_for(study: StudyView<'_>, ids: &[TrialId], param: ParamId) -> Vec<ParamValue> {
-        ids.iter()
-            .copied()
-            .filter_map(|id| study.trials().param_value(id, param))
-            .collect()
+        Ok(())
     }
 
     fn sample_tpe_value(
         config: TpeConfig,
         rng: &mut SplitMix64,
-        study: StudyView<'_>,
-        below_ids: &[TrialId],
-        above_ids: &[TrialId],
+        history: &ParamHistoryCache,
+        below_mask: &[bool],
+        above_mask: &[bool],
         param: ParamId,
         distribution: &Distribution,
     ) -> Result<ParamValue, TpeError> {
-        let below = Self::observations_for(study, below_ids, param);
-        let above = Self::observations_for(study, above_ids, param);
-
-        let below_model = ParzenModel::new(param, &below, distribution, config)?;
-        let above_model = ParzenModel::new(param, &above, distribution, config)?;
+        let below_model =
+            ParzenModel::new_cached(param, history, below_mask, distribution, config)?;
+        let above_model =
+            ParzenModel::new_cached(param, history, above_mask, distribution, config)?;
 
         let mut best_value = below_model.sample(rng);
         let mut best_score = below_model.log_pdf(best_value) - above_model.log_pdf(best_value);
@@ -1309,17 +1297,38 @@ impl Sampler for TpeSampler {
             return Err(TpeError::UnsupportedObjectiveCount(objective_count));
         }
 
-        self.sync_history(study);
+        self.sync_history(study)?;
         let use_random = self.ranked_complete.len() < self.config.n_startup_trials;
-        let below_ids = self.below_complete.iter().copied().collect::<Vec<_>>();
-        let above_ids = if self.config.constant_liar
+        let trial_count = study.trials().len();
+        let mut below_mask = vec![false; trial_count];
+        let mut above_mask = vec![false; trial_count];
+        for trial in &self.below_complete
         {
-            merge_trial_ids(&self.above_complete, &self.running)
+            if let Ok(index) = usize::try_from(trial.get())
+                && let Some(slot) = below_mask.get_mut(index)
+            {
+                *slot = true;
+            }
         }
-        else
+        for trial in &self.above_complete
         {
-            self.above_complete.iter().copied().collect::<Vec<_>>()
-        };
+            if let Ok(index) = usize::try_from(trial.get())
+                && let Some(slot) = above_mask.get_mut(index)
+            {
+                *slot = true;
+            }
+        }
+        if self.config.constant_liar
+        {
+            for trial in &self.running
+            {
+                if let Ok(index) = usize::try_from(trial.get())
+                    && let Some(slot) = above_mask.get_mut(index)
+                {
+                    *slot = true;
+                }
+            }
+        }
 
         let space = study.search_space();
         let mut candidate = Candidate::empty(space);
@@ -1336,12 +1345,17 @@ impl Sampler for TpeSampler {
             }
             else
             {
+                let Some(history) = self.param_history.get(spec.id.index())
+                else
+                {
+                    return Err(TpeError::InvalidObservation(spec.id));
+                };
                 Self::sample_tpe_value(
                     config,
                     &mut self.rng,
-                    study,
-                    &below_ids,
-                    &above_ids,
+                    history,
+                    &below_mask,
+                    &above_mask,
                     spec.id,
                     &spec.distribution,
                 )?
