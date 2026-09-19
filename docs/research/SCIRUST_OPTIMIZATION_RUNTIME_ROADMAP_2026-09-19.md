@@ -160,10 +160,17 @@ Additional measured kernel progress:
 - the remaining SciRust/Rustuna proposal ratio is about
   1.215x / 1.286x / 1.273x.
 
-Next measured kernel step: reuse model-construction scratch buffers
-(`selected_sorted`, `sigma_by_trial`, masks and component capacities) to
-remove repeated allocations. Architecture-specific AArch64 SIMD/SVE follows
-only after these scalar/layout costs are exhausted.
+Additional layout progress:
+- `selected_sorted`, `sigma_by_trial`, and proposal below/above masks now
+  reuse sampler-owned buffers instead of reallocating per model/proposal;
+- controlled 1000-trial medians improve another 4.38% / 4.23% / 1.92% at
+  1/5/10 dimensions;
+- the remaining SciRust/Rustuna proposal ratio is about
+  1.162x / 1.232x / 1.248x.
+
+Next measured kernel step: reuse numerical Parzen component-array capacities
+(weights, means, sigmas, density factors and sampling CDF state). The
+component-major batch loop is then the intended AArch64 SIMD/SVE target.
 
 Move sampler hot paths into contiguous kernels:
 
