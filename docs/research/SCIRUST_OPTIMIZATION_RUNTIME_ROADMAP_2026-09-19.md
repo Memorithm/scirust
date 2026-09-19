@@ -137,17 +137,24 @@ Status: **active implementation**.
 Measured progress:
 - cached numerical/categorical observation ordering is in place;
 - truncated-normal normalization is precomputed once per mixture component;
-- numerical log-density uses allocation-free streaming log-sum-exp;
-- controlled Thor benchmark at 1000 trials: SciRust is 13.7x–18.2x faster
+- direct probability-density accumulation has a stable log-domain fallback;
+- the 24 EI candidates are scored in a component-major batch instead of
+  reparsing the same component arrays candidate by candidate;
+- scalar density paths remain as differential test oracles;
+- controlled Thor benchmark at 1000 trials: SciRust is 13.6x–18.1x faster
   than Optuna 5.0.0 in the tested univariate regime;
-- controlled Thor benchmark at 1000 trials: SciRust remains 1.33x–1.41x
-  slower than Rustuna 0.1.0, which is the immediate latency target;
+- batched density scoring improves SciRust median proposal latency by about
+  5.1% / 7.5% / 4.0% at 1/5/10 dimensions versus the pre-batch code, with all
+  five paired seeds improving in every 1000-trial cell;
+- the remaining SciRust/Rustuna latency ratio is about 1.26x / 1.31x / 1.34x
+  at 1/5/10 dimensions;
 - SciRust median process peak RSS remains about 2.5–3.25 MiB versus
   15–17 MiB Rustuna and about 49–51 MiB Optuna in those cells.
 
-Next measured kernel step: direct density accumulation with stable log-domain
-fallback, followed by batched/SIMD candidate scoring only if the scalar step
-does not close the Rustuna gap.
+Next measured kernel step: precompute truncated-normal sampling CDF bounds that
+currently repeat for every sampled EI candidate, then remove remaining temporary
+mask/sigma allocations. Architecture-specific AArch64 SIMD/SVE follows only
+after these scalar/layout costs are exhausted.
 
 Move sampler hot paths into contiguous kernels:
 
