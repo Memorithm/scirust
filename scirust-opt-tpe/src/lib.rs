@@ -814,7 +814,7 @@ impl NumericalParzen {
         density: &mut Vec<f64>,
     ) {
         transformed.clear();
-        transformed.reserve(values.len().saturating_sub(transformed.capacity()));
+        transformed.reserve(values.len());
         transformed.extend(values.iter().copied().map(|value| {
             let transformed = match (self.kind, value)
             {
@@ -1577,11 +1577,7 @@ impl TpeSampler {
             ParzenModel::new_cached(param, history, masks.above, distribution, config, scratch)?;
 
         scratch.candidates.clear();
-        scratch.candidates.reserve(
-            config
-                .n_ei_candidates
-                .saturating_sub(scratch.candidates.capacity()),
-        );
+        scratch.candidates.reserve(config.n_ei_candidates);
         for _ in 0..config.n_ei_candidates
         {
             scratch.candidates.push(below_model.sample(rng));
