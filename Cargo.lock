@@ -3683,6 +3683,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "scirust-opt-bench"
+version = "0.1.0"
+dependencies = [
+ "scirust-opt-core",
+ "scirust-opt-tpe",
+]
+
+[[package]]
 name = "scirust-opt-core"
 version = "0.1.0"
 
