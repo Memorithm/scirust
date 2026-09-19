@@ -1032,39 +1032,6 @@ fn sample_truncated_normal(rng: &mut SplitMix64, mu: f64, sigma: f64, low: f64, 
     (mu + sigma * normal_inverse_cdf(probability)).clamp(low, high)
 }
 
-fn truncated_normal_pdf(value: f64, mu: f64, sigma: f64, low: f64, high: f64) -> f64 {
-    if value < low || value > high || !sigma.is_finite() || sigma <= 0.0
-    {
-        return 0.0;
-    }
-    let denominator = normal_cdf((high - mu) / sigma) - normal_cdf((low - mu) / sigma);
-    if !denominator.is_finite() || denominator <= f64::MIN_POSITIVE
-    {
-        return 0.0;
-    }
-    let z = (value - mu) / sigma;
-    (-0.5 * z * z).exp() / (SQRT_2PI * sigma * denominator)
-}
-
-fn truncated_discrete_mass(value: f64, mu: f64, sigma: f64, low: f64, high: f64) -> f64 {
-    if !sigma.is_finite() || sigma <= 0.0
-    {
-        return 0.0;
-    }
-    let left = value - 0.5;
-    let right = value + 0.5;
-    let numerator = normal_cdf((right - mu) / sigma) - normal_cdf((left - mu) / sigma);
-    let denominator = normal_cdf((high - mu) / sigma) - normal_cdf((low - mu) / sigma);
-    if !numerator.is_finite()
-        || numerator <= 0.0
-        || !denominator.is_finite()
-        || denominator <= f64::MIN_POSITIVE
-    {
-        return 0.0;
-    }
-    numerator / denominator
-}
-
 fn logsumexp(values: &[f64]) -> f64 {
     if values.is_empty()
     {
