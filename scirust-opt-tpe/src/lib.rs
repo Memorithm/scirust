@@ -259,11 +259,7 @@ impl ParamHistoryCache {
         Ok(transformed)
     }
 
-    fn sorted_numeric_position(
-        &self,
-        transformed: f64,
-        trial: TrialId,
-    ) -> Result<usize, usize> {
+    fn sorted_numeric_position(&self, transformed: f64, trial: TrialId) -> Result<usize, usize> {
         self.numeric_sorted.binary_search_by(|probe| {
             probe
                 .transformed
@@ -308,13 +304,8 @@ impl ParamHistoryCache {
             let position = self
                 .sorted_numeric_position(transformed, trial)
                 .unwrap_or_else(|position| position);
-            self.numeric_sorted.insert(
-                position,
-                SortedNumericObservation {
-                    transformed,
-                    trial,
-                },
-            );
+            self.numeric_sorted
+                .insert(position, SortedNumericObservation { transformed, trial });
         }
         Ok(())
     }
@@ -561,8 +552,8 @@ impl NumericalParzen {
                 }
                 else if position + 1 == n_observations
                 {
-                    sigma = observation.transformed
-                        - selected_sorted[n_observations - 2].transformed;
+                    sigma =
+                        observation.transformed - selected_sorted[n_observations - 2].transformed;
                 }
             }
             let trial_index = usize::try_from(observation.trial.get())
@@ -884,13 +875,7 @@ impl ParzenModel {
         match distribution
         {
             Distribution::Categorical { cardinality } => Ok(Self::Categorical(
-                CategoricalParzen::new_cached(
-                    param,
-                    history,
-                    mask,
-                    *cardinality,
-                    config,
-                )?,
+                CategoricalParzen::new_cached(param, history, mask, *cardinality, config)?,
             )),
             _ => Ok(Self::Numerical(NumericalParzen::new_cached(
                 param,
@@ -1055,7 +1040,6 @@ fn compare_ranked(direction: Direction, left: &RankedTrial, right: &RankedTrial)
     objective_order.then_with(|| left.id.cmp(&right.id))
 }
 
-
 /// Correctness-oriented independent TPE sampler.
 #[derive(Debug, Clone)]
 pub struct TpeSampler {
@@ -1187,11 +1171,7 @@ impl TpeSampler {
         }
     }
 
-    fn apply_event(
-        &mut self,
-        study: StudyView<'_>,
-        event: &StudyEvent,
-    ) -> Result<(), TpeError> {
+    fn apply_event(&mut self, study: StudyView<'_>, event: &StudyEvent) -> Result<(), TpeError> {
         match event
         {
             StudyEvent::TrialStarted { trial } =>
@@ -1231,7 +1211,8 @@ impl TpeSampler {
                 };
                 history.upsert(*param, *trial, *value, &spec.distribution)?;
             },
-            StudyEvent::TrialReserved { .. } => {},
+            StudyEvent::TrialReserved { .. } =>
+            {},
         }
         Ok(())
     }
