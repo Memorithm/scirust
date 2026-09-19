@@ -151,10 +151,19 @@ Measured progress:
 - SciRust median process peak RSS remains about 2.5–3.25 MiB versus
   15–17 MiB Rustuna and about 49–51 MiB Optuna in those cells.
 
-Next measured kernel step: precompute truncated-normal sampling CDF bounds that
-currently repeat for every sampled EI candidate, then remove remaining temporary
-mask/sigma allocations. Architecture-specific AArch64 SIMD/SVE follows only
-after these scalar/layout costs are exhausted.
+Additional measured kernel progress:
+- truncated-normal lower CDF and CDF mass are now cached per mixture component;
+- numerical cached-model weighting no longer materializes a trial-sized
+  `weight_by_trial` buffer or performs its extra chronological scan;
+- controlled 1000-trial Thor medians improve another 3.41% / 1.92% / 4.67% at
+  1/5/10 dimensions, with all five paired seeds improving in every cell;
+- the remaining SciRust/Rustuna proposal ratio is about
+  1.215x / 1.286x / 1.273x.
+
+Next measured kernel step: reuse model-construction scratch buffers
+(`selected_sorted`, `sigma_by_trial`, masks and component capacities) to
+remove repeated allocations. Architecture-specific AArch64 SIMD/SVE follows
+only after these scalar/layout costs are exhausted.
 
 Move sampler hot paths into contiguous kernels:
 
