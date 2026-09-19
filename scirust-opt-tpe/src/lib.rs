@@ -250,6 +250,10 @@ struct SortedNumericObservation {
 struct NumericalBuildScratch {
     selected_sorted: Vec<SortedNumericObservation>,
     sigma_by_trial: Vec<f64>,
+    candidates: Vec<ParamValue>,
+    transformed_candidates: Vec<f64>,
+    below_scores: Vec<f64>,
+    above_scores: Vec<f64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -803,51 +807,55 @@ impl NumericalParzen {
         }
     }
 
-    fn log_pdf_batch(&self, values: &[ParamValue]) -> Vec<f64> {
-        let transformed = values
-            .iter()
-            .copied()
-            .map(|value| {
-                let transformed = match (self.kind, value)
+    fn log_pdf_batch_into(
+        &self,
+        values: &[ParamValue],
+        transformed: &mut Vec<f64>,
+        density: &mut Vec<f64>,
+    ) {
+        transformed.clear();
+        transformed.reserve(values.len().saturating_sub(transformed.capacity()));
+        transformed.extend(values.iter().copied().map(|value| {
+            let transformed = match (self.kind, value)
+            {
+                (NumericalKind::LinearFloat, ParamValue::Float(value)) => value,
+                (NumericalKind::LogFloat, ParamValue::Float(value)) if value > 0.0 =>
                 {
-                    (NumericalKind::LinearFloat, ParamValue::Float(value)) => value,
-                    (NumericalKind::LogFloat, ParamValue::Float(value)) if value > 0.0 =>
-                    {
-                        value.ln()
-                    },
-                    (NumericalKind::Integer { .. }, ParamValue::Int(value)) => value as f64,
-                    _ => return f64::NAN,
-                };
-                if transformed < self.adapted_low || transformed > self.adapted_high
-                {
-                    f64::NAN
-                }
-                else
-                {
-                    transformed
-                }
-            })
-            .collect::<Vec<_>>();
-        let mut density = vec![0.0_f64; values.len()];
+                    value.ln()
+                },
+                (NumericalKind::Integer { .. }, ParamValue::Int(value)) => value as f64,
+                _ => return f64::NAN,
+            };
+            if transformed < self.adapted_low || transformed > self.adapted_high
+            {
+                f64::NAN
+            }
+            else
+            {
+                transformed
+            }
+        }));
+
+        density.clear();
+        density.resize(values.len(), 0.0);
 
         if self
             .component_factors
             .iter()
             .any(|factor| !factor.is_finite())
         {
-            return transformed
-                .into_iter()
-                .map(|value| {
-                    if value.is_nan()
-                    {
-                        f64::NEG_INFINITY
-                    }
-                    else
-                    {
-                        self.log_pdf_stable_transformed(value)
-                    }
-                })
-                .collect();
+            for (candidate, output) in transformed.iter().copied().zip(density.iter_mut())
+            {
+                *output = if candidate.is_nan()
+                {
+                    f64::NEG_INFINITY
+                }
+                else
+                {
+                    self.log_pdf_stable_transformed(candidate)
+                };
+            }
+            return;
         }
 
         for index in 0..self.component_factors.len()
@@ -863,7 +871,7 @@ impl NumericalParzen {
             {
                 NumericalKind::Integer { .. } =>
                 {
-                    for (candidate, output) in transformed.iter().zip(&mut density)
+                    for (candidate, output) in transformed.iter().zip(density.iter_mut())
                     {
                         if candidate.is_nan()
                         {
@@ -881,7 +889,7 @@ impl NumericalParzen {
                 },
                 NumericalKind::LinearFloat | NumericalKind::LogFloat =>
                 {
-                    for (candidate, output) in transformed.iter().zip(&mut density)
+                    for (candidate, output) in transformed.iter().zip(density.iter_mut())
                     {
                         if candidate.is_nan()
                         {
@@ -894,7 +902,7 @@ impl NumericalParzen {
             }
         }
 
-        for (candidate, output) in transformed.into_iter().zip(&mut density)
+        for (candidate, output) in transformed.iter().copied().zip(density.iter_mut())
         {
             *output = if candidate.is_nan()
             {
@@ -909,6 +917,13 @@ impl NumericalParzen {
                 self.log_pdf_stable_transformed(candidate)
             };
         }
+    }
+
+    #[cfg(test)]
+    fn log_pdf_batch(&self, values: &[ParamValue]) -> Vec<f64> {
+        let mut transformed = Vec::new();
+        let mut density = Vec::new();
+        self.log_pdf_batch_into(values, &mut transformed, &mut density);
         density
     }
 
@@ -1202,16 +1217,29 @@ impl ParzenModel {
         }
     }
 
-    fn log_pdf_batch(&self, values: &[ParamValue]) -> Vec<f64> {
+    fn log_pdf_batch_into(
+        &self,
+        values: &[ParamValue],
+        transformed: &mut Vec<f64>,
+        output: &mut Vec<f64>,
+    ) {
         match self
         {
-            Self::Numerical(model) => model.log_pdf_batch(values),
-            Self::Categorical(model) => values
-                .iter()
-                .copied()
-                .map(|value| model.log_pdf(value))
-                .collect(),
+            Self::Numerical(model) => model.log_pdf_batch_into(values, transformed, output),
+            Self::Categorical(model) =>
+            {
+                output.clear();
+                output.extend(values.iter().copied().map(|value| model.log_pdf(value)));
+            },
         }
+    }
+
+    #[cfg(test)]
+    fn log_pdf_batch(&self, values: &[ParamValue]) -> Vec<f64> {
+        let mut transformed = Vec::new();
+        let mut output = Vec::new();
+        self.log_pdf_batch_into(values, &mut transformed, &mut output);
+        output
     }
 }
 
@@ -1548,24 +1576,40 @@ impl TpeSampler {
         let above_model =
             ParzenModel::new_cached(param, history, masks.above, distribution, config, scratch)?;
 
-        let candidates = (0..config.n_ei_candidates)
-            .map(|_| below_model.sample(rng))
-            .collect::<Vec<_>>();
-        let below_scores = below_model.log_pdf_batch(&candidates);
-        let above_scores = above_model.log_pdf_batch(&candidates);
+        scratch.candidates.clear();
+        scratch.candidates.reserve(
+            config
+                .n_ei_candidates
+                .saturating_sub(scratch.candidates.capacity()),
+        );
+        for _ in 0..config.n_ei_candidates
+        {
+            scratch.candidates.push(below_model.sample(rng));
+        }
+
+        below_model.log_pdf_batch_into(
+            &scratch.candidates,
+            &mut scratch.transformed_candidates,
+            &mut scratch.below_scores,
+        );
+        above_model.log_pdf_batch_into(
+            &scratch.candidates,
+            &mut scratch.transformed_candidates,
+            &mut scratch.above_scores,
+        );
 
         let mut best_index = 0;
-        let mut best_score = below_scores[0] - above_scores[0];
-        for index in 1..candidates.len()
+        let mut best_score = scratch.below_scores[0] - scratch.above_scores[0];
+        for index in 1..scratch.candidates.len()
         {
-            let score = below_scores[index] - above_scores[index];
+            let score = scratch.below_scores[index] - scratch.above_scores[index];
             if score.total_cmp(&best_score) == Ordering::Greater
             {
                 best_index = index;
                 best_score = score;
             }
         }
-        Ok(candidates[best_index])
+        Ok(scratch.candidates[best_index])
     }
 }
 
