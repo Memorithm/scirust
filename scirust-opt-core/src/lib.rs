@@ -1140,11 +1140,16 @@ impl std::error::Error for TrialError {}
 pub struct StudyView<'a> {
     space: &'a SearchSpace,
     trials: &'a TrialStore,
+    events: &'a [StudyEvent],
 }
 
 impl<'a> StudyView<'a> {
-    fn new(space: &'a SearchSpace, trials: &'a TrialStore) -> Self {
-        Self { space, trials }
+    fn new(space: &'a SearchSpace, trials: &'a TrialStore, events: &'a [StudyEvent]) -> Self {
+        Self {
+            space,
+            trials,
+            events,
+        }
     }
 
     /// Return the compiled search space.
@@ -1155,6 +1160,16 @@ impl<'a> StudyView<'a> {
     /// Return the read-only trial store.
     pub const fn trials(self) -> &'a TrialStore {
         self.trials
+    }
+
+    /// Return the canonical append-only event prefix visible to the sampler.
+    pub const fn events(self) -> &'a [StudyEvent] {
+        self.events
+    }
+
+    /// Return events at or after a sampler-maintained watermark.
+    pub fn events_since(self, cursor: usize) -> Option<&'a [StudyEvent]> {
+        self.events.get(cursor..)
     }
 }
 
@@ -1449,7 +1464,7 @@ impl Study {
     {
         let trial = self.reserve().map_err(AskError::Reservation)?;
         let candidate = {
-            let view = StudyView::new(&self.space, &self.store);
+            let view = StudyView::new(&self.space, &self.store, &self.events);
             match sampler.sample(view, trial)
             {
                 Ok(candidate) => candidate,
