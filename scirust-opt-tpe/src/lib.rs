@@ -798,7 +798,10 @@ impl NumericalParzen {
             .collect::<Vec<_>>();
         let mut density = vec![0.0_f64; values.len()];
 
-        if self.component_factors.iter().any(|factor| !factor.is_finite())
+        if self
+            .component_factors
+            .iter()
+            .any(|factor| !factor.is_finite())
         {
             return transformed
                 .into_iter()
@@ -1823,9 +1826,7 @@ mod tests {
             },
         );
         let mut rng = SplitMix64::new(0x44aa);
-        let candidates = (0..24)
-            .map(|_| below.sample(&mut rng))
-            .collect::<Vec<_>>();
+        let candidates = (0..24).map(|_| below.sample(&mut rng)).collect::<Vec<_>>();
 
         let below_batch = below.log_pdf_batch(&candidates);
         let above_batch = above.log_pdf_batch(&candidates);
