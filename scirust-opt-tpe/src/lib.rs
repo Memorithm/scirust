@@ -162,6 +162,27 @@ pub fn default_weights(n: usize) -> Vec<f64> {
     }
 }
 
+fn default_weight_at(n: usize, index: usize) -> f64 {
+    debug_assert!(index < n);
+    if n < 25
+    {
+        return 1.0;
+    }
+    let ramp_len = n - 25;
+    if index >= ramp_len
+    {
+        return 1.0;
+    }
+    if ramp_len == 1
+    {
+        return 1.0 / n as f64;
+    }
+    let start = 1.0 / n as f64;
+    let denominator = (ramp_len - 1) as f64;
+    let t = index as f64 / denominator;
+    start + (1.0 - start) * t
+}
+
 #[derive(Debug, Clone)]
 struct SplitMix64 {
     state: u64,
@@ -551,7 +572,13 @@ impl NumericalParzen {
             return Err(TpeError::InvalidNumericalRange(param));
         }
 
-        let n_observations = history.selected_count(mask);
+        let selected_sorted = history
+            .numeric_sorted
+            .iter()
+            .copied()
+            .filter(|observation| mask_contains(mask, observation.trial))
+            .collect::<Vec<_>>();
+        let n_observations = selected_sorted.len();
         if n_observations == 0
         {
             return Ok(Self::from_components(
@@ -562,37 +589,6 @@ impl NumericalParzen {
                 adapted_high,
                 kind,
             ));
-        }
-
-        let chronological_weights = default_weights(n_observations);
-        let mut weight_by_trial = vec![0.0; mask.len()];
-        let mut chronological_index = 0;
-        for (trial, _) in &history.chronological
-        {
-            if !mask_contains(mask, *trial)
-            {
-                continue;
-            }
-            let trial_index =
-                usize::try_from(trial.get()).map_err(|_| TpeError::InvalidObservation(param))?;
-            let Some(slot) = weight_by_trial.get_mut(trial_index)
-            else
-            {
-                return Err(TpeError::InvalidObservation(param));
-            };
-            *slot = chronological_weights[chronological_index];
-            chronological_index += 1;
-        }
-
-        let selected_sorted = history
-            .numeric_sorted
-            .iter()
-            .copied()
-            .filter(|observation| mask_contains(mask, observation.trial))
-            .collect::<Vec<_>>();
-        if selected_sorted.len() != n_observations
-        {
-            return Err(TpeError::InvalidObservation(param));
         }
 
         let min_sigma = if config.consider_magic_clip
@@ -649,6 +645,7 @@ impl NumericalParzen {
         let mut mus = Vec::with_capacity(n_observations + 1);
         let mut sigmas = Vec::with_capacity(n_observations + 1);
         let mut weights = Vec::with_capacity(n_observations + 1);
+        let mut chronological_index = 0;
         for (trial, value) in &history.chronological
         {
             if !mask_contains(mask, *trial)
@@ -664,7 +661,8 @@ impl NumericalParzen {
                 usize::try_from(trial.get()).map_err(|_| TpeError::InvalidObservation(param))?;
             mus.push(transformed);
             sigmas.push(sigma_by_trial[trial_index]);
-            weights.push(weight_by_trial[trial_index]);
+            weights.push(default_weight_at(n_observations, chronological_index));
+            chronological_index += 1;
         }
 
         mus.push(0.5 * (adapted_low + adapted_high));
@@ -1658,6 +1656,18 @@ mod tests {
         assert_eq!(default_gamma(1), 1);
         assert_eq!(default_gamma(250), 25);
         assert_eq!(default_gamma(1_000), 25);
+    }
+
+    #[test]
+    fn indexed_default_weight_matches_vector_reference() {
+        for n in 1..200
+        {
+            let expected = default_weights(n);
+            for (index, expected) in expected.into_iter().enumerate()
+            {
+                assert_eq!(default_weight_at(n, index).to_bits(), expected.to_bits());
+            }
+        }
     }
 
     #[test]
