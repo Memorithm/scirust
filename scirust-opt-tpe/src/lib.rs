@@ -675,10 +675,7 @@ fn compare_ranked(direction: Direction, left: &RankedTrial, right: &RankedTrial)
     objective_order.then_with(|| left.id.cmp(&right.id))
 }
 
-fn merge_trial_ids(
-    completed: &BTreeSet<TrialId>,
-    running: &BTreeSet<TrialId>,
-) -> Vec<TrialId> {
+fn merge_trial_ids(completed: &BTreeSet<TrialId>, running: &BTreeSet<TrialId>) -> Vec<TrialId> {
     let mut completed = completed.iter().copied().peekable();
     let mut running = running.iter().copied().peekable();
     let mut merged = Vec::with_capacity(completed.len() + running.len());
@@ -792,7 +789,10 @@ impl TpeSampler {
     }
 
     fn insert_complete(&mut self, trial: RankedTrial) {
-        if self.ranked_complete.iter().any(|existing| existing.id == trial.id)
+        if self
+            .ranked_complete
+            .iter()
+            .any(|existing| existing.id == trial.id)
         {
             return;
         }
@@ -857,7 +857,8 @@ impl TpeSampler {
             {
                 self.running.remove(trial);
             },
-            StudyEvent::TrialReserved { .. } | StudyEvent::ParameterAssigned { .. } => {},
+            StudyEvent::TrialReserved { .. } | StudyEvent::ParameterAssigned { .. } =>
+            {},
         }
     }
 
@@ -880,11 +881,7 @@ impl TpeSampler {
         }
     }
 
-    fn observations_for(
-        study: StudyView<'_>,
-        ids: &[TrialId],
-        param: ParamId,
-    ) -> Vec<ParamValue> {
+    fn observations_for(study: StudyView<'_>, ids: &[TrialId], param: ParamId) -> Vec<ParamValue> {
         ids.iter()
             .copied()
             .filter_map(|id| study.trials().param_value(id, param))
