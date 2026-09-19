@@ -22,10 +22,11 @@
 
 use core::cmp::Ordering;
 use core::fmt;
+use std::collections::BTreeSet;
 
 use scirust_opt_core::{
-    Candidate, CandidateError, Distribution, ParamId, ParamValue, Sampler, StudyView, TrialId,
-    TrialState,
+    Candidate, CandidateError, Distribution, ParamId, ParamValue, Sampler, StudyEvent, StudyView,
+    TrialId,
 };
 use scirust_special::{erfc, erfinv};
 
@@ -664,21 +665,89 @@ struct RankedTrial {
     objective: f64,
 }
 
+fn compare_ranked(direction: Direction, left: &RankedTrial, right: &RankedTrial) -> Ordering {
+    let objective_order = left.objective.total_cmp(&right.objective);
+    let objective_order = match direction
+    {
+        Direction::Minimize => objective_order,
+        Direction::Maximize => objective_order.reverse(),
+    };
+    objective_order.then_with(|| left.id.cmp(&right.id))
+}
+
+fn merge_trial_ids(
+    completed: &BTreeSet<TrialId>,
+    running: &BTreeSet<TrialId>,
+) -> Vec<TrialId> {
+    let mut completed = completed.iter().copied().peekable();
+    let mut running = running.iter().copied().peekable();
+    let mut merged = Vec::with_capacity(completed.len() + running.len());
+
+    loop
+    {
+        match (completed.peek().copied(), running.peek().copied())
+        {
+            (Some(left), Some(right)) if left <= right =>
+            {
+                merged.push(left);
+                completed.next();
+                if left == right
+                {
+                    running.next();
+                }
+            },
+            (Some(_), Some(right)) =>
+            {
+                merged.push(right);
+                running.next();
+            },
+            (Some(left), None) =>
+            {
+                merged.push(left);
+                completed.next();
+            },
+            (None, Some(right)) =>
+            {
+                merged.push(right);
+                running.next();
+            },
+            (None, None) => break,
+        }
+    }
+    merged
+}
+
 /// Correctness-oriented independent TPE sampler.
 #[derive(Debug, Clone)]
 pub struct TpeSampler {
     direction: Direction,
     config: TpeConfig,
     rng: SplitMix64,
+    event_cursor: usize,
+    last_event: Option<StudyEvent>,
+    ranked_complete: Vec<RankedTrial>,
+    below_complete: BTreeSet<TrialId>,
+    above_complete: BTreeSet<TrialId>,
+    running: BTreeSet<TrialId>,
 }
 
 impl TpeSampler {
     /// Construct the reference sampler with Optuna-v5-compatible defaults.
     pub fn new(direction: Direction, seed: u64) -> Self {
+        Self::with_validated_config(direction, seed, TpeConfig::default())
+    }
+
+    fn with_validated_config(direction: Direction, seed: u64, config: TpeConfig) -> Self {
         Self {
             direction,
-            config: TpeConfig::default(),
+            config,
             rng: SplitMix64::new(seed),
+            event_cursor: 0,
+            last_event: None,
+            ranked_complete: Vec::new(),
+            below_complete: BTreeSet::new(),
+            above_complete: BTreeSet::new(),
+            running: BTreeSet::new(),
         }
     }
 
@@ -700,11 +769,7 @@ impl TpeSampler {
                 "prior_weight must be finite and non-negative",
             ));
         }
-        Ok(Self {
-            direction,
-            config,
-            rng: SplitMix64::new(seed),
-        })
+        Ok(Self::with_validated_config(direction, seed, config))
     }
 
     /// Return the active configuration.
@@ -717,73 +782,135 @@ impl TpeSampler {
         self.direction
     }
 
-    fn ranked_complete(&self, study: StudyView<'_>) -> Vec<RankedTrial> {
-        let trials = study.trials();
-        let mut ranked = trials
-            .trial_ids()
-            .filter_map(|id| {
-                trials
-                    .objective_value(id, 0)
-                    .map(|objective| RankedTrial { id, objective })
-            })
+    fn reset_history(&mut self) {
+        self.event_cursor = 0;
+        self.last_event = None;
+        self.ranked_complete.clear();
+        self.below_complete.clear();
+        self.above_complete.clear();
+        self.running.clear();
+    }
+
+    fn insert_complete(&mut self, trial: RankedTrial) {
+        if self.ranked_complete.iter().any(|existing| existing.id == trial.id)
+        {
+            return;
+        }
+
+        let position = self
+            .ranked_complete
+            .binary_search_by(|probe| compare_ranked(self.direction, probe, &trial))
+            .unwrap_or_else(|position| position);
+        self.ranked_complete.insert(position, trial);
+        self.above_complete.insert(trial.id);
+        self.rebalance_complete_groups();
+    }
+
+    fn rebalance_complete_groups(&mut self) {
+        let n_below = default_gamma(self.ranked_complete.len()).min(self.ranked_complete.len());
+        let desired = self.ranked_complete[..n_below]
+            .iter()
+            .map(|trial| trial.id)
+            .collect::<BTreeSet<_>>();
+
+        let to_above = self
+            .below_complete
+            .difference(&desired)
+            .copied()
             .collect::<Vec<_>>();
-        ranked.sort_by(|left, right| {
-            let objective_order = left.objective.total_cmp(&right.objective);
-            let objective_order = match self.direction
+        for trial in to_above
+        {
+            self.below_complete.remove(&trial);
+            self.above_complete.insert(trial);
+        }
+
+        let to_below = desired
+            .difference(&self.below_complete)
+            .copied()
+            .collect::<Vec<_>>();
+        for trial in to_below
+        {
+            self.above_complete.remove(&trial);
+            self.below_complete.insert(trial);
+        }
+    }
+
+    fn apply_event(&mut self, event: &StudyEvent) {
+        match event
+        {
+            StudyEvent::TrialStarted { trial } =>
             {
-                Direction::Minimize => objective_order,
-                Direction::Maximize => objective_order.reverse(),
-            };
-            objective_order.then_with(|| left.id.cmp(&right.id))
-        });
-        ranked
+                self.running.insert(*trial);
+            },
+            StudyEvent::TrialCompleted { trial, values } =>
+            {
+                self.running.remove(trial);
+                if let Some(objective) = values.first().copied()
+                {
+                    self.insert_complete(RankedTrial {
+                        id: *trial,
+                        objective,
+                    });
+                }
+            },
+            StudyEvent::TrialPruned { trial } | StudyEvent::TrialFailed { trial } =>
+            {
+                self.running.remove(trial);
+            },
+            StudyEvent::TrialReserved { .. } | StudyEvent::ParameterAssigned { .. } => {},
+        }
+    }
+
+    fn sync_history(&mut self, study: StudyView<'_>) {
+        let prefix_matches = self.event_cursor == 0
+            || study.events().get(self.event_cursor.saturating_sub(1)) == self.last_event.as_ref();
+        if study.events().len() < self.event_cursor || !prefix_matches
+        {
+            self.reset_history();
+        }
+
+        if let Some(events) = study.events_since(self.event_cursor)
+        {
+            for event in events
+            {
+                self.apply_event(event);
+            }
+            self.event_cursor = study.events().len();
+            self.last_event = study.events().last().cloned();
+        }
     }
 
     fn observations_for(
-        &self,
         study: StudyView<'_>,
-        ids: impl IntoIterator<Item = TrialId>,
+        ids: &[TrialId],
         param: ParamId,
     ) -> Vec<ParamValue> {
-        ids.into_iter()
+        ids.iter()
+            .copied()
             .filter_map(|id| study.trials().param_value(id, param))
             .collect()
     }
 
     fn sample_tpe_value(
-        &mut self,
+        config: TpeConfig,
+        rng: &mut SplitMix64,
         study: StudyView<'_>,
-        current_trial: TrialId,
-        ranked: &[RankedTrial],
+        below_ids: &[TrialId],
+        above_ids: &[TrialId],
         param: ParamId,
         distribution: &Distribution,
     ) -> Result<ParamValue, TpeError> {
-        let n_below = default_gamma(ranked.len()).min(ranked.len());
-        let below_ids = ranked[..n_below].iter().map(|trial| trial.id);
-        let above_complete = ranked[n_below..].iter().map(|trial| trial.id);
+        let below = Self::observations_for(study, below_ids, param);
+        let above = Self::observations_for(study, above_ids, param);
 
-        let below = self.observations_for(study, below_ids, param);
-        let mut above = self.observations_for(study, above_complete, param);
-        if self.config.constant_liar
-        {
-            above.extend(
-                study
-                    .trials()
-                    .trial_ids()
-                    .filter(|id| *id != current_trial)
-                    .filter(|id| study.trials().state(*id) == Some(TrialState::Running))
-                    .filter_map(|id| study.trials().param_value(id, param)),
-            );
-        }
+        let below_model = ParzenModel::new(param, &below, distribution, config)?;
+        let above_model = ParzenModel::new(param, &above, distribution, config)?;
 
-        let below_model = ParzenModel::new(param, &below, distribution, self.config)?;
-        let above_model = ParzenModel::new(param, &above, distribution, self.config)?;
-
-        let mut best_value = below_model.sample(&mut self.rng);
+        let mut best_value = below_model.sample(rng);
         let mut best_score = below_model.log_pdf(best_value) - above_model.log_pdf(best_value);
-        for _ in 1..self.config.n_ei_candidates
+        for _ in 1..config.n_ei_candidates
         {
-            let value = below_model.sample(&mut self.rng);
+            let value = below_model.sample(rng);
             let score = below_model.log_pdf(value) - above_model.log_pdf(value);
             if score.total_cmp(&best_score) == Ordering::Greater
             {
@@ -798,18 +925,28 @@ impl TpeSampler {
 impl Sampler for TpeSampler {
     type Error = TpeError;
 
-    fn sample(&mut self, study: StudyView<'_>, trial: TrialId) -> Result<Candidate, Self::Error> {
+    fn sample(&mut self, study: StudyView<'_>, _trial: TrialId) -> Result<Candidate, Self::Error> {
         let objective_count = study.trials().objective_count();
         if objective_count != 1
         {
             return Err(TpeError::UnsupportedObjectiveCount(objective_count));
         }
 
-        let ranked = self.ranked_complete(study);
-        let use_random = ranked.len() < self.config.n_startup_trials;
+        self.sync_history(study);
+        let use_random = self.ranked_complete.len() < self.config.n_startup_trials;
+        let below_ids = self.below_complete.iter().copied().collect::<Vec<_>>();
+        let above_ids = if self.config.constant_liar
+        {
+            merge_trial_ids(&self.above_complete, &self.running)
+        }
+        else
+        {
+            self.above_complete.iter().copied().collect::<Vec<_>>()
+        };
+
         let space = study.search_space();
         let mut candidate = Candidate::empty(space);
-
+        let config = self.config;
         for spec in space.parameters()
         {
             if !space.is_active(spec.id, &candidate)
@@ -822,7 +959,15 @@ impl Sampler for TpeSampler {
             }
             else
             {
-                self.sample_tpe_value(study, trial, &ranked, spec.id, &spec.distribution)?
+                Self::sample_tpe_value(
+                    config,
+                    &mut self.rng,
+                    study,
+                    &below_ids,
+                    &above_ids,
+                    spec.id,
+                    &spec.distribution,
+                )?
             };
             candidate
                 .set(space, spec.id, value)
