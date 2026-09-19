@@ -1103,23 +1103,6 @@ fn sample_truncated_normal(rng: &mut SplitMix64, mu: f64, sigma: f64, low: f64, 
     (mu + sigma * normal_inverse_cdf(probability)).clamp(low, high)
 }
 
-fn logsumexp(values: &[f64]) -> f64 {
-    if values.is_empty()
-    {
-        return f64::NEG_INFINITY;
-    }
-    let max = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    if max.is_infinite() && max.is_sign_negative()
-    {
-        return max;
-    }
-    max + values
-        .iter()
-        .map(|value| (*value - max).exp())
-        .sum::<f64>()
-        .ln()
-}
-
 fn random_value(rng: &mut SplitMix64, distribution: &Distribution) -> ParamValue {
     match distribution
     {
