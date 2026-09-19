@@ -331,6 +331,7 @@ struct NumericalParzen {
     weights: Vec<f64>,
     mus: Vec<f64>,
     sigmas: Vec<f64>,
+    component_factors: Vec<f64>,
     log_component_factors: Vec<f64>,
     adapted_low: f64,
     adapted_high: f64,
@@ -346,38 +347,57 @@ impl NumericalParzen {
         adapted_high: f64,
         kind: NumericalKind,
     ) -> Self {
-        let log_component_factors = weights
+        let mut component_factors = Vec::with_capacity(weights.len());
+        let mut log_component_factors = Vec::with_capacity(weights.len());
+        for ((weight, mu), sigma) in weights
             .iter()
             .copied()
             .zip(mus.iter().copied())
             .zip(sigmas.iter().copied())
-            .map(|((weight, mu), sigma)| {
-                if weight <= 0.0 || !sigma.is_finite() || sigma <= 0.0
-                {
-                    return f64::NEG_INFINITY;
-                }
+        {
+            let log_factor = if weight <= 0.0 || !sigma.is_finite() || sigma <= 0.0
+            {
+                f64::NEG_INFINITY
+            }
+            else
+            {
                 let denominator = normal_cdf((adapted_high - mu) / sigma)
                     - normal_cdf((adapted_low - mu) / sigma);
                 if !denominator.is_finite() || denominator <= f64::MIN_POSITIVE
                 {
-                    return f64::NEG_INFINITY;
+                    f64::NEG_INFINITY
                 }
-                let base = weight.ln() - denominator.ln();
-                match kind
+                else
                 {
-                    NumericalKind::Integer { .. } => base,
-                    NumericalKind::LinearFloat | NumericalKind::LogFloat =>
+                    let base = weight.ln() - denominator.ln();
+                    match kind
                     {
-                        base - (SQRT_2PI * sigma).ln()
-                    },
+                        NumericalKind::Integer { .. } => base,
+                        NumericalKind::LinearFloat | NumericalKind::LogFloat =>
+                        {
+                            base - (SQRT_2PI * sigma).ln()
+                        },
+                    }
                 }
-            })
-            .collect();
+            };
+            log_component_factors.push(log_factor);
+            component_factors.push(
+                if log_factor.is_finite()
+                {
+                    log_factor.exp()
+                }
+                else
+                {
+                    0.0
+                },
+            );
+        }
 
         Self {
             weights,
             mus,
             sigmas,
+            component_factors,
             log_component_factors,
             adapted_low,
             adapted_high,
@@ -686,6 +706,7 @@ impl NumericalParzen {
         }
     }
 
+    #[cfg(test)]
     fn log_pdf(&self, value: ParamValue) -> f64 {
         let transformed = match (self.kind, value)
         {
@@ -699,6 +720,168 @@ impl NumericalParzen {
             return f64::NEG_INFINITY;
         }
 
+        let mut density = 0.0_f64;
+        for index in 0..self.component_factors.len()
+        {
+            let factor = self.component_factors[index];
+            if factor == 0.0
+            {
+                continue;
+            }
+            if !factor.is_finite()
+            {
+                return self.log_pdf_stable_transformed(transformed);
+            }
+
+            let contribution = match self.kind
+            {
+                NumericalKind::Integer { .. } =>
+                {
+                    let sigma = self.sigmas[index];
+                    let mu = self.mus[index];
+                    let left = transformed - 0.5;
+                    let right = transformed + 0.5;
+                    let numerator =
+                        normal_cdf((right - mu) / sigma) - normal_cdf((left - mu) / sigma);
+                    if !numerator.is_finite() || numerator <= 0.0
+                    {
+                        continue;
+                    }
+                    factor * numerator
+                },
+                NumericalKind::LinearFloat | NumericalKind::LogFloat =>
+                {
+                    let z = (transformed - self.mus[index]) / self.sigmas[index];
+                    factor * (-0.5 * z * z).exp()
+                },
+            };
+            density += contribution;
+            if !density.is_finite()
+            {
+                return self.log_pdf_stable_transformed(transformed);
+            }
+        }
+
+        if density > 0.0
+        {
+            density.ln()
+        }
+        else
+        {
+            self.log_pdf_stable_transformed(transformed)
+        }
+    }
+
+    fn log_pdf_batch(&self, values: &[ParamValue]) -> Vec<f64> {
+        let transformed = values
+            .iter()
+            .copied()
+            .map(|value| {
+                let transformed = match (self.kind, value)
+                {
+                    (NumericalKind::LinearFloat, ParamValue::Float(value)) => value,
+                    (NumericalKind::LogFloat, ParamValue::Float(value)) if value > 0.0 =>
+                    {
+                        value.ln()
+                    },
+                    (NumericalKind::Integer { .. }, ParamValue::Int(value)) => value as f64,
+                    _ => return f64::NAN,
+                };
+                if transformed < self.adapted_low || transformed > self.adapted_high
+                {
+                    f64::NAN
+                }
+                else
+                {
+                    transformed
+                }
+            })
+            .collect::<Vec<_>>();
+        let mut density = vec![0.0_f64; values.len()];
+
+        if self
+            .component_factors
+            .iter()
+            .any(|factor| !factor.is_finite())
+        {
+            return transformed
+                .into_iter()
+                .map(|value| {
+                    if value.is_nan()
+                    {
+                        f64::NEG_INFINITY
+                    }
+                    else
+                    {
+                        self.log_pdf_stable_transformed(value)
+                    }
+                })
+                .collect();
+        }
+
+        for index in 0..self.component_factors.len()
+        {
+            let factor = self.component_factors[index];
+            if factor == 0.0
+            {
+                continue;
+            }
+            let mu = self.mus[index];
+            let sigma = self.sigmas[index];
+            match self.kind
+            {
+                NumericalKind::Integer { .. } =>
+                {
+                    for (candidate, output) in transformed.iter().zip(&mut density)
+                    {
+                        if candidate.is_nan()
+                        {
+                            continue;
+                        }
+                        let left = *candidate - 0.5;
+                        let right = *candidate + 0.5;
+                        let numerator =
+                            normal_cdf((right - mu) / sigma) - normal_cdf((left - mu) / sigma);
+                        if numerator.is_finite() && numerator > 0.0
+                        {
+                            *output += factor * numerator;
+                        }
+                    }
+                },
+                NumericalKind::LinearFloat | NumericalKind::LogFloat =>
+                {
+                    for (candidate, output) in transformed.iter().zip(&mut density)
+                    {
+                        if candidate.is_nan()
+                        {
+                            continue;
+                        }
+                        let z = (*candidate - mu) / sigma;
+                        *output += factor * (-0.5 * z * z).exp();
+                    }
+                },
+            }
+        }
+
+        for (candidate, output) in transformed.into_iter().zip(&mut density)
+        {
+            *output = if candidate.is_nan()
+            {
+                f64::NEG_INFINITY
+            }
+            else if output.is_finite() && *output > 0.0
+            {
+                output.ln()
+            }
+            else
+            {
+                self.log_pdf_stable_transformed(candidate)
+            };
+        }
+        density
+    }
+
+    fn log_pdf_stable_transformed(&self, transformed: f64) -> f64 {
         let mut max_term = f64::NEG_INFINITY;
         let mut scaled_sum = 0.0_f64;
         for index in 0..self.log_component_factors.len()
@@ -977,11 +1160,24 @@ impl ParzenModel {
         }
     }
 
+    #[cfg(test)]
     fn log_pdf(&self, value: ParamValue) -> f64 {
         match self
         {
             Self::Numerical(model) => model.log_pdf(value),
             Self::Categorical(model) => model.log_pdf(value),
+        }
+    }
+
+    fn log_pdf_batch(&self, values: &[ParamValue]) -> Vec<f64> {
+        match self
+        {
+            Self::Numerical(model) => model.log_pdf_batch(values),
+            Self::Categorical(model) => values
+                .iter()
+                .copied()
+                .map(|value| model.log_pdf(value))
+                .collect(),
         }
     }
 }
@@ -1301,19 +1497,24 @@ impl TpeSampler {
         let above_model =
             ParzenModel::new_cached(param, history, above_mask, distribution, config)?;
 
-        let mut best_value = below_model.sample(rng);
-        let mut best_score = below_model.log_pdf(best_value) - above_model.log_pdf(best_value);
-        for _ in 1..config.n_ei_candidates
+        let candidates = (0..config.n_ei_candidates)
+            .map(|_| below_model.sample(rng))
+            .collect::<Vec<_>>();
+        let below_scores = below_model.log_pdf_batch(&candidates);
+        let above_scores = above_model.log_pdf_batch(&candidates);
+
+        let mut best_index = 0;
+        let mut best_score = below_scores[0] - above_scores[0];
+        for index in 1..candidates.len()
         {
-            let value = below_model.sample(rng);
-            let score = below_model.log_pdf(value) - above_model.log_pdf(value);
+            let score = below_scores[index] - above_scores[index];
             if score.total_cmp(&best_score) == Ordering::Greater
             {
-                best_value = value;
+                best_index = index;
                 best_score = score;
             }
         }
-        Ok(best_value)
+        Ok(candidates[best_index])
     }
 }
 
@@ -1519,6 +1720,160 @@ mod tests {
                 "value={value}"
             );
         }
+    }
+
+    fn assert_direct_density_matches_stable(
+        observations: &[ParamValue],
+        distribution: Distribution,
+        probes: &[ParamValue],
+    ) {
+        let param = ParamId::new(0);
+        let parzen =
+            NumericalParzen::new(param, observations, &distribution, TpeConfig::default()).unwrap();
+        for probe in probes.iter().copied()
+        {
+            let transformed = ParamHistoryCache::transform(param, probe, &distribution)
+                .unwrap()
+                .expect("numerical probe");
+            let direct = parzen.log_pdf(probe);
+            let stable = parzen.log_pdf_stable_transformed(transformed);
+            assert!(
+                close(direct, stable, 2e-12),
+                "probe={probe:?} direct={direct} stable={stable}"
+            );
+        }
+    }
+
+    #[test]
+    fn direct_density_matches_stable_reference() {
+        assert_direct_density_matches_stable(
+            &[
+                ParamValue::Float(0.07),
+                ParamValue::Float(0.2),
+                ParamValue::Float(0.5),
+                ParamValue::Float(0.8),
+                ParamValue::Float(0.93),
+            ],
+            Distribution::Uniform {
+                low: 0.0,
+                high: 1.0,
+            },
+            &[
+                ParamValue::Float(0.01),
+                ParamValue::Float(0.17),
+                ParamValue::Float(0.43),
+                ParamValue::Float(0.77),
+                ParamValue::Float(0.99),
+            ],
+        );
+        assert_direct_density_matches_stable(
+            &[
+                ParamValue::Float(1e-4),
+                ParamValue::Float(1e-3),
+                ParamValue::Float(1e-2),
+                ParamValue::Float(1e-1),
+            ],
+            Distribution::LogUniform {
+                low: 1e-5,
+                high: 1.0,
+            },
+            &[
+                ParamValue::Float(2e-5),
+                ParamValue::Float(7e-4),
+                ParamValue::Float(3e-2),
+                ParamValue::Float(0.7),
+            ],
+        );
+        assert_direct_density_matches_stable(
+            &[
+                ParamValue::Int(1),
+                ParamValue::Int(3),
+                ParamValue::Int(6),
+                ParamValue::Int(9),
+            ],
+            Distribution::IntRange { low: 1, high: 10 },
+            &[
+                ParamValue::Int(1),
+                ParamValue::Int(4),
+                ParamValue::Int(7),
+                ParamValue::Int(10),
+            ],
+        );
+    }
+
+    #[test]
+    fn batched_density_matches_scalar_and_preserves_acquisition_choice() {
+        let below = model(
+            vec![
+                ParamValue::Float(0.1),
+                ParamValue::Float(0.2),
+                ParamValue::Float(0.25),
+                ParamValue::Float(0.4),
+            ],
+            Distribution::Uniform {
+                low: 0.0,
+                high: 1.0,
+            },
+        );
+        let above = model(
+            vec![
+                ParamValue::Float(0.55),
+                ParamValue::Float(0.7),
+                ParamValue::Float(0.8),
+                ParamValue::Float(0.95),
+            ],
+            Distribution::Uniform {
+                low: 0.0,
+                high: 1.0,
+            },
+        );
+        let mut rng = SplitMix64::new(0x44aa);
+        let candidates = (0..24).map(|_| below.sample(&mut rng)).collect::<Vec<_>>();
+
+        let below_batch = below.log_pdf_batch(&candidates);
+        let above_batch = above.log_pdf_batch(&candidates);
+        let mut scalar_best = 0;
+        let mut batch_best = 0;
+        let mut scalar_best_score = f64::NEG_INFINITY;
+        let mut batch_best_score = f64::NEG_INFINITY;
+        for (index, candidate) in candidates.iter().copied().enumerate()
+        {
+            let below_scalar = below.log_pdf(candidate);
+            let above_scalar = above.log_pdf(candidate);
+            assert!(close(below_scalar, below_batch[index], 2e-12));
+            assert!(close(above_scalar, above_batch[index], 2e-12));
+
+            let scalar_score = below_scalar - above_scalar;
+            if scalar_score.total_cmp(&scalar_best_score) == Ordering::Greater
+            {
+                scalar_best = index;
+                scalar_best_score = scalar_score;
+            }
+            let batch_score = below_batch[index] - above_batch[index];
+            if batch_score.total_cmp(&batch_best_score) == Ordering::Greater
+            {
+                batch_best = index;
+                batch_best_score = batch_score;
+            }
+        }
+        assert_eq!(batch_best, scalar_best);
+        assert_eq!(candidates[batch_best], candidates[scalar_best]);
+    }
+
+    #[test]
+    fn direct_density_falls_back_when_probability_underflows() {
+        let parzen = NumericalParzen::from_components(
+            vec![1.0],
+            vec![0.0],
+            vec![0.025],
+            0.0,
+            1.0,
+            NumericalKind::LinearFloat,
+        );
+        let stable = parzen.log_pdf_stable_transformed(1.0);
+        let direct = parzen.log_pdf(ParamValue::Float(1.0));
+        assert!(stable.is_finite());
+        assert!(close(direct, stable, 1e-12));
     }
 
     #[test]
