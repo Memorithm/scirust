@@ -356,9 +356,8 @@ impl NumericalParzen {
                 {
                     return f64::NEG_INFINITY;
                 }
-                let denominator =
-                    normal_cdf((adapted_high - mu) / sigma)
-                        - normal_cdf((adapted_low - mu) / sigma);
+                let denominator = normal_cdf((adapted_high - mu) / sigma)
+                    - normal_cdf((adapted_low - mu) / sigma);
                 if !denominator.is_finite() || denominator <= f64::MIN_POSITIVE
                 {
                     return f64::NEG_INFINITY;
