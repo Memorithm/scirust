@@ -1589,6 +1589,106 @@ mod tests {
         }
     }
 
+    fn assert_direct_density_matches_stable(
+        observations: &[ParamValue],
+        distribution: Distribution,
+        probes: &[ParamValue],
+    ) {
+        let param = ParamId::new(0);
+        let parzen = NumericalParzen::new(
+            param,
+            observations,
+            &distribution,
+            TpeConfig::default(),
+        )
+        .unwrap();
+        for probe in probes.iter().copied()
+        {
+            let transformed = ParamHistoryCache::transform(param, probe, &distribution)
+                .unwrap()
+                .expect("numerical probe");
+            let direct = parzen.log_pdf(probe);
+            let stable = parzen.log_pdf_stable_transformed(transformed);
+            assert!(
+                close(direct, stable, 2e-12),
+                "probe={probe:?} direct={direct} stable={stable}"
+            );
+        }
+    }
+
+    #[test]
+    fn direct_density_matches_stable_reference() {
+        assert_direct_density_matches_stable(
+            &[
+                ParamValue::Float(0.07),
+                ParamValue::Float(0.2),
+                ParamValue::Float(0.5),
+                ParamValue::Float(0.8),
+                ParamValue::Float(0.93),
+            ],
+            Distribution::Uniform {
+                low: 0.0,
+                high: 1.0,
+            },
+            &[
+                ParamValue::Float(0.01),
+                ParamValue::Float(0.17),
+                ParamValue::Float(0.43),
+                ParamValue::Float(0.77),
+                ParamValue::Float(0.99),
+            ],
+        );
+        assert_direct_density_matches_stable(
+            &[
+                ParamValue::Float(1e-4),
+                ParamValue::Float(1e-3),
+                ParamValue::Float(1e-2),
+                ParamValue::Float(1e-1),
+            ],
+            Distribution::LogUniform {
+                low: 1e-5,
+                high: 1.0,
+            },
+            &[
+                ParamValue::Float(2e-5),
+                ParamValue::Float(7e-4),
+                ParamValue::Float(3e-2),
+                ParamValue::Float(0.7),
+            ],
+        );
+        assert_direct_density_matches_stable(
+            &[
+                ParamValue::Int(1),
+                ParamValue::Int(3),
+                ParamValue::Int(6),
+                ParamValue::Int(9),
+            ],
+            Distribution::IntRange { low: 1, high: 10 },
+            &[
+                ParamValue::Int(1),
+                ParamValue::Int(4),
+                ParamValue::Int(7),
+                ParamValue::Int(10),
+            ],
+        );
+    }
+
+    #[test]
+    fn direct_density_falls_back_when_probability_underflows() {
+        let parzen = NumericalParzen::from_components(
+            vec![1.0],
+            vec![0.0],
+            vec![0.025],
+            0.0,
+            1.0,
+            NumericalKind::LinearFloat,
+        );
+        let stable = parzen.log_pdf_stable_transformed(1.0);
+        let direct = parzen.log_pdf(ParamValue::Float(1.0));
+        assert!(stable.is_finite());
+        assert!(close(direct, stable, 1e-12));
+    }
+
     #[test]
     fn categorical_parzen_log_pdf_matches_optuna_oracle() {
         let parzen = model(
