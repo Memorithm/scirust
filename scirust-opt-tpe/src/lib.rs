@@ -377,7 +377,16 @@ impl NumericalParzen {
         let component_factors = log_component_factors
             .iter()
             .copied()
-            .map(|factor| if factor.is_finite() { factor.exp() } else { 0.0 })
+            .map(|factor| {
+                if factor.is_finite()
+                {
+                    factor.exp()
+                }
+                else
+                {
+                    0.0
+                }
+            })
             .collect();
 
         Self {
