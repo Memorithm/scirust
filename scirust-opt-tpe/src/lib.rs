@@ -978,7 +978,9 @@ impl Sampler for TpeSampler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use scirust_opt_core::{Condition, ParameterSpec, SearchSpace, Study, TrialOutcome};
+    use scirust_opt_core::{
+        Condition, ParameterSpec, SearchSpace, Study, TrialOutcome, TrialState,
+    };
 
     fn close(left: f64, right: f64, tolerance: f64) -> bool {
         (left - right).abs() <= tolerance
@@ -1270,5 +1272,119 @@ mod tests {
             {},
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn event_watermark_updates_ranked_history_incrementally() {
+        let mut study = Study::new(one_dimensional_space(), 1).unwrap();
+        let mut sampler = TpeSampler::new(Direction::Minimize, 9);
+
+        for (x, objective) in [(0.0, 4.0), (1.0, 1.0), (2.0, 3.0), (3.0, 2.0)]
+        {
+            let trial = study.reserve().unwrap();
+            study
+                .set_param(trial, ParamId::new(0), ParamValue::Float(x))
+                .unwrap();
+            study.start(trial).unwrap();
+            study
+                .tell(trial, TrialOutcome::Complete(vec![objective]))
+                .unwrap();
+        }
+
+        let reserved = study.reserve().unwrap();
+        sampler.sync_history(StudyView::new(
+            study.search_space(),
+            study.trials(),
+            study.events(),
+        ));
+        assert_eq!(sampler.event_cursor, study.events().len());
+        assert_eq!(
+            sampler
+                .ranked_complete
+                .iter()
+                .map(|trial| trial.id.get())
+                .collect::<Vec<_>>(),
+            vec![1, 3, 2, 0]
+        );
+        assert_eq!(
+            sampler
+                .below_complete
+                .iter()
+                .map(|trial| trial.get())
+                .collect::<Vec<_>>(),
+            vec![1]
+        );
+        assert!(sampler.running.is_empty());
+
+        study.start(reserved).unwrap();
+        sampler.sync_history(StudyView::new(
+            study.search_space(),
+            study.trials(),
+            study.events(),
+        ));
+        assert_eq!(
+            sampler.running.iter().map(|trial| trial.get()).collect::<Vec<_>>(),
+            vec![4]
+        );
+    }
+
+    #[test]
+    fn split_groups_are_chronological_before_parzen_weighting() {
+        let mut study = Study::new(one_dimensional_space(), 1).unwrap();
+        let mut sampler = TpeSampler::new(Direction::Minimize, 11);
+
+        for number in 0..30_u64
+        {
+            let trial = study.reserve().unwrap();
+            study
+                .set_param(
+                    trial,
+                    ParamId::new(0),
+                    ParamValue::Float(number as f64 / 10.0 - 1.5),
+                )
+                .unwrap();
+            study.start(trial).unwrap();
+            study
+                .tell(
+                    trial,
+                    TrialOutcome::Complete(vec![(29 - number) as f64]),
+                )
+                .unwrap();
+        }
+
+        study.reserve().unwrap();
+        sampler.sync_history(StudyView::new(
+            study.search_space(),
+            study.trials(),
+            study.events(),
+        ));
+
+        assert_eq!(
+            sampler
+                .below_complete
+                .iter()
+                .map(|trial| trial.get())
+                .collect::<Vec<_>>(),
+            vec![27, 28, 29]
+        );
+        assert_eq!(
+            sampler
+                .above_complete
+                .iter()
+                .take(5)
+                .map(|trial| trial.get())
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2, 3, 4]
+        );
+
+        let above_ids = sampler.above_complete.iter().copied().collect::<Vec<_>>();
+        let above = TpeSampler::observations_for(
+            StudyView::new(study.search_space(), study.trials(), study.events()),
+            &above_ids,
+            ParamId::new(0),
+        );
+        assert_eq!(above.len(), 27);
+        assert_eq!(above[0], ParamValue::Float(-1.5));
+        assert_eq!(above[26], ParamValue::Float(1.1));
     }
 }
