@@ -748,6 +748,74 @@ impl CategoricalParzen {
         })
     }
 
+    fn new_cached(
+        param: ParamId,
+        history: &ParamHistoryCache,
+        mask: &[bool],
+        cardinality: u32,
+        config: TpeConfig,
+    ) -> Result<Self, TpeError> {
+        let cardinality = cardinality as usize;
+        let n_observations = history.selected_count(mask);
+        if n_observations == 0
+        {
+            return Ok(Self {
+                weights: vec![1.0],
+                component_probabilities: vec![vec![1.0 / cardinality as f64; cardinality]],
+                cardinality,
+            });
+        }
+
+        let n_kernels = n_observations + 1;
+        let base = config.prior_weight / n_kernels as f64;
+        let mut rows = Vec::with_capacity(n_kernels);
+        for (trial, observation) in &history.chronological
+        {
+            if !mask_contains(mask, *trial)
+            {
+                continue;
+            }
+            let ParamValue::Categorical(choice) = observation
+            else
+            {
+                return Err(TpeError::InvalidObservation(param));
+            };
+            let choice = *choice as usize;
+            if choice >= cardinality
+            {
+                return Err(TpeError::InvalidObservation(param));
+            }
+            let mut row = vec![base; cardinality];
+            row[choice] += 1.0;
+            let sum: f64 = row.iter().sum();
+            if sum > 0.0
+            {
+                for value in &mut row
+                {
+                    *value /= sum;
+                }
+            }
+            rows.push(row);
+        }
+
+        let mut prior = vec![base; cardinality];
+        let prior_sum: f64 = prior.iter().sum();
+        if prior_sum > 0.0
+        {
+            for value in &mut prior
+            {
+                *value /= prior_sum;
+            }
+        }
+        rows.push(prior);
+
+        Ok(Self {
+            weights: mixture_weights(n_observations, config.prior_weight),
+            component_probabilities: rows,
+            cardinality,
+        })
+    }
+
     fn sample(&self, rng: &mut SplitMix64) -> ParamValue {
         let component = rng.weighted_index(&self.weights);
         let choice = rng.weighted_index(&self.component_probabilities[component]);
@@ -800,6 +868,34 @@ impl ParzenModel {
             _ => Ok(Self::Numerical(NumericalParzen::new(
                 param,
                 observations,
+                distribution,
+                config,
+            )?)),
+        }
+    }
+
+    fn new_cached(
+        param: ParamId,
+        history: &ParamHistoryCache,
+        mask: &[bool],
+        distribution: &Distribution,
+        config: TpeConfig,
+    ) -> Result<Self, TpeError> {
+        match distribution
+        {
+            Distribution::Categorical { cardinality } => Ok(Self::Categorical(
+                CategoricalParzen::new_cached(
+                    param,
+                    history,
+                    mask,
+                    *cardinality,
+                    config,
+                )?,
+            )),
+            _ => Ok(Self::Numerical(NumericalParzen::new_cached(
+                param,
+                history,
+                mask,
                 distribution,
                 config,
             )?)),
