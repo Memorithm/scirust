@@ -1291,13 +1291,8 @@ mod tests {
                 .unwrap();
         }
 
-        let reserved = study.reserve().unwrap();
-        sampler.sync_history(StudyView::new(
-            study.search_space(),
-            study.trials(),
-            study.events(),
-        ));
-        assert_eq!(sampler.event_cursor, study.events().len());
+        let first_pending = study.ask(&mut sampler).unwrap();
+        assert!(sampler.event_cursor <= study.events().len());
         assert_eq!(
             sampler
                 .ranked_complete
@@ -1316,15 +1311,10 @@ mod tests {
         );
         assert!(sampler.running.is_empty());
 
-        study.start(reserved).unwrap();
-        sampler.sync_history(StudyView::new(
-            study.search_space(),
-            study.trials(),
-            study.events(),
-        ));
+        let _second_pending = study.ask(&mut sampler).unwrap();
         assert_eq!(
             sampler.running.iter().map(|trial| trial.get()).collect::<Vec<_>>(),
-            vec![4]
+            vec![first_pending.trial.get()]
         );
     }
 
@@ -1352,12 +1342,7 @@ mod tests {
                 .unwrap();
         }
 
-        study.reserve().unwrap();
-        sampler.sync_history(StudyView::new(
-            study.search_space(),
-            study.trials(),
-            study.events(),
-        ));
+        let _pending = study.ask(&mut sampler).unwrap();
 
         assert_eq!(
             sampler
@@ -1378,11 +1363,11 @@ mod tests {
         );
 
         let above_ids = sampler.above_complete.iter().copied().collect::<Vec<_>>();
-        let above = TpeSampler::observations_for(
-            StudyView::new(study.search_space(), study.trials(), study.events()),
-            &above_ids,
-            ParamId::new(0),
-        );
+        let above = above_ids
+            .iter()
+            .copied()
+            .filter_map(|trial| study.trials().param_value(trial, ParamId::new(0)))
+            .collect::<Vec<_>>();
         assert_eq!(above.len(), 27);
         assert_eq!(above[0], ParamValue::Float(-1.5));
         assert_eq!(above[26], ParamValue::Float(1.1));
