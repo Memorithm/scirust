@@ -481,14 +481,14 @@ impl NumericalParzen {
         sigmas.push(range);
 
         let weights = mixture_weights(n_observations, config.prior_weight);
-        Ok(Self {
+        Ok(Self::from_components(
             weights,
             mus,
             sigmas,
             adapted_low,
             adapted_high,
             kind,
-        })
+        ))
     }
 
     fn new_cached(
@@ -524,14 +524,14 @@ impl NumericalParzen {
         let n_observations = history.selected_count(mask);
         if n_observations == 0
         {
-            return Ok(Self {
-                weights: vec![1.0],
-                mus: vec![0.5 * (adapted_low + adapted_high)],
-                sigmas: vec![range],
+            return Ok(Self::from_components(
+                vec![1.0],
+                vec![0.5 * (adapted_low + adapted_high)],
+                vec![range],
                 adapted_low,
                 adapted_high,
                 kind,
-            });
+            ));
         }
 
         let chronological_weights = default_weights(n_observations);
@@ -649,14 +649,14 @@ impl NumericalParzen {
             }
         }
 
-        Ok(Self {
+        Ok(Self::from_components(
             weights,
             mus,
             sigmas,
             adapted_low,
             adapted_high,
             kind,
-        })
+        ))
     }
 
     fn sample(&self, rng: &mut SplitMix64) -> ParamValue {
@@ -695,38 +695,69 @@ impl NumericalParzen {
             (NumericalKind::Integer { .. }, ParamValue::Int(value)) => value as f64,
             _ => return f64::NEG_INFINITY,
         };
-
-        let mut terms = Vec::with_capacity(self.weights.len());
-        for index in 0..self.weights.len()
+        if transformed < self.adapted_low || transformed > self.adapted_high
         {
-            let weight = self.weights[index];
-            if weight <= 0.0
+            return f64::NEG_INFINITY;
+        }
+
+        let mut max_term = f64::NEG_INFINITY;
+        let mut scaled_sum = 0.0_f64;
+        for index in 0..self.log_component_factors.len()
+        {
+            let base = self.log_component_factors[index];
+            if !base.is_finite()
             {
                 continue;
             }
-            let probability = match self.kind
+            let term = match self.kind
             {
-                NumericalKind::Integer { .. } => truncated_discrete_mass(
-                    transformed,
-                    self.mus[index],
-                    self.sigmas[index],
-                    self.adapted_low,
-                    self.adapted_high,
-                ),
-                NumericalKind::LinearFloat | NumericalKind::LogFloat => truncated_normal_pdf(
-                    transformed,
-                    self.mus[index],
-                    self.sigmas[index],
-                    self.adapted_low,
-                    self.adapted_high,
-                ),
+                NumericalKind::Integer { .. } =>
+                {
+                    let sigma = self.sigmas[index];
+                    let mu = self.mus[index];
+                    let left = transformed - 0.5;
+                    let right = transformed + 0.5;
+                    let numerator =
+                        normal_cdf((right - mu) / sigma) - normal_cdf((left - mu) / sigma);
+                    if !numerator.is_finite() || numerator <= 0.0
+                    {
+                        continue;
+                    }
+                    base + numerator.ln()
+                },
+                NumericalKind::LinearFloat | NumericalKind::LogFloat =>
+                {
+                    let z = (transformed - self.mus[index]) / self.sigmas[index];
+                    base - 0.5 * z * z
+                },
             };
-            if probability > 0.0
+
+            if term > max_term
             {
-                terms.push(weight.ln() + probability.ln());
+                scaled_sum = if max_term.is_finite()
+                {
+                    scaled_sum * (max_term - term).exp() + 1.0
+                }
+                else
+                {
+                    1.0
+                };
+                max_term = term;
+            }
+            else
+            {
+                scaled_sum += (term - max_term).exp();
             }
         }
-        logsumexp(&terms)
+
+        if !max_term.is_finite() || scaled_sum <= 0.0
+        {
+            f64::NEG_INFINITY
+        }
+        else
+        {
+            max_term + scaled_sum.ln()
+        }
     }
 }
 
