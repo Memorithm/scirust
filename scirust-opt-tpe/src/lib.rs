@@ -331,6 +331,7 @@ struct NumericalParzen {
     weights: Vec<f64>,
     mus: Vec<f64>,
     sigmas: Vec<f64>,
+    component_factors: Vec<f64>,
     log_component_factors: Vec<f64>,
     adapted_low: f64,
     adapted_high: f64,
@@ -346,38 +347,52 @@ impl NumericalParzen {
         adapted_high: f64,
         kind: NumericalKind,
     ) -> Self {
-        let log_component_factors = weights
+        let mut component_factors = Vec::with_capacity(weights.len());
+        let mut log_component_factors = Vec::with_capacity(weights.len());
+        for ((weight, mu), sigma) in weights
             .iter()
             .copied()
             .zip(mus.iter().copied())
             .zip(sigmas.iter().copied())
-            .map(|((weight, mu), sigma)| {
-                if weight <= 0.0 || !sigma.is_finite() || sigma <= 0.0
-                {
-                    return f64::NEG_INFINITY;
-                }
+        {
+            let log_factor = if weight <= 0.0 || !sigma.is_finite() || sigma <= 0.0
+            {
+                f64::NEG_INFINITY
+            }
+            else
+            {
                 let denominator = normal_cdf((adapted_high - mu) / sigma)
                     - normal_cdf((adapted_low - mu) / sigma);
                 if !denominator.is_finite() || denominator <= f64::MIN_POSITIVE
                 {
-                    return f64::NEG_INFINITY;
+                    f64::NEG_INFINITY
                 }
-                let base = weight.ln() - denominator.ln();
-                match kind
+                else
                 {
-                    NumericalKind::Integer { .. } => base,
-                    NumericalKind::LinearFloat | NumericalKind::LogFloat =>
+                    let base = weight.ln() - denominator.ln();
+                    match kind
                     {
-                        base - (SQRT_2PI * sigma).ln()
-                    },
+                        NumericalKind::Integer { .. } => base,
+                        NumericalKind::LinearFloat | NumericalKind::LogFloat =>
+                        {
+                            base - (SQRT_2PI * sigma).ln()
+                        },
+                    }
                 }
-            })
-            .collect();
+            };
+            log_component_factors.push(log_factor);
+            component_factors.push(if log_factor.is_finite() {
+                log_factor.exp()
+            } else {
+                0.0
+            });
+        }
 
         Self {
             weights,
             mus,
             sigmas,
+            component_factors,
             log_component_factors,
             adapted_low,
             adapted_high,
@@ -699,6 +714,59 @@ impl NumericalParzen {
             return f64::NEG_INFINITY;
         }
 
+        let mut density = 0.0_f64;
+        for index in 0..self.component_factors.len()
+        {
+            let factor = self.component_factors[index];
+            if factor == 0.0
+            {
+                continue;
+            }
+            if !factor.is_finite()
+            {
+                return self.log_pdf_stable_transformed(transformed);
+            }
+
+            let contribution = match self.kind
+            {
+                NumericalKind::Integer { .. } =>
+                {
+                    let sigma = self.sigmas[index];
+                    let mu = self.mus[index];
+                    let left = transformed - 0.5;
+                    let right = transformed + 0.5;
+                    let numerator =
+                        normal_cdf((right - mu) / sigma) - normal_cdf((left - mu) / sigma);
+                    if !numerator.is_finite() || numerator <= 0.0
+                    {
+                        continue;
+                    }
+                    factor * numerator
+                },
+                NumericalKind::LinearFloat | NumericalKind::LogFloat =>
+                {
+                    let z = (transformed - self.mus[index]) / self.sigmas[index];
+                    factor * (-0.5 * z * z).exp()
+                },
+            };
+            density += contribution;
+            if !density.is_finite()
+            {
+                return self.log_pdf_stable_transformed(transformed);
+            }
+        }
+
+        if density > 0.0
+        {
+            density.ln()
+        }
+        else
+        {
+            self.log_pdf_stable_transformed(transformed)
+        }
+    }
+
+    fn log_pdf_stable_transformed(&self, transformed: f64) -> f64 {
         let mut max_term = f64::NEG_INFINITY;
         let mut scaled_sum = 0.0_f64;
         for index in 0..self.log_component_factors.len()
