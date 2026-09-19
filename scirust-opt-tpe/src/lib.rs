@@ -247,6 +247,12 @@ struct SortedNumericObservation {
 }
 
 #[derive(Debug, Clone, Default)]
+struct NumericalBuildScratch {
+    selected_sorted: Vec<SortedNumericObservation>,
+    sigma_by_trial: Vec<f64>,
+}
+
+#[derive(Debug, Clone, Default)]
 struct ParamHistoryCache {
     chronological: Vec<(TrialId, ParamValue)>,
     numeric_sorted: Vec<SortedNumericObservation>,
@@ -548,6 +554,7 @@ impl NumericalParzen {
         mask: &[bool],
         distribution: &Distribution,
         config: TpeConfig,
+        scratch: &mut NumericalBuildScratch,
     ) -> Result<Self, TpeError> {
         let (adapted_low, adapted_high, kind) = match distribution
         {
@@ -572,12 +579,15 @@ impl NumericalParzen {
             return Err(TpeError::InvalidNumericalRange(param));
         }
 
-        let selected_sorted = history
-            .numeric_sorted
-            .iter()
-            .copied()
-            .filter(|observation| mask_contains(mask, observation.trial))
-            .collect::<Vec<_>>();
+        scratch.selected_sorted.clear();
+        scratch.selected_sorted.extend(
+            history
+                .numeric_sorted
+                .iter()
+                .copied()
+                .filter(|observation| mask_contains(mask, observation.trial)),
+        );
+        let selected_sorted = &scratch.selected_sorted;
         let n_observations = selected_sorted.len();
         if n_observations == 0
         {
@@ -600,7 +610,11 @@ impl NumericalParzen {
         {
             f64::EPSILON
         };
-        let mut sigma_by_trial = vec![range; mask.len()];
+        if scratch.sigma_by_trial.len() < mask.len()
+        {
+            scratch.sigma_by_trial.resize(mask.len(), 0.0);
+        }
+        let sigma_by_trial = &mut scratch.sigma_by_trial;
         for (position, observation) in selected_sorted.iter().enumerate()
         {
             let left_gap = if position == 0
@@ -1147,6 +1161,7 @@ impl ParzenModel {
         mask: &[bool],
         distribution: &Distribution,
         config: TpeConfig,
+        scratch: &mut NumericalBuildScratch,
     ) -> Result<Self, TpeError> {
         match distribution
         {
@@ -1159,6 +1174,7 @@ impl ParzenModel {
                 mask,
                 distribution,
                 config,
+                scratch,
             )?)),
         }
     }
@@ -1321,6 +1337,9 @@ pub struct TpeSampler {
     above_complete: BTreeSet<TrialId>,
     running: BTreeSet<TrialId>,
     param_history: Vec<ParamHistoryCache>,
+    build_scratch: NumericalBuildScratch,
+    below_mask: Vec<bool>,
+    above_mask: Vec<bool>,
 }
 
 impl TpeSampler {
@@ -1341,6 +1360,9 @@ impl TpeSampler {
             above_complete: BTreeSet::new(),
             running: BTreeSet::new(),
             param_history: Vec::new(),
+            build_scratch: NumericalBuildScratch::default(),
+            below_mask: Vec::new(),
+            above_mask: Vec::new(),
         }
     }
 
@@ -1509,6 +1531,7 @@ impl TpeSampler {
     fn sample_tpe_value(
         config: TpeConfig,
         rng: &mut SplitMix64,
+        scratch: &mut NumericalBuildScratch,
         history: &ParamHistoryCache,
         below_mask: &[bool],
         above_mask: &[bool],
@@ -1516,9 +1539,9 @@ impl TpeSampler {
         distribution: &Distribution,
     ) -> Result<ParamValue, TpeError> {
         let below_model =
-            ParzenModel::new_cached(param, history, below_mask, distribution, config)?;
+            ParzenModel::new_cached(param, history, below_mask, distribution, config, scratch)?;
         let above_model =
-            ParzenModel::new_cached(param, history, above_mask, distribution, config)?;
+            ParzenModel::new_cached(param, history, above_mask, distribution, config, scratch)?;
 
         let candidates = (0..config.n_ei_candidates)
             .map(|_| below_model.sample(rng))
@@ -1554,12 +1577,14 @@ impl Sampler for TpeSampler {
         self.sync_history(study)?;
         let use_random = self.ranked_complete.len() < self.config.n_startup_trials;
         let trial_count = study.trials().len();
-        let mut below_mask = vec![false; trial_count];
-        let mut above_mask = vec![false; trial_count];
+        self.below_mask.resize(trial_count, false);
+        self.above_mask.resize(trial_count, false);
+        self.below_mask.fill(false);
+        self.above_mask.fill(false);
         for trial in &self.below_complete
         {
             if let Ok(index) = usize::try_from(trial.get())
-                && let Some(slot) = below_mask.get_mut(index)
+                && let Some(slot) = self.below_mask.get_mut(index)
             {
                 *slot = true;
             }
@@ -1567,7 +1592,7 @@ impl Sampler for TpeSampler {
         for trial in &self.above_complete
         {
             if let Ok(index) = usize::try_from(trial.get())
-                && let Some(slot) = above_mask.get_mut(index)
+                && let Some(slot) = self.above_mask.get_mut(index)
             {
                 *slot = true;
             }
@@ -1577,7 +1602,7 @@ impl Sampler for TpeSampler {
             for trial in &self.running
             {
                 if let Ok(index) = usize::try_from(trial.get())
-                    && let Some(slot) = above_mask.get_mut(index)
+                    && let Some(slot) = self.above_mask.get_mut(index)
                 {
                     *slot = true;
                 }
@@ -1607,9 +1632,10 @@ impl Sampler for TpeSampler {
                 Self::sample_tpe_value(
                     config,
                     &mut self.rng,
+                    &mut self.build_scratch,
                     history,
-                    &below_mask,
-                    &above_mask,
+                    &self.below_mask,
+                    &self.above_mask,
                     spec.id,
                     &spec.distribution,
                 )?
@@ -2063,12 +2089,14 @@ mod tests {
             .collect::<Vec<_>>();
         let reference =
             ParzenModel::new(param, &selected_values, &distribution, TpeConfig::default()).unwrap();
+        let mut scratch = NumericalBuildScratch::default();
         let cached = ParzenModel::new_cached(
             param,
             &history,
             selected,
             &distribution,
             TpeConfig::default(),
+            &mut scratch,
         )
         .unwrap();
         (reference, cached)
