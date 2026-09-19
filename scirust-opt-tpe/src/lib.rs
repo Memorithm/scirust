@@ -1313,7 +1313,11 @@ mod tests {
 
         let _second_pending = study.ask(&mut sampler).unwrap();
         assert_eq!(
-            sampler.running.iter().map(|trial| trial.get()).collect::<Vec<_>>(),
+            sampler
+                .running
+                .iter()
+                .map(|trial| trial.get())
+                .collect::<Vec<_>>(),
             vec![first_pending.trial.get()]
         );
     }
@@ -1335,10 +1339,7 @@ mod tests {
                 .unwrap();
             study.start(trial).unwrap();
             study
-                .tell(
-                    trial,
-                    TrialOutcome::Complete(vec![(29 - number) as f64]),
-                )
+                .tell(trial, TrialOutcome::Complete(vec![(29 - number) as f64]))
                 .unwrap();
         }
 
