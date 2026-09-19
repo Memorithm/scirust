@@ -450,6 +450,174 @@ impl NumericalParzen {
         })
     }
 
+    fn new_cached(
+        param: ParamId,
+        history: &ParamHistoryCache,
+        mask: &[bool],
+        distribution: &Distribution,
+        config: TpeConfig,
+    ) -> Result<Self, TpeError> {
+        let (adapted_low, adapted_high, kind) = match distribution
+        {
+            Distribution::Uniform { low, high } => (*low, *high, NumericalKind::LinearFloat),
+            Distribution::LogUniform { low, high } =>
+            {
+                (low.ln(), high.ln(), NumericalKind::LogFloat)
+            },
+            Distribution::IntRange { low, high } => (
+                *low as f64 - 0.5,
+                *high as f64 + 0.5,
+                NumericalKind::Integer {
+                    low: *low,
+                    high: *high,
+                },
+            ),
+            Distribution::Categorical { .. } => return Err(TpeError::InvalidObservation(param)),
+        };
+        let range = adapted_high - adapted_low;
+        if !range.is_finite() || range <= 0.0
+        {
+            return Err(TpeError::InvalidNumericalRange(param));
+        }
+
+        let n_observations = history.selected_count(mask);
+        if n_observations == 0
+        {
+            return Ok(Self {
+                weights: vec![1.0],
+                mus: vec![0.5 * (adapted_low + adapted_high)],
+                sigmas: vec![range],
+                adapted_low,
+                adapted_high,
+                kind,
+            });
+        }
+
+        let chronological_weights = default_weights(n_observations);
+        let mut weight_by_trial = vec![0.0; mask.len()];
+        let mut chronological_index = 0;
+        for (trial, _) in &history.chronological
+        {
+            if !mask_contains(mask, *trial)
+            {
+                continue;
+            }
+            let trial_index =
+                usize::try_from(trial.get()).map_err(|_| TpeError::InvalidObservation(param))?;
+            let Some(slot) = weight_by_trial.get_mut(trial_index)
+            else
+            {
+                return Err(TpeError::InvalidObservation(param));
+            };
+            *slot = chronological_weights[chronological_index];
+            chronological_index += 1;
+        }
+
+        let selected_sorted = history
+            .numeric_sorted
+            .iter()
+            .copied()
+            .filter(|observation| mask_contains(mask, observation.trial))
+            .collect::<Vec<_>>();
+        if selected_sorted.len() != n_observations
+        {
+            return Err(TpeError::InvalidObservation(param));
+        }
+
+        let min_sigma = if config.consider_magic_clip
+        {
+            let n_kernels = n_observations + 1;
+            range / (100.0_f64.min(1.0 + n_kernels as f64))
+        }
+        else
+        {
+            f64::EPSILON
+        };
+        let mut sigma_by_trial = vec![range; mask.len()];
+        for (position, observation) in selected_sorted.iter().enumerate()
+        {
+            let left_gap = if position == 0
+            {
+                observation.transformed - adapted_low
+            }
+            else
+            {
+                observation.transformed - selected_sorted[position - 1].transformed
+            };
+            let right_gap = if position + 1 == n_observations
+            {
+                adapted_high - observation.transformed
+            }
+            else
+            {
+                selected_sorted[position + 1].transformed - observation.transformed
+            };
+            let mut sigma = left_gap.max(right_gap);
+            if !config.consider_endpoints && n_observations >= 2
+            {
+                if position == 0
+                {
+                    sigma = selected_sorted[1].transformed - observation.transformed;
+                }
+                else if position + 1 == n_observations
+                {
+                    sigma = observation.transformed
+                        - selected_sorted[n_observations - 2].transformed;
+                }
+            }
+            let trial_index = usize::try_from(observation.trial.get())
+                .map_err(|_| TpeError::InvalidObservation(param))?;
+            let Some(slot) = sigma_by_trial.get_mut(trial_index)
+            else
+            {
+                return Err(TpeError::InvalidObservation(param));
+            };
+            *slot = sigma.clamp(min_sigma, range);
+        }
+
+        let mut mus = Vec::with_capacity(n_observations + 1);
+        let mut sigmas = Vec::with_capacity(n_observations + 1);
+        let mut weights = Vec::with_capacity(n_observations + 1);
+        for (trial, value) in &history.chronological
+        {
+            if !mask_contains(mask, *trial)
+            {
+                continue;
+            }
+            let Some(transformed) = ParamHistoryCache::transform(param, *value, distribution)?
+            else
+            {
+                return Err(TpeError::InvalidObservation(param));
+            };
+            let trial_index =
+                usize::try_from(trial.get()).map_err(|_| TpeError::InvalidObservation(param))?;
+            mus.push(transformed);
+            sigmas.push(sigma_by_trial[trial_index]);
+            weights.push(weight_by_trial[trial_index]);
+        }
+
+        mus.push(0.5 * (adapted_low + adapted_high));
+        sigmas.push(range);
+        weights.push(config.prior_weight);
+        let weight_sum: f64 = weights.iter().sum();
+        if weight_sum > 0.0
+        {
+            for weight in &mut weights
+            {
+                *weight /= weight_sum;
+            }
+        }
+
+        Ok(Self {
+            weights,
+            mus,
+            sigmas,
+            adapted_low,
+            adapted_high,
+            kind,
+        })
+    }
+
     fn sample(&self, rng: &mut SplitMix64) -> ParamValue {
         let component = rng.weighted_index(&self.weights);
         let transformed = sample_truncated_normal(
