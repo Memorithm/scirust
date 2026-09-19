@@ -45,18 +45,22 @@ fn parse_args() -> Config {
     let mut trials = None;
     let mut seed = None;
     let mut args = env::args().skip(1);
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
+    while let Some(arg) = args.next()
+    {
+        match arg.as_str()
+        {
             "--dims" => dims = Some(parse_usize("--dims", args.next())),
             "--trials" => trials = Some(parse_usize("--trials", args.next())),
             "--seed" => seed = Some(parse_u64("--seed", args.next())),
-            "--header" => {
+            "--header" =>
+            {
                 println!(
                     "engine,version,dims,trials,seed,proposal_ns,tell_ns,total_ns,proposal_ns_per_trial,tell_ns_per_trial,total_ns_per_trial,rss_start_kib,rss_end_kib,peak_rss_kib,best"
                 );
                 std::process::exit(0);
             },
-            "--help" | "-h" => {
+            "--help" | "-h" =>
+            {
                 println!(
                     "usage: scirust-opt-bench --dims N --trials N --seed N\n       scirust-opt-bench --header"
                 );
@@ -97,10 +101,12 @@ fn target(index: usize) -> f64 {
 
 fn objective(candidate: &scirust_opt_core::Candidate, dims: usize) -> f64 {
     let mut total = 0.0;
-    for index in 0..dims {
+    for index in 0..dims
+    {
         let id = ParamId::new(u32::try_from(index).expect("dimension fits ParamId"));
         let ParamValue::Float(value) = candidate.value(id).expect("benchmark value is assigned")
-        else {
+        else
+        {
             panic!("benchmark parameter must be Float");
         };
         let delta = value - target(index);
@@ -110,14 +116,17 @@ fn objective(candidate: &scirust_opt_core::Candidate, dims: usize) -> f64 {
 }
 
 fn proc_status_kib(field: &str) -> u64 {
-    let Ok(status) = fs::read_to_string("/proc/self/status") else {
+    let Ok(status) = fs::read_to_string("/proc/self/status")
+    else
+    {
         return 0;
     };
     status
         .lines()
         .find_map(|line| {
             let (name, rest) = line.split_once(':')?;
-            if name != field {
+            if name != field
+            {
                 return None;
             }
             rest.split_whitespace().next()?.parse().ok()
@@ -149,7 +158,8 @@ fn main() {
     let mut tell_ns = 0_u128;
     let mut best = f64::INFINITY;
 
-    for _ in 0..config.trials {
+    for _ in 0..config.trials
+    {
         let proposal_start = Instant::now();
         let proposal = study.ask(&mut sampler).expect("proposal");
         proposal_ns += proposal_start.elapsed().as_nanos();
