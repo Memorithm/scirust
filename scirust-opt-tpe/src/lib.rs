@@ -706,6 +706,7 @@ impl NumericalParzen {
         }
     }
 
+    #[cfg(test)]
     fn log_pdf(&self, value: ParamValue) -> f64 {
         let transformed = match (self.kind, value)
         {
@@ -1159,6 +1160,7 @@ impl ParzenModel {
         }
     }
 
+    #[cfg(test)]
     fn log_pdf(&self, value: ParamValue) -> f64 {
         match self
         {
