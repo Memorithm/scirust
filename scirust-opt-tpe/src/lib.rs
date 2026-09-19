@@ -162,6 +162,27 @@ pub fn default_weights(n: usize) -> Vec<f64> {
     }
 }
 
+fn default_weight_at(n: usize, index: usize) -> f64 {
+    debug_assert!(index < n);
+    if n < 25
+    {
+        return 1.0;
+    }
+    let ramp_len = n - 25;
+    if index >= ramp_len
+    {
+        return 1.0;
+    }
+    if ramp_len == 1
+    {
+        return 1.0 / n as f64;
+    }
+    let start = 1.0 / n as f64;
+    let denominator = (ramp_len - 1) as f64;
+    let t = index as f64 / denominator;
+    start + (1.0 - start) * t
+}
+
 #[derive(Debug, Clone)]
 struct SplitMix64 {
     state: u64,
@@ -333,6 +354,8 @@ struct NumericalParzen {
     sigmas: Vec<f64>,
     component_factors: Vec<f64>,
     log_component_factors: Vec<f64>,
+    sampling_lower_cdf: Vec<f64>,
+    sampling_cdf_mass: Vec<f64>,
     adapted_low: f64,
     adapted_high: f64,
     kind: NumericalKind,
@@ -349,21 +372,29 @@ impl NumericalParzen {
     ) -> Self {
         let mut component_factors = Vec::with_capacity(weights.len());
         let mut log_component_factors = Vec::with_capacity(weights.len());
+        let mut sampling_lower_cdf = Vec::with_capacity(weights.len());
+        let mut sampling_cdf_mass = Vec::with_capacity(weights.len());
         for ((weight, mu), sigma) in weights
             .iter()
             .copied()
             .zip(mus.iter().copied())
             .zip(sigmas.iter().copied())
         {
-            let log_factor = if weight <= 0.0 || !sigma.is_finite() || sigma <= 0.0
+            let (lower_cdf, denominator) = if sigma.is_finite() && sigma > 0.0
             {
-                f64::NEG_INFINITY
+                let lower_cdf = normal_cdf((adapted_low - mu) / sigma);
+                let upper_cdf = normal_cdf((adapted_high - mu) / sigma);
+                (lower_cdf, upper_cdf - lower_cdf)
             }
             else
             {
-                let denominator = normal_cdf((adapted_high - mu) / sigma)
-                    - normal_cdf((adapted_low - mu) / sigma);
-                if !denominator.is_finite() || denominator <= f64::MIN_POSITIVE
+                (f64::NAN, f64::NAN)
+            };
+            sampling_lower_cdf.push(lower_cdf);
+            sampling_cdf_mass.push(denominator);
+
+            let log_factor =
+                if weight <= 0.0 || !denominator.is_finite() || denominator <= f64::MIN_POSITIVE
                 {
                     f64::NEG_INFINITY
                 }
@@ -378,8 +409,7 @@ impl NumericalParzen {
                             base - (SQRT_2PI * sigma).ln()
                         },
                     }
-                }
-            };
+                };
             log_component_factors.push(log_factor);
             component_factors.push(
                 if log_factor.is_finite()
@@ -399,6 +429,8 @@ impl NumericalParzen {
             sigmas,
             component_factors,
             log_component_factors,
+            sampling_lower_cdf,
+            sampling_cdf_mass,
             adapted_low,
             adapted_high,
             kind,
@@ -540,7 +572,13 @@ impl NumericalParzen {
             return Err(TpeError::InvalidNumericalRange(param));
         }
 
-        let n_observations = history.selected_count(mask);
+        let selected_sorted = history
+            .numeric_sorted
+            .iter()
+            .copied()
+            .filter(|observation| mask_contains(mask, observation.trial))
+            .collect::<Vec<_>>();
+        let n_observations = selected_sorted.len();
         if n_observations == 0
         {
             return Ok(Self::from_components(
@@ -551,37 +589,6 @@ impl NumericalParzen {
                 adapted_high,
                 kind,
             ));
-        }
-
-        let chronological_weights = default_weights(n_observations);
-        let mut weight_by_trial = vec![0.0; mask.len()];
-        let mut chronological_index = 0;
-        for (trial, _) in &history.chronological
-        {
-            if !mask_contains(mask, *trial)
-            {
-                continue;
-            }
-            let trial_index =
-                usize::try_from(trial.get()).map_err(|_| TpeError::InvalidObservation(param))?;
-            let Some(slot) = weight_by_trial.get_mut(trial_index)
-            else
-            {
-                return Err(TpeError::InvalidObservation(param));
-            };
-            *slot = chronological_weights[chronological_index];
-            chronological_index += 1;
-        }
-
-        let selected_sorted = history
-            .numeric_sorted
-            .iter()
-            .copied()
-            .filter(|observation| mask_contains(mask, observation.trial))
-            .collect::<Vec<_>>();
-        if selected_sorted.len() != n_observations
-        {
-            return Err(TpeError::InvalidObservation(param));
         }
 
         let min_sigma = if config.consider_magic_clip
@@ -638,6 +645,7 @@ impl NumericalParzen {
         let mut mus = Vec::with_capacity(n_observations + 1);
         let mut sigmas = Vec::with_capacity(n_observations + 1);
         let mut weights = Vec::with_capacity(n_observations + 1);
+        let mut chronological_index = 0;
         for (trial, value) in &history.chronological
         {
             if !mask_contains(mask, *trial)
@@ -653,7 +661,8 @@ impl NumericalParzen {
                 usize::try_from(trial.get()).map_err(|_| TpeError::InvalidObservation(param))?;
             mus.push(transformed);
             sigmas.push(sigma_by_trial[trial_index]);
-            weights.push(weight_by_trial[trial_index]);
+            weights.push(default_weight_at(n_observations, chronological_index));
+            chronological_index += 1;
         }
 
         mus.push(0.5 * (adapted_low + adapted_high));
@@ -680,12 +689,14 @@ impl NumericalParzen {
 
     fn sample(&self, rng: &mut SplitMix64) -> ParamValue {
         let component = rng.weighted_index(&self.weights);
-        let transformed = sample_truncated_normal(
+        let transformed = sample_truncated_normal_from_cdf(
             rng,
             self.mus[component],
             self.sigmas[component],
             self.adapted_low,
             self.adapted_high,
+            self.sampling_lower_cdf[component],
+            self.sampling_cdf_mass[component],
         );
         match self.kind
         {
@@ -1216,15 +1227,27 @@ fn normal_inverse_cdf(probability: f64) -> f64 {
     SQRT_2 * erfinv(2.0 * probability - 1.0)
 }
 
+#[cfg(test)]
 fn sample_truncated_normal(rng: &mut SplitMix64, mu: f64, sigma: f64, low: f64, high: f64) -> f64 {
     let lower = normal_cdf((low - mu) / sigma);
     let upper = normal_cdf((high - mu) / sigma);
-    let mass = upper - lower;
-    if !mass.is_finite() || mass <= f64::MIN_POSITIVE
+    sample_truncated_normal_from_cdf(rng, mu, sigma, low, high, lower, upper - lower)
+}
+
+fn sample_truncated_normal_from_cdf(
+    rng: &mut SplitMix64,
+    mu: f64,
+    sigma: f64,
+    low: f64,
+    high: f64,
+    lower_cdf: f64,
+    cdf_mass: f64,
+) -> f64 {
+    if !cdf_mass.is_finite() || cdf_mass <= f64::MIN_POSITIVE
     {
         return mu.clamp(low, high);
     }
-    let probability = lower + mass * rng.next_f64();
+    let probability = lower_cdf + cdf_mass * rng.next_f64();
     (mu + sigma * normal_inverse_cdf(probability)).clamp(low, high)
 }
 
@@ -1636,6 +1659,18 @@ mod tests {
     }
 
     #[test]
+    fn indexed_default_weight_matches_vector_reference() {
+        for n in 1..200
+        {
+            let expected = default_weights(n);
+            for (index, expected) in expected.into_iter().enumerate()
+            {
+                assert_eq!(default_weight_at(n, index).to_bits(), expected.to_bits());
+            }
+        }
+    }
+
+    #[test]
     fn default_weight_shape_matches_reference_rule() {
         assert_eq!(default_weights(0), Vec::<f64>::new());
         assert_eq!(default_weights(3), vec![1.0, 1.0, 1.0]);
@@ -1798,6 +1833,96 @@ mod tests {
                 ParamValue::Int(7),
                 ParamValue::Int(10),
             ],
+        );
+    }
+
+    fn sample_numerical_reference(model: &NumericalParzen, rng: &mut SplitMix64) -> ParamValue {
+        let component = rng.weighted_index(&model.weights);
+        let transformed = sample_truncated_normal(
+            rng,
+            model.mus[component],
+            model.sigmas[component],
+            model.adapted_low,
+            model.adapted_high,
+        );
+        match model.kind
+        {
+            NumericalKind::LinearFloat =>
+            {
+                ParamValue::Float(transformed.clamp(model.adapted_low, model.adapted_high))
+            },
+            NumericalKind::LogFloat => ParamValue::Float(
+                transformed
+                    .exp()
+                    .clamp(model.adapted_low.exp(), model.adapted_high.exp()),
+            ),
+            NumericalKind::Integer { low, high } =>
+            {
+                ParamValue::Int(transformed.round().clamp(low as f64, high as f64) as i64)
+            },
+        }
+    }
+
+    fn assert_sampling_cdf_cache_preserves_sequence(
+        observations: &[ParamValue],
+        distribution: Distribution,
+        seed: u64,
+    ) {
+        let model = NumericalParzen::new(
+            ParamId::new(0),
+            observations,
+            &distribution,
+            TpeConfig::default(),
+        )
+        .unwrap();
+        let mut cached_rng = SplitMix64::new(seed);
+        let mut reference_rng = SplitMix64::new(seed);
+        for _ in 0..128
+        {
+            assert_eq!(
+                model.sample(&mut cached_rng),
+                sample_numerical_reference(&model, &mut reference_rng)
+            );
+        }
+    }
+
+    #[test]
+    fn cached_sampling_cdf_preserves_reference_sequence() {
+        assert_sampling_cdf_cache_preserves_sequence(
+            &[
+                ParamValue::Float(0.1),
+                ParamValue::Float(0.25),
+                ParamValue::Float(0.55),
+                ParamValue::Float(0.9),
+            ],
+            Distribution::Uniform {
+                low: 0.0,
+                high: 1.0,
+            },
+            0x1111,
+        );
+        assert_sampling_cdf_cache_preserves_sequence(
+            &[
+                ParamValue::Float(1e-4),
+                ParamValue::Float(1e-3),
+                ParamValue::Float(1e-2),
+                ParamValue::Float(1e-1),
+            ],
+            Distribution::LogUniform {
+                low: 1e-5,
+                high: 1.0,
+            },
+            0x2222,
+        );
+        assert_sampling_cdf_cache_preserves_sequence(
+            &[
+                ParamValue::Int(1),
+                ParamValue::Int(3),
+                ParamValue::Int(7),
+                ParamValue::Int(10),
+            ],
+            Distribution::IntRange { low: 1, high: 10 },
+            0x3333,
         );
     }
 
