@@ -281,7 +281,7 @@ pub fn exact_cost_vector(
     let checkpoint_count = graph
         .nodes()
         .iter()
-        .filter(|node| matches!(node.operation, Operation::Checkpoint))
+        .filter(|node| matches!(&node.operation, Operation::Checkpoint))
         .count();
     let checkpoint_markers =
         u64::try_from(checkpoint_count).map_err(|_| CostVectorError::CheckpointCountOverflow)?;
