@@ -19,8 +19,7 @@ use crate::{
 /// fail-closed: if the target plan changed after preparation, the token is
 /// rejected as stale instead of overwriting newer decisions.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PreparedReplan
-{
+pub struct PreparedReplan {
     base: RepresentationPlan,
     projected: RepresentationPlan,
     before_storage_bits: StorageBits,
@@ -30,21 +29,21 @@ pub struct PreparedReplan
 /// Failure while preparing or committing a two-phase representation transition.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum PreparedReplanError
-{
+pub enum PreparedReplanError {
     /// The underlying representation plan or graph contract was invalid.
     Representation(RepresentationError),
     /// The target plan changed after this transition was prepared.
     StalePlan,
 }
 
-impl fmt::Display for PreparedReplanError
-{
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result
-    {
+impl fmt::Display for PreparedReplanError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self
         {
-            Self::Representation(error) => write!(formatter, "representation transition failed: {error}"),
+            Self::Representation(error) =>
+            {
+                write!(formatter, "representation transition failed: {error}")
+            },
             Self::StalePlan => write!(formatter, "prepared representation transition is stale"),
         }
     }
@@ -53,16 +52,13 @@ impl fmt::Display for PreparedReplanError
 #[cfg(feature = "std")]
 impl std::error::Error for PreparedReplanError {}
 
-impl From<RepresentationError> for PreparedReplanError
-{
-    fn from(value: RepresentationError) -> Self
-    {
+impl From<RepresentationError> for PreparedReplanError {
+    fn from(value: RepresentationError) -> Self {
         Self::Representation(value)
     }
 }
 
-impl PreparedReplan
-{
+impl PreparedReplan {
     /// Prepare and validate a representation transition without mutating `plan`.
     ///
     /// Validation is exactly the same as [`RepresentationPlan::replan`]. The
@@ -81,43 +77,57 @@ impl PreparedReplan
     /// An empty proposal is a validated no-op:
     ///
     /// ```
-    /// use scirust_tensor_ir::{DType, Graph, PreparedReplan, RepresentationPlan, Shape, TensorType};
+    /// use scirust_tensor_ir::{
+    ///     DType, Graph, PreparedReplan, RepresentationPlan, Shape, TensorType,
+    /// };
     /// let mut graph = Graph::new();
-    /// let x = graph.add_input("x", TensorType::new(DType::F32, Shape::new([2usize, 2]))).unwrap();
+    /// let x = graph
+    ///     .add_input("x", TensorType::new(DType::F32, Shape::new([2usize, 2])))
+    ///     .unwrap();
     /// graph.set_outputs(vec![x]).unwrap();
     /// let plan = RepresentationPlan::dense(&graph).unwrap();
     /// let prepared = PreparedReplan::prepare(&plan, &graph, &[]).unwrap();
     /// assert_eq!(prepared.before_storage_bits(), prepared.after_storage_bits());
-    /// assert_eq!(plan.assignment(x), Some(prepared.projected_assignments()[0]));
+    /// assert_eq!(
+    ///     plan.assignment(x),
+    ///     Some(prepared.projected_assignments()[0])
+    /// );
     /// ```
     ///
     /// Invalid representation identifiers are rejected before any mutation:
     ///
     /// ```
     /// use scirust_tensor_ir::{
-    ///     DType, Graph, PreparedReplan, PreparedReplanError, Rebinding,
-    ///     RepresentationError, RepresentationId, RepresentationPlan, Shape, TensorType,
+    ///     DType, Graph, PreparedReplan, PreparedReplanError, Rebinding, RepresentationError,
+    ///     RepresentationId, RepresentationPlan, Shape, TensorType,
     /// };
     /// let mut graph = Graph::new();
-    /// let x = graph.add_input("x", TensorType::new(DType::F32, Shape::new([1usize]))).unwrap();
+    /// let x = graph
+    ///     .add_input("x", TensorType::new(DType::F32, Shape::new([1usize])))
+    ///     .unwrap();
     /// graph.set_outputs(vec![x]).unwrap();
     /// let plan = RepresentationPlan::dense(&graph).unwrap();
     /// let error = PreparedReplan::prepare(
     ///     &plan,
     ///     &graph,
-    ///     &[Rebinding { node: x, representation: RepresentationId::new(999) }],
-    /// ).unwrap_err();
+    ///     &[Rebinding {
+    ///         node: x,
+    ///         representation: RepresentationId::new(999),
+    ///     }],
+    /// )
+    /// .unwrap_err();
     /// assert!(matches!(
     ///     error,
-    ///     PreparedReplanError::Representation(RepresentationError::InvalidRepresentationId { .. })
+    ///     PreparedReplanError::Representation(
+    ///         RepresentationError::InvalidRepresentationId { .. }
+    ///     )
     /// ));
     /// ```
     pub fn prepare(
         plan: &RepresentationPlan,
         graph: &Graph,
         rebinding: &[Rebinding],
-    ) -> Result<Self, PreparedReplanError>
-    {
+    ) -> Result<Self, PreparedReplanError> {
         let before_storage_bits = plan.total_storage_bits(graph)?;
         let mut projected = plan.clone();
         projected.replan(graph, rebinding)?;
@@ -133,22 +143,19 @@ impl PreparedReplan
 
     /// Exact storage total of the source plan.
     #[must_use]
-    pub const fn before_storage_bits(&self) -> StorageBits
-    {
+    pub const fn before_storage_bits(&self) -> StorageBits {
         self.before_storage_bits
     }
 
     /// Exact storage total after the projected transition.
     #[must_use]
-    pub const fn after_storage_bits(&self) -> StorageBits
-    {
+    pub const fn after_storage_bits(&self) -> StorageBits {
         self.after_storage_bits
     }
 
     /// Projected node assignments in canonical node order.
     #[must_use]
-    pub fn projected_assignments(&self) -> &[RepresentationId]
-    {
+    pub fn projected_assignments(&self) -> &[RepresentationId] {
         self.projected.assignments()
     }
 
@@ -167,9 +174,13 @@ impl PreparedReplan
     /// # Examples
     ///
     /// ```
-    /// use scirust_tensor_ir::{DType, Graph, PreparedReplan, RepresentationPlan, Shape, TensorType};
+    /// use scirust_tensor_ir::{
+    ///     DType, Graph, PreparedReplan, RepresentationPlan, Shape, TensorType,
+    /// };
     /// let mut graph = Graph::new();
-    /// let x = graph.add_input("x", TensorType::new(DType::F32, Shape::new([1usize]))).unwrap();
+    /// let x = graph
+    ///     .add_input("x", TensorType::new(DType::F32, Shape::new([1usize])))
+    ///     .unwrap();
     /// graph.set_outputs(vec![x]).unwrap();
     /// let mut plan = RepresentationPlan::dense(&graph).unwrap();
     /// let prepared = PreparedReplan::prepare(&plan, &graph, &[]).unwrap();
@@ -180,22 +191,27 @@ impl PreparedReplan
     ///
     /// ```
     /// use scirust_tensor_ir::{
-    ///     DType, Graph, PreparedReplan, PreparedReplanError, RepresentationPlan, Shape, TensorType,
+    ///     DType, Graph, PreparedReplan, PreparedReplanError, RepresentationPlan, Shape,
+    ///     TensorType,
     /// };
     /// let mut graph = Graph::new();
-    /// let x = graph.add_input("x", TensorType::new(DType::F32, Shape::new([1usize]))).unwrap();
+    /// let x = graph
+    ///     .add_input("x", TensorType::new(DType::F32, Shape::new([1usize])))
+    ///     .unwrap();
     /// graph.set_outputs(vec![x]).unwrap();
     /// let mut plan = RepresentationPlan::dense(&graph).unwrap();
     /// let prepared = PreparedReplan::prepare(&plan, &graph, &[]).unwrap();
     /// plan.declare_dense(DType::F16).unwrap();
-    /// assert_eq!(prepared.commit(&mut plan, &graph), Err(PreparedReplanError::StalePlan));
+    /// assert_eq!(
+    ///     prepared.commit(&mut plan, &graph),
+    ///     Err(PreparedReplanError::StalePlan)
+    /// );
     /// ```
     pub fn commit(
         self,
         plan: &mut RepresentationPlan,
         graph: &Graph,
-    ) -> Result<(), PreparedReplanError>
-    {
+    ) -> Result<(), PreparedReplanError> {
         plan.ensure_compatible_with(graph)?;
         self.projected.ensure_compatible_with(graph)?;
         if *plan != self.base
@@ -209,8 +225,7 @@ impl PreparedReplan
 }
 
 #[cfg(test)]
-mod tests
-{
+mod tests {
     use alloc::vec;
 
     use scirust_compute::{DType, Shape};
@@ -218,21 +233,16 @@ mod tests
     use super::*;
     use crate::TensorType;
 
-    fn matrix_graph() -> (Graph, crate::NodeId)
-    {
+    fn matrix_graph() -> (Graph, crate::NodeId) {
         let mut graph = Graph::new();
         let node = graph
-            .add_input(
-                "x",
-                TensorType::new(DType::F32, Shape::new([2usize, 2])),
-            )
+            .add_input("x", TensorType::new(DType::F32, Shape::new([2usize, 2])))
             .unwrap();
         graph.set_outputs(vec![node]).unwrap();
         (graph, node)
     }
 
-    fn quantized_representation(plan: &mut RepresentationPlan) -> RepresentationId
-    {
+    fn quantized_representation(plan: &mut RepresentationPlan) -> RepresentationId {
         let dense_u8 = plan.declare_dense(DType::U8).unwrap();
         let dense_f32 = plan.declare_dense(DType::F32).unwrap();
         plan.declare_quantized_per_tensor(
@@ -245,8 +255,7 @@ mod tests
     }
 
     #[test]
-    fn prepare_is_non_mutating_and_reports_exact_storage_delta()
-    {
+    fn prepare_is_non_mutating_and_reports_exact_storage_delta() {
         let (graph, node) = matrix_graph();
         let mut plan = RepresentationPlan::dense(&graph).unwrap();
         let quantized = quantized_representation(&mut plan);
@@ -269,8 +278,7 @@ mod tests
     }
 
     #[test]
-    fn commit_applies_projected_plan_atomically()
-    {
+    fn commit_applies_projected_plan_atomically() {
         let (graph, node) = matrix_graph();
         let mut plan = RepresentationPlan::dense(&graph).unwrap();
         let quantized = quantized_representation(&mut plan);
@@ -291,8 +299,7 @@ mod tests
     }
 
     #[test]
-    fn commit_rejects_stale_plan_without_overwrite()
-    {
+    fn commit_rejects_stale_plan_without_overwrite() {
         let (graph, node) = matrix_graph();
         let mut plan = RepresentationPlan::dense(&graph).unwrap();
         let quantized = quantized_representation(&mut plan);
@@ -313,6 +320,9 @@ mod tests
             Err(PreparedReplanError::StalePlan)
         );
         assert_eq!(plan.assignments(), assignments_before_commit);
-        assert_eq!(plan.representation(extra), Some(&crate::PrimitiveRepresentation::dense(DType::F16)));
+        assert_eq!(
+            plan.representation(extra),
+            Some(&crate::PrimitiveRepresentation::dense(DType::F16))
+        );
     }
 }
