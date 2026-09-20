@@ -508,11 +508,32 @@ jobs:
           manifest-path: scirust-core/Cargo.toml
           arguments: --locked --no-default-features --features blas-mkl
 
-  # Miri exercises the memory-view/allocation regressions in crates that
-  # contain unsafe code, then the pure numeric suites.
-  miri:
-    name: Miri (memory safety and numeric crates)
+  # Miri exercises the same memory-view/allocation regressions and pure
+  # numeric suites as before, but in independent shards. The final `miri`
+  # job preserves the historical required-check name and fails unless every
+  # shard succeeds.
+  miri-shards:
+    name: Miri shard (${{ matrix.name }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: unsafe-regressions
+            command: |
+              cargo +nightly-2026-07-02 miri test -p scirust-core --locked matrix::view::tests
+              cargo +nightly-2026-07-02 miri test -p scirust-arena --locked aligned::tests
+              cargo +nightly-2026-07-02 miri test -p scirust-arena --locked slab::tests
+          - name: numeric-a
+            command: |
+              cargo +nightly-2026-07-02 miri test --locked \
+                -p scirust-special -p scirust-stats -p scirust-interp \
+                -p scirust-sparse -p scirust-stiff
+          - name: numeric-b
+            command: |
+              cargo +nightly-2026-07-02 miri test --locked \
+                -p scirust-gp -p scirust-units -p scirust-frame \
+                -p scirust-forecast -p scirust-sim
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Install nightly toolchain + miri
@@ -522,27 +543,26 @@ jobs:
           components: miri
       - name: Cache cargo
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-      - name: Run targeted unsafe regressions and pure-numeric crates
-        # proptest's default failure-persistence backend calls
-        # std::env::current_dir() to absolutize its regression-file path —
-        # entirely unrelated to the numeric code under test, but Miri's
-        # isolation sandbox rejects `getcwd` as unsupported by default,
-        # aborting the whole run. `-Zmiri-isolation-error=warn` demotes that
-        # specific class of unsupported-operation to a warning (an OS error
-        # is returned instead, which proptest already handles by skipping
-        # persisted-failure loading) without weakening Miri's actual UB
-        # detection for the crates' own in-memory, I/O-free logic.
+      - name: Run ${{ matrix.name }} under Miri
+        # proptest's failure-persistence backend may call getcwd. Keep the
+        # existing isolation-warning policy exactly as before; UB detection is
+        # unchanged.
         env:
           MIRIFLAGS: "-Zmiri-isolation-error=warn"
+        run: ${{ matrix.command }}
+
+  miri:
+    name: Miri (memory safety and numeric crates)
+    needs: miri-shards
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every Miri shard to pass
+        env:
+          MIRI_SHARDS_RESULT: ${{ needs.miri-shards.result }}
         run: |
-          cargo +nightly-2026-07-02 miri test -p scirust-core --locked matrix::view::tests
-          cargo +nightly-2026-07-02 miri test -p scirust-arena --locked aligned::tests
-          cargo +nightly-2026-07-02 miri test -p scirust-arena --locked slab::tests
-          cargo +nightly-2026-07-02 miri test --locked \
-            -p scirust-special -p scirust-stats \
-            -p scirust-interp -p scirust-sparse -p scirust-stiff \
-            -p scirust-gp -p scirust-units -p scirust-frame -p scirust-forecast \
-            -p scirust-sim
+          echo "miri-shards result: $MIRI_SHARDS_RESULT"
+          test "$MIRI_SHARDS_RESULT" = "success"
 
   # Informational: build the cargo-fuzz targets for the untrusted-input parsers
   # and smoke-run them for a bounded time. The `fuzz` crate is a separate
