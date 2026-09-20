@@ -142,18 +142,54 @@ impl PreparedReplan {
     }
 
     /// Exact storage total of the source plan.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scirust_tensor_ir::{DType, Graph, PreparedReplan, RepresentationPlan, Shape, TensorType};
+    /// let mut graph = Graph::new();
+    /// let x = graph.add_input("x", TensorType::new(DType::F32, Shape::new([1usize]))).unwrap();
+    /// graph.set_outputs(vec![x]).unwrap();
+    /// let plan = RepresentationPlan::dense(&graph).unwrap();
+    /// let prepared = PreparedReplan::prepare(&plan, &graph, &[]).unwrap();
+    /// assert_eq!(prepared.before_storage_bits().get(), 32);
+    /// ```
     #[must_use]
     pub const fn before_storage_bits(&self) -> StorageBits {
         self.before_storage_bits
     }
 
     /// Exact storage total after the projected transition.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scirust_tensor_ir::{DType, Graph, PreparedReplan, RepresentationPlan, Shape, TensorType};
+    /// let mut graph = Graph::new();
+    /// let x = graph.add_input("x", TensorType::new(DType::F32, Shape::new([1usize]))).unwrap();
+    /// graph.set_outputs(vec![x]).unwrap();
+    /// let plan = RepresentationPlan::dense(&graph).unwrap();
+    /// let prepared = PreparedReplan::prepare(&plan, &graph, &[]).unwrap();
+    /// assert_eq!(prepared.after_storage_bits(), prepared.before_storage_bits());
+    /// ```
     #[must_use]
     pub const fn after_storage_bits(&self) -> StorageBits {
         self.after_storage_bits
     }
 
     /// Projected node assignments in canonical node order.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scirust_tensor_ir::{DType, Graph, PreparedReplan, RepresentationPlan, Shape, TensorType};
+    /// let mut graph = Graph::new();
+    /// let x = graph.add_input("x", TensorType::new(DType::F32, Shape::new([1usize]))).unwrap();
+    /// graph.set_outputs(vec![x]).unwrap();
+    /// let plan = RepresentationPlan::dense(&graph).unwrap();
+    /// let prepared = PreparedReplan::prepare(&plan, &graph, &[]).unwrap();
+    /// assert_eq!(prepared.projected_assignments(), plan.assignments());
+    /// ```
     #[must_use]
     pub fn projected_assignments(&self) -> &[RepresentationId] {
         self.projected.assignments()
