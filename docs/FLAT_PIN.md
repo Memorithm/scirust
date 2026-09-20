@@ -5,12 +5,12 @@ SciRust consumes FLAT through optional `flat-autotune` features.
 Qualified bump target:
 
 ```
-elastic-core            git+https://github.com/Memorithm/ElasticXxx.git  rev = 9130a412857335cc5120b013b91552dd0808f9f1
-flat-attention-planner  git+https://github.com/Memorithm/FLAT-ATTENTION  rev = 4529a2079434965e13e90ddd2e98ecc88ee0cb3a
-flat-elastic-kernel     git+https://github.com/Memorithm/FLAT-ATTENTION  rev = 4529a2079434965e13e90ddd2e98ecc88ee0cb3a
+memorithm-elastic       git+https://github.com/Memorithm/ElasticXxx.git  rev = 354cfb372f568338b29a357b0671bf9315097b1d
+flat-attention-planner  git+https://github.com/Memorithm/FLAT-ATTENTION  rev = 7a5db9127bd9b76f6f4e58a47a371658f0c8f5e5
+flat-elastic-kernel     git+https://github.com/Memorithm/FLAT-ATTENTION  rev = 7a5db9127bd9b76f6f4e58a47a371658f0c8f5e5
 ```
 
-The target revision is `4529a2079434965e13e90ddd2e98ecc88ee0cb3a`, previously identified by this tracker and already used by NoiseLab at the time the issue was opened.
+The qualified FLAT revision is `7a5db9127bd9b76f6f4e58a47a371658f0c8f5e5`; its `flat-elastic-kernel` bridge is pinned to merged ElasticXxx `354cfb372f568338b29a357b0671bf9315097b1d`. SciRust consumes the same Elastic generation through the public `memorithm-elastic` facade.
 
 ## Rule
 
