@@ -61,6 +61,24 @@
         "projected_assignments",
         "commit"
       ]
+    },
+    {
+      "source": "scirust-tensor-ir/src/canonical_identity.rs",
+      "min_runnable_examples": 2,
+      "required_symbols": [
+        "canonical_graph_bytes",
+        "canonical_representation_anchor_bytes",
+        "canonical_representation_plan_bytes"
+      ]
+    },
+    {
+      "source": "scirust-attention-intent/src/lib.rs",
+      "min_runnable_examples": 1,
+      "required_symbols": [
+        "recomputed_workload_fingerprint",
+        "validate",
+        "validate_against"
+      ]
     }
   ]
 }
