@@ -13,7 +13,7 @@
     "scirust-attention-intent": 0,
     "scirust-audio": 6,
     "scirust-autodiff": 28,
-    "scirust-automl": 27,
+    "scirust-automl": 25,
     "scirust-bench-schema": 0,
     "scirust-biomed": 5,
     "scirust-bms": 0,
@@ -150,5 +150,5 @@
     "scirust-water": 0
   },
   "schema_version": 1,
-  "total_undocumented": 2359
+  "total_undocumented": 2357
 }
