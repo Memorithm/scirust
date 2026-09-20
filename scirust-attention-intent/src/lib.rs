@@ -245,7 +245,7 @@ impl AttentionExecutionIntent {
         ] {
             match variant {
                 RepresentationVariant::Dense { storage_dtype }
-                    if storage_dtype == self.logical_dtype => {}
+                    if same_dtype(storage_dtype, self.logical_dtype) => {}
                 RepresentationVariant::QuantizedPerTensor => {}
                 _ => {
                     return Err(IntentError::UnsupportedRepresentation { role, variant });
@@ -404,17 +404,17 @@ impl AttentionExecutionIntent {
             && matches!(
                 self.representation.query_variant,
                 RepresentationVariant::Dense { storage_dtype }
-                    if storage_dtype == self.logical_dtype
+                    if same_dtype(storage_dtype, self.logical_dtype)
             )
             && matches!(
                 self.representation.key_variant,
                 RepresentationVariant::Dense { storage_dtype }
-                    if storage_dtype == self.logical_dtype
+                    if same_dtype(storage_dtype, self.logical_dtype)
             )
             && matches!(
                 self.representation.value_variant,
                 RepresentationVariant::Dense { storage_dtype }
-                    if storage_dtype == self.logical_dtype
+                    if same_dtype(storage_dtype, self.logical_dtype)
             )
     }
 
@@ -871,6 +871,25 @@ fn variant_of(
             unreachable!("PrimitiveRepresentation is exhaustive over known variants in this slice")
         },
     }
+}
+
+const fn same_dtype(left: DType, right: DType) -> bool {
+    matches!(
+        (left, right),
+        (DType::Bool, DType::Bool)
+            | (DType::U8, DType::U8)
+            | (DType::I8, DType::I8)
+            | (DType::U16, DType::U16)
+            | (DType::I16, DType::I16)
+            | (DType::F16, DType::F16)
+            | (DType::Bf16, DType::Bf16)
+            | (DType::U32, DType::U32)
+            | (DType::I32, DType::I32)
+            | (DType::F32, DType::F32)
+            | (DType::U64, DType::U64)
+            | (DType::I64, DType::I64)
+            | (DType::F64, DType::F64)
+    )
 }
 
 fn fingerprint_intent(intent: &AttentionExecutionIntent) -> u64 {
