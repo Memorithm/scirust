@@ -150,6 +150,7 @@ members = [
     "scirust-tensor-compile",
     "scirust-tensor-reference",
     "scirust-tensor-runtime",
+    "scirust-tensor-search-bridge",
     "scirust-tensor-examples",
     "scirust-onnx",
     "scirust-nas",
