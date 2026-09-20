@@ -87,7 +87,9 @@
         "scirust-algogen",
         "scirust-symreg",
         "scirust-synthesis",
-        "scirust-variational"
+        "scirust-variational",
+        "scirust-opt-core",
+        "scirust-opt-tpe"
       ]
     },
     {
