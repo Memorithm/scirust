@@ -4281,6 +4281,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "scirust-tensor-search-bridge"
+version = "0.1.0"
+dependencies = [
+ "scirust-opt-core",
+ "scirust-tensor-ir",
+]
+
+[[package]]
 name = "scirust-thermo"
 version = "0.1.0"
 
