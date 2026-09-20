@@ -50,6 +50,17 @@
       "required_symbol_counts": {
         "new": 4
       }
+    },
+    {
+      "source": "scirust-tensor-ir/src/transition.rs",
+      "min_runnable_examples": 1,
+      "required_symbols": [
+        "prepare",
+        "before_storage_bits",
+        "after_storage_bits",
+        "projected_assignments",
+        "commit"
+      ]
     }
   ]
 }
