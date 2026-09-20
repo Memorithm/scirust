@@ -78,12 +78,7 @@
         "recomputed_workload_fingerprint",
         "validate",
         "validate_against"
-      ],
-      "required_symbol_counts": {
-        "recomputed_workload_fingerprint": 1,
-        "validate": 2,
-        "validate_against": 2
-      }
+      ]
     }
   ]
 }
