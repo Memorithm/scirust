@@ -5,12 +5,12 @@ SciRust consumes FLAT through optional `flat-autotune` features.
 Qualified bump target:
 
 ```
-elastic-core            git+https://github.com/Memorithm/ElasticXxx.git  rev = 9130a412857335cc5120b013b91552dd0808f9f1
-flat-attention-planner  git+https://github.com/Memorithm/FLAT-ATTENTION  rev = 4529a2079434965e13e90ddd2e98ecc88ee0cb3a
-flat-elastic-kernel     git+https://github.com/Memorithm/FLAT-ATTENTION  rev = 4529a2079434965e13e90ddd2e98ecc88ee0cb3a
+elastic                  git+https://github.com/Memorithm/ElasticXxx.git  package = memorithm-elastic  rev = 354cfb372f568338b29a357b0671bf9315097b1d
+flat-attention-planner  git+https://github.com/Memorithm/FLAT-ATTENTION  rev = 7a5db9127bd9b76f6f4e58a47a371658f0c8f5e5
+flat-elastic-kernel     git+https://github.com/Memorithm/FLAT-ATTENTION  rev = 7a5db9127bd9b76f6f4e58a47a371658f0c8f5e5
 ```
 
-The target revision is `4529a2079434965e13e90ddd2e98ecc88ee0cb3a`, previously identified by this tracker and already used by NoiseLab at the time the issue was opened.
+The qualified FLAT source is PR #260 merge `7a5db9127bd9b76f6f4e58a47a371658f0c8f5e5`, paired with merged ElasticXxx PR #202 `354cfb372f568338b29a357b0671bf9315097b1d`. The contextual rail is qualified only against this exact merged FLAT revision.
 
 ## Rule
 
@@ -24,4 +24,4 @@ WGPU must stay off on the newer FLAT revision in this crate (existing comment in
 
 ## Qualification
 
-Issue #1424 is resolved by the dedicated pin-bump PR after `cargo check -p scirust --features flat-autotune` passes on the exact candidate head. `flat-autotune` continues to depend on FLAT with `default-features = false` for the planner dependency; this crate does not opt into FLAT WGPU features through that path.
+Issue #1424 is resolved by the dedicated pin-bump PR after `cargo check -p scirust --features flat-autotune` passes on the exact candidate head. `flat-autotune` continues to depend on FLAT with `default-features = false` for the planner dependency; this crate does not opt into FLAT WGPU features through that path. Elastic generic freshness/resource types are now consumed through the public `memorithm-elastic` facade rather than a direct `elastic-core` dependency.

@@ -18,8 +18,8 @@
 
 use core::fmt;
 
-use elastic_core::LogicalResourceId;
-pub use elastic_core::{
+use elastic::LogicalResourceId;
+pub use elastic::{
     FreshnessSnapshot, ObservationEpoch, PlannerEpoch, RecommendationContext,
     RecommendationFreshnessError, ResourceGeneration,
 };
@@ -32,9 +32,9 @@ use flat_elastic_kernel::contextual::generate_and_plan_with_context;
 use flat_elastic_kernel::{AdapterError, latency_policy};
 
 /// Exact merged FLAT revision used by the contextual planner rail.
-pub const CONTEXTUAL_FLAT_REVISION: &str = "4529a2079434965e13e90ddd2e98ecc88ee0cb3a";
+pub const CONTEXTUAL_FLAT_REVISION: &str = "7a5db9127bd9b76f6f4e58a47a371658f0c8f5e5";
 /// Exact merged ElasticXxx revision used transitively and directly here.
-pub const CONTEXTUAL_ELASTICXXX_REVISION: &str = "9130a412857335cc5120b013b91552dd0808f9f1";
+pub const CONTEXTUAL_ELASTICXXX_REVISION: &str = "354cfb372f568338b29a357b0671bf9315097b1d";
 
 const SCIRUST_RESOURCE_PREFIX: &str = "scirust/dense-attention/";
 
@@ -343,6 +343,8 @@ mod tests {
     #[test]
     fn manifest_pins_match_reviewed_revisions() {
         let manifest = include_str!("../../Cargo.toml");
+        assert!(manifest.contains("package = \"memorithm-elastic\""));
+        assert!(!manifest.contains("dep:elastic-core"));
         assert!(manifest.contains(&format!("rev = \"{CONTEXTUAL_FLAT_REVISION}\"")));
         assert!(manifest.contains(&format!("rev = \"{CONTEXTUAL_ELASTICXXX_REVISION}\"")));
     }
