@@ -19,6 +19,7 @@ mod optimize;
 mod physical;
 mod representation;
 mod shard;
+mod transition;
 mod verify;
 mod vmap;
 
@@ -51,6 +52,7 @@ pub use shard::{
     AxisShard, DeviceMesh, MeshAxis, PartitionSpec, RankShard, ShardError, ShardMapGraph,
     ShardPlan, ShardPolicy, plan_sharding, shard_map,
 };
+pub use transition::{PreparedReplan, PreparedReplanError};
 pub use verify::{SemanticError, validate_semantics};
 pub use vmap::{VmapError, VmapGraph, vmap};
 
