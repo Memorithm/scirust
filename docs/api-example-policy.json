@@ -79,6 +79,20 @@
         "validate",
         "validate_against"
       ]
+    },
+    {
+      "source": "scirust-tensor-search-bridge/src/lib.rs",
+      "min_runnable_examples": 2,
+      "required_symbols": [
+        "prepare_candidate",
+        "record_verification",
+        "permit_measurement",
+        "record_measurements",
+        "record_search_disposition",
+        "optimizer_outcome",
+        "failed_verification_outcome",
+        "commit_search_record"
+      ]
     }
   ]
 }
