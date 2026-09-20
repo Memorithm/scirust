@@ -70,6 +70,13 @@
         "canonical_representation_anchor_bytes",
         "canonical_representation_plan_bytes"
       ]
+    },
+    {
+      "source": "scirust-tensor-ir/src/cost.rs",
+      "min_runnable_examples": 2,
+      "required_symbols": [
+        "exact_cost_vector"
+      ]
     }
   ]
 }
