@@ -31,8 +31,8 @@ pub use autodiff::jvp as linearize;
 pub use autodiff::{AutodiffError, GradGraph, JvpGraph, VjpGraph, grad, jvp, value_and_grad, vjp};
 pub use canonical_identity::{
     CanonicalIdentityError, GRAPH_STRUCTURAL_IDENTITY_V1, REPRESENTATION_ANCHOR_IDENTITY_V1,
-    REPRESENTATION_PLAN_IDENTITY_V1, canonical_graph_bytes,
-    canonical_representation_anchor_bytes, canonical_representation_plan_bytes,
+    REPRESENTATION_PLAN_IDENTITY_V1, canonical_graph_bytes, canonical_representation_anchor_bytes,
+    canonical_representation_plan_bytes,
 };
 pub use error::GraphError;
 pub use graph::{Graph, Node, TensorType};
