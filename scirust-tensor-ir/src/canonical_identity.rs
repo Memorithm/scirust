@@ -31,12 +31,10 @@ use crate::{
 pub const GRAPH_STRUCTURAL_IDENTITY_V1: &str = "scirust.tensor-ir.graph-structural.v1";
 
 /// Canonical byte-domain tag for representation-plan graph compatibility.
-pub const REPRESENTATION_ANCHOR_IDENTITY_V1: &str =
-    "scirust.tensor-ir.representation-anchor.v1";
+pub const REPRESENTATION_ANCHOR_IDENTITY_V1: &str = "scirust.tensor-ir.representation-anchor.v1";
 
 /// Canonical byte-domain tag for graph-bound representation-plan identity.
-pub const REPRESENTATION_PLAN_IDENTITY_V1: &str =
-    "scirust.tensor-ir.representation-plan.v1";
+pub const REPRESENTATION_PLAN_IDENTITY_V1: &str = "scirust.tensor-ir.representation-plan.v1";
 
 /// Failure to produce one canonical Tensor IR identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,26 +60,33 @@ pub enum CanonicalIdentityError {
 
 impl fmt::Display for CanonicalIdentityError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Graph(error) => write!(formatter, "invalid graph for canonical identity: {error}"),
-            Self::Representation(error) => {
+        match self
+        {
+            Self::Graph(error) =>
+            {
+                write!(formatter, "invalid graph for canonical identity: {error}")
+            },
+            Self::Representation(error) =>
+            {
                 write!(
                     formatter,
                     "invalid representation plan for canonical identity: {error}"
                 )
-            }
-            Self::LengthOverflow { field, value } => {
+            },
+            Self::LengthOverflow { field, value } =>
+            {
                 write!(
                     formatter,
                     "canonical identity field {field} cannot encode host value {value}"
                 )
-            }
-            Self::UnsupportedDType { dtype } => {
+            },
+            Self::UnsupportedDType { dtype } =>
+            {
                 write!(
                     formatter,
                     "dtype {dtype:?} has no canonical Tensor IR v1 identity tag"
                 )
-            }
+            },
         }
     }
 }
@@ -89,7 +94,8 @@ impl fmt::Display for CanonicalIdentityError {
 #[cfg(feature = "std")]
 impl std::error::Error for CanonicalIdentityError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
+        match self
+        {
             Self::Graph(error) => Some(error),
             Self::Representation(error) => Some(error),
             Self::LengthOverflow { .. } | Self::UnsupportedDType { .. } => None,
@@ -166,7 +172,11 @@ impl From<RepresentationError> for CanonicalIdentityError {
 /// ```
 pub fn canonical_graph_bytes(graph: &Graph) -> Result<Vec<u8>, CanonicalIdentityError> {
     graph.validate()?;
-    encode_graph(graph, GraphEncodingMode::Structural, GRAPH_STRUCTURAL_IDENTITY_V1)
+    encode_graph(
+        graph,
+        GraphEncodingMode::Structural,
+        GRAPH_STRUCTURAL_IDENTITY_V1,
+    )
 }
 
 /// Encode the graph identity used by representation-plan compatibility.
@@ -310,16 +320,21 @@ pub fn canonical_representation_plan_bytes(
     )?;
 
     let mut encoder = Encoder::default();
-    encoder.bytes("identity-domain", REPRESENTATION_PLAN_IDENTITY_V1.as_bytes())?;
+    encoder.bytes(
+        "identity-domain",
+        REPRESENTATION_PLAN_IDENTITY_V1.as_bytes(),
+    )?;
     encoder.bytes("representation-anchor", &anchor)?;
 
     encoder.len("representation-count", plan.representations().len())?;
-    for representation in plan.representations() {
+    for representation in plan.representations()
+    {
         encode_representation(&mut encoder, representation)?;
     }
 
     encoder.len("assignment-count", plan.assignments().len())?;
-    for assignment in plan.assignments() {
+    for assignment in plan.assignments()
+    {
         encoder.u32(assignment.get());
     }
 
@@ -341,17 +356,20 @@ fn encode_graph(
     encoder.bytes("identity-domain", domain.as_bytes())?;
     encoder.len("node-count", graph.nodes().len())?;
 
-    for node in graph.nodes() {
+    for node in graph.nodes()
+    {
         encode_operation(&mut encoder, &node.operation, mode)?;
         encoder.len("node-input-count", node.inputs.len())?;
-        for input in &node.inputs {
+        for input in &node.inputs
+        {
             encoder.u32(input.get());
         }
         encode_tensor_type(&mut encoder, &node.output)?;
     }
 
     encoder.len("graph-output-count", graph.outputs().len())?;
-    for output in graph.outputs() {
+    for output in graph.outputs()
+    {
         encoder.u32(output.get());
     }
 
@@ -368,7 +386,8 @@ fn encode_tensor_type(
 
 fn encode_shape(encoder: &mut Encoder, shape: &Shape) -> Result<(), CanonicalIdentityError> {
     encoder.len("shape-rank", shape.dims().len())?;
-    for &dimension in shape.dims() {
+    for &dimension in shape.dims()
+    {
         encoder.usize("shape-dimension", dimension)?;
     }
     Ok(())
@@ -381,7 +400,8 @@ fn encode_scalar(encoder: &mut Encoder, scalar: Scalar) -> Result<(), CanonicalI
 }
 
 fn encode_dtype(encoder: &mut Encoder, dtype: DType) -> Result<(), CanonicalIdentityError> {
-    let tag = match dtype {
+    let tag = match dtype
+    {
         DType::Bool => 0,
         DType::U8 => 1,
         DType::I8 => 2,
@@ -406,25 +426,30 @@ fn encode_operation(
     operation: &Operation,
     mode: GraphEncodingMode,
 ) -> Result<(), CanonicalIdentityError> {
-    match operation {
-        Operation::Input { name } => {
+    match operation
+    {
+        Operation::Input { name } =>
+        {
             encoder.byte(0);
-            if mode == GraphEncodingMode::Structural {
+            if mode == GraphEncodingMode::Structural
+            {
                 encoder.bytes("input-name", name.as_bytes())?;
             }
-        }
-        Operation::Constant { id } => {
+        },
+        Operation::Constant { id } =>
+        {
             encoder.byte(1);
             encoder.u64(id.get());
-        }
+        },
         Operation::Add => encoder.byte(2),
         Operation::Sub => encoder.byte(3),
         Operation::Mul => encoder.byte(4),
         Operation::Div => encoder.byte(5),
-        Operation::Scale { factor } => {
+        Operation::Scale { factor } =>
+        {
             encoder.byte(6);
             encode_scalar(encoder, *factor)?;
-        }
+        },
         Operation::Relu => encoder.byte(7),
         Operation::Exp => encoder.byte(8),
         Operation::Log => encoder.byte(9),
@@ -433,25 +458,30 @@ fn encode_operation(
         Operation::OnesLike => encoder.byte(12),
         Operation::MatMul => encoder.byte(13),
         Operation::BatchMatMul => encoder.byte(14),
-        Operation::Reshape { shape } => {
+        Operation::Reshape { shape } =>
+        {
             encoder.byte(15);
             encode_shape(encoder, shape)?;
-        }
-        Operation::Transpose { permutation } => {
+        },
+        Operation::Transpose { permutation } =>
+        {
             encoder.byte(16);
             encoder.len("transpose-rank", permutation.len())?;
-            for &axis in permutation {
+            for &axis in permutation
+            {
                 encoder.usize("transpose-axis", axis)?;
             }
-        }
-        Operation::BroadcastTo { shape } => {
+        },
+        Operation::BroadcastTo { shape } =>
+        {
             encoder.byte(17);
             encode_shape(encoder, shape)?;
-        }
-        Operation::ReduceSumTo { shape } => {
+        },
+        Operation::ReduceSumTo { shape } =>
+        {
             encoder.byte(18);
             encode_shape(encoder, shape)?;
-        }
+        },
         Operation::StopGradient => encoder.byte(19),
         Operation::Checkpoint => encoder.byte(20),
     }
@@ -471,31 +501,37 @@ fn encode_representation(
     encoder: &mut Encoder,
     representation: &PrimitiveRepresentation,
 ) -> Result<(), CanonicalIdentityError> {
-    match representation {
-        PrimitiveRepresentation::Dense { storage_dtype } => {
+    match representation
+    {
+        PrimitiveRepresentation::Dense { storage_dtype } =>
+        {
             encoder.byte(0);
             encode_dtype(encoder, *storage_dtype)?;
-        }
-        PrimitiveRepresentation::Factorized { left, right } => {
+        },
+        PrimitiveRepresentation::Factorized { left, right } =>
+        {
             encoder.byte(1);
             encode_component(encoder, left)?;
             encode_component(encoder, right)?;
-        }
-        PrimitiveRepresentation::Quantized { codes, scales } => {
+        },
+        PrimitiveRepresentation::Quantized { codes, scales } =>
+        {
             encoder.byte(2);
             encode_component(encoder, codes)?;
             encode_component(encoder, scales)?;
-        }
-        PrimitiveRepresentation::QuantizedPerTensor { codes, scale } => {
+        },
+        PrimitiveRepresentation::QuantizedPerTensor { codes, scale } =>
+        {
             encoder.byte(3);
             encode_component(encoder, codes)?;
             encode_component(encoder, scale)?;
-        }
-        PrimitiveRepresentation::Sparse { indices, values } => {
+        },
+        PrimitiveRepresentation::Sparse { indices, values } =>
+        {
             encoder.byte(4);
             encode_component(encoder, indices)?;
             encode_component(encoder, values)?;
-        }
+        },
     }
     Ok(())
 }
@@ -522,30 +558,18 @@ impl Encoder {
         self.bytes.extend_from_slice(&value.to_le_bytes());
     }
 
-    fn usize(
-        &mut self,
-        field: &'static str,
-        value: usize,
-    ) -> Result<(), CanonicalIdentityError> {
+    fn usize(&mut self, field: &'static str, value: usize) -> Result<(), CanonicalIdentityError> {
         let value = u64::try_from(value)
             .map_err(|_| CanonicalIdentityError::LengthOverflow { field, value })?;
         self.u64(value);
         Ok(())
     }
 
-    fn len(
-        &mut self,
-        field: &'static str,
-        value: usize,
-    ) -> Result<(), CanonicalIdentityError> {
+    fn len(&mut self, field: &'static str, value: usize) -> Result<(), CanonicalIdentityError> {
         self.usize(field, value)
     }
 
-    fn bytes(
-        &mut self,
-        field: &'static str,
-        value: &[u8],
-    ) -> Result<(), CanonicalIdentityError> {
+    fn bytes(&mut self, field: &'static str, value: &[u8]) -> Result<(), CanonicalIdentityError> {
         self.len(field, value.len())?;
         self.bytes.extend_from_slice(value);
         Ok(())
