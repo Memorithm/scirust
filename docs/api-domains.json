@@ -89,7 +89,8 @@
         "scirust-synthesis",
         "scirust-variational",
         "scirust-opt-core",
-        "scirust-opt-tpe"
+        "scirust-opt-tpe",
+        "scirust-tensor-search-bridge"
       ]
     },
     {
