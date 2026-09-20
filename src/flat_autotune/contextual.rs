@@ -18,8 +18,8 @@
 
 use core::fmt;
 
-use elastic_core::LogicalResourceId;
-pub use elastic_core::{
+use elastic::LogicalResourceId;
+pub use elastic::{
     FreshnessSnapshot, ObservationEpoch, PlannerEpoch, RecommendationContext,
     RecommendationFreshnessError, ResourceGeneration,
 };
@@ -32,9 +32,9 @@ use flat_elastic_kernel::contextual::generate_and_plan_with_context;
 use flat_elastic_kernel::{AdapterError, latency_policy};
 
 /// Exact merged FLAT revision used by the contextual planner rail.
-pub const CONTEXTUAL_FLAT_REVISION: &str = "4529a2079434965e13e90ddd2e98ecc88ee0cb3a";
+pub const CONTEXTUAL_FLAT_REVISION: &str = "107854e0962979967c3425dd16de0c1c6efe2d8e";
 /// Exact merged ElasticXxx revision used transitively and directly here.
-pub const CONTEXTUAL_ELASTICXXX_REVISION: &str = "9130a412857335cc5120b013b91552dd0808f9f1";
+pub const CONTEXTUAL_ELASTICXXX_REVISION: &str = "36e1b73022d6bf3f0bc4cd6ae40ee1bc95e468b6";
 
 const SCIRUST_RESOURCE_PREFIX: &str = "scirust/dense-attention/";
 

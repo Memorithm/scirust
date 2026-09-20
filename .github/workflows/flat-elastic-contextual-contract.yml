@@ -1,0 +1,87 @@
+name: FLAT Elastic contextual contract
+
+on:
+  pull_request:
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src/flat_autotune/**'
+      - 'docs/FLAT_PIN.md'
+      - '.github/workflows/flat-elastic-contextual-contract.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src/flat_autotune/**'
+      - 'docs/FLAT_PIN.md'
+      - '.github/workflows/flat-elastic-contextual-contract.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contextual:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Install pinned formatting toolchain
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: nightly-2026-07-02
+          components: rustfmt
+
+      - name: Install project MSRV
+        shell: bash
+        run: rustup toolchain install 1.89.0 --profile minimal --component clippy
+
+      - name: Verify exact contextual dependency identities
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import tomllib
+          from pathlib import Path
+
+          elastic = "36e1b73022d6bf3f0bc4cd6ae40ee1bc95e468b6"
+          flat = "107854e0962979967c3425dd16de0c1c6efe2d8e"
+          lock = tomllib.loads(Path("Cargo.lock").read_text())
+          elastic_sources = set()
+          flat_sources = set()
+          for package in lock["package"]:
+              name = package["name"]
+              source = package.get("source", "")
+              if (name.startswith("memorithm-elastic") or name == "elastic-kernel") and "Memorithm/ElasticXxx" in source:
+                  elastic_sources.add(source)
+              if name == "flat-elastic-kernel":
+                  flat_sources.add(source)
+
+          assert elastic_sources
+          assert all(f"rev={elastic}" in source and f"#{elastic}" in source for source in elastic_sources), elastic_sources
+          assert len(flat_sources) == 1, flat_sources
+          assert all(f"rev={flat}" in source and f"#{flat}" in source for source in flat_sources), flat_sources
+          PY
+
+      - name: Repository formatting
+        run: cargo +nightly-2026-07-02 fmt --all -- --check
+
+      - name: MSRV contextual build
+        run: cargo +1.89.0 check -p scirust --features flat-autotune --locked
+
+      - name: Contextual contract tests
+        run: >-
+          cargo +1.89.0 test -p scirust --features flat-autotune --locked
+          flat_autotune::contextual::
+
+      - name: Contextual facade lint
+        run: >-
+          cargo +1.89.0 clippy -p scirust --features flat-autotune
+          --lib --no-deps --locked -- -D warnings
