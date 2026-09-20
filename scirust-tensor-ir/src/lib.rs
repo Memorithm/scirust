@@ -11,6 +11,7 @@ extern crate alloc;
 
 mod autodiff;
 mod canonical_identity;
+mod eligibility;
 mod error;
 mod graph;
 mod ids;
@@ -33,6 +34,9 @@ pub use canonical_identity::{
     CanonicalIdentityError, GRAPH_STRUCTURAL_IDENTITY_V1, REPRESENTATION_ANCHOR_IDENTITY_V1,
     REPRESENTATION_PLAN_IDENTITY_V1, canonical_graph_bytes,
     canonical_representation_anchor_bytes, canonical_representation_plan_bytes,
+};
+pub use eligibility::{
+    EligibilityBatch, EligibilityError, EligibilityEvidence, EligibilityReport, EligibilityState,
 };
 pub use error::GraphError;
 pub use graph::{Graph, Node, TensorType};
