@@ -112,8 +112,7 @@ impl MissionRequest {
     ///
     /// Profit remains an optimization target; successful validation is not a
     /// profitability guarantee or an execution authorization.
-    pub fn validate(&self) -> Result<(), MissionValidationError>
-    {
+    pub fn validate(&self) -> Result<(), MissionValidationError> {
         if self.schema_version != TRADING_MISSION_SCHEMA_VERSION
         {
             return err("schema_version", "unsupported schema version");
@@ -151,8 +150,7 @@ impl MissionContract {
     ///
     /// Downstream deterministic risk, custody and signing boundaries remain
     /// authoritative even after this contract validates.
-    pub fn validate(&self) -> Result<(), MissionValidationError>
-    {
+    pub fn validate(&self) -> Result<(), MissionValidationError> {
         self.request.validate()?;
         if !matches!(
             self.state,
@@ -168,7 +166,8 @@ impl MissionContract {
                 "a mission contract must have passed explicit approval",
             );
         }
-        if self.request.mode == MissionMode::Live && !self.request.execution.may_submit {
+        if self.request.mode == MissionMode::Live && !self.request.execution.may_submit
+        {
             return err(
                 "execution.may_submit",
                 "live mode requires explicit submit permission",
@@ -178,16 +177,14 @@ impl MissionContract {
     }
 }
 
-fn finite(field: &'static str, value: f64) -> Result<(), MissionValidationError>
-{
+fn finite(field: &'static str, value: f64) -> Result<(), MissionValidationError> {
     if !value.is_finite()
     {
         return err(field, "must be finite");
     }
     Ok(())
 }
-fn finite_positive(field: &'static str, value: f64) -> Result<(), MissionValidationError>
-{
+fn finite_positive(field: &'static str, value: f64) -> Result<(), MissionValidationError> {
     finite(field, value)?;
     if value <= 0.0
     {
@@ -195,8 +192,7 @@ fn finite_positive(field: &'static str, value: f64) -> Result<(), MissionValidat
     }
     Ok(())
 }
-fn finite_nonnegative(field: &'static str, value: f64) -> Result<(), MissionValidationError>
-{
+fn finite_nonnegative(field: &'static str, value: f64) -> Result<(), MissionValidationError> {
     finite(field, value)?;
     if value < 0.0
     {
@@ -204,8 +200,7 @@ fn finite_nonnegative(field: &'static str, value: f64) -> Result<(), MissionVali
     }
     Ok(())
 }
-fn fraction(field: &'static str, value: f64) -> Result<(), MissionValidationError>
-{
+fn fraction(field: &'static str, value: f64) -> Result<(), MissionValidationError> {
     finite(field, value)?;
     if !(0.0..=1.0).contains(&value)
     {
@@ -213,8 +208,7 @@ fn fraction(field: &'static str, value: f64) -> Result<(), MissionValidationErro
     }
     Ok(())
 }
-fn err<T>(field: &'static str, reason: &'static str) -> Result<T, MissionValidationError>
-{
+fn err<T>(field: &'static str, reason: &'static str) -> Result<T, MissionValidationError> {
     Err(MissionValidationError { field, reason })
 }
 
@@ -249,8 +243,7 @@ mod tests {
     }
 
     #[test]
-    fn finite_bounded_mission_is_valid()
-    {
+    fn finite_bounded_mission_is_valid() {
         assert!(request(MissionMode::Paper).validate().is_ok());
     }
 
