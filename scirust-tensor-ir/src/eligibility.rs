@@ -396,7 +396,7 @@ mod tests {
     }
 
     #[test]
-    fn report_preserves_all_three_states_and_provenance() {
+    fn duplicate_candidate_is_rejected() {
         let (graph, node, plan) = graph_plan();
         let representation = plan.assignment(node).unwrap();
         let batch = EligibilityBatch::new(
