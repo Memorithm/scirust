@@ -224,7 +224,7 @@ impl AttentionExecutionIntent {
                 value_dim: self.value_dim,
             });
         }
-        if self.q_heads % self.kv_heads != 0 {
+        if !self.q_heads.is_multiple_of(self.kv_heads) {
             return Err(IntentError::InvalidHeadGrouping {
                 q_heads: self.q_heads,
                 kv_heads: self.kv_heads,
@@ -711,7 +711,7 @@ pub fn derive_attention_intent(
             value_dim,
         });
     }
-    if q_heads % kv_heads != 0
+    if !q_heads.is_multiple_of(kv_heads)
     {
         return Err(IntentError::InvalidHeadGrouping { q_heads, kv_heads });
     }
