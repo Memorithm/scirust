@@ -335,6 +335,25 @@ impl AttentionExecutionIntent {
     }
 
     /// Canonical record used for workload, caching, and evidence keys.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scirust_attention_intent::derive_attention_intent;
+    /// use scirust_compute::{DType, Shape};
+    /// use scirust_tensor_ir::{Graph, RepresentationPlan, TensorType};
+    ///
+    /// let mut graph = Graph::new();
+    /// let ty = TensorType::new(DType::F32, Shape::new([1usize, 1, 2, 4]));
+    /// let q = graph.add_input("q", ty.clone()).unwrap();
+    /// let k = graph.add_input("k", ty.clone()).unwrap();
+    /// let v = graph.add_input("v", ty).unwrap();
+    /// let plan = RepresentationPlan::dense(&graph).unwrap();
+    /// let intent = derive_attention_intent(&graph, &plan, q, k, v, false).unwrap();
+    /// let record = intent.canonical_record();
+    /// assert!(record.contains("qlen=2"));
+    /// assert!(record.contains("q_repr=0"));
+    /// ```
     #[must_use]
     pub fn canonical_record(&self) -> String {
         format!(
@@ -356,8 +375,29 @@ impl AttentionExecutionIntent {
     /// Whether the physical path of this intent is currently executable.
     ///
     /// Today this means: `value_dim == head_dim` and every bound variant is
-    /// dense. `derive_attention_intent` separately guarantees dense storage dtype
-    /// equality with the logical dtype. Representable quantized intents remain false.
+    /// dense with storage dtype equal to the logical dtype. Representable
+    /// quantized intents remain false.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scirust_attention_intent::{derive_attention_intent, RepresentationVariant};
+    /// use scirust_compute::{DType, Shape};
+    /// use scirust_tensor_ir::{Graph, RepresentationPlan, TensorType};
+    ///
+    /// let mut graph = Graph::new();
+    /// let ty = TensorType::new(DType::F32, Shape::new([1usize, 1, 1, 4]));
+    /// let q = graph.add_input("q", ty.clone()).unwrap();
+    /// let k = graph.add_input("k", ty.clone()).unwrap();
+    /// let v = graph.add_input("v", ty).unwrap();
+    /// let plan = RepresentationPlan::dense(&graph).unwrap();
+    /// let mut intent = derive_attention_intent(&graph, &plan, q, k, v, false).unwrap();
+    /// assert!(intent.is_executable());
+    /// intent.representation.query_variant = RepresentationVariant::Dense {
+    ///     storage_dtype: DType::F16,
+    /// };
+    /// assert!(!intent.is_executable());
+    /// ```
     #[must_use]
     pub const fn is_executable(&self) -> bool {
         self.value_dim == self.head_dim
@@ -382,6 +422,26 @@ impl AttentionExecutionIntent {
     /// to FLAT downstream (no FLAT import is required here).
     ///
     /// Returns `(batch, heads, seq_len, head_dim, causal, dtype)`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scirust_attention_intent::derive_attention_intent;
+    /// use scirust_compute::{DType, Shape};
+    /// use scirust_tensor_ir::{Graph, RepresentationPlan, TensorType};
+    ///
+    /// let mut graph = Graph::new();
+    /// let ty = TensorType::new(DType::F32, Shape::new([2usize, 4, 8, 16]));
+    /// let q = graph.add_input("q", ty.clone()).unwrap();
+    /// let k = graph.add_input("k", ty.clone()).unwrap();
+    /// let v = graph.add_input("v", ty).unwrap();
+    /// let plan = RepresentationPlan::dense(&graph).unwrap();
+    /// let intent = derive_attention_intent(&graph, &plan, q, k, v, true).unwrap();
+    /// assert_eq!(
+    ///     intent.flat_shape_tuple(),
+    ///     (8, 4, 8, 16, true, DType::F32)
+    /// );
+    /// ```
     #[must_use]
     pub fn flat_shape_tuple(&self) -> (u64, u32, u32, u32, bool, DType) {
         (
@@ -501,6 +561,56 @@ impl std::error::Error for IntentError {}
 ///
 /// See [`IntentError`]. Unsupported quantised/sparse representation paths
 /// fail explicitly; they never masquerade as dense.
+///
+/// # Examples
+///
+/// A dense MHA graph produces an executable intent:
+///
+/// ```
+/// use scirust_attention_intent::derive_attention_intent;
+/// use scirust_compute::{DType, Shape};
+/// use scirust_tensor_ir::{Graph, RepresentationPlan, TensorType};
+///
+/// let mut graph = Graph::new();
+/// let ty = TensorType::new(DType::F32, Shape::new([1usize, 2, 4, 8]));
+/// let q = graph.add_input("q", ty.clone()).unwrap();
+/// let k = graph.add_input("k", ty.clone()).unwrap();
+/// let v = graph.add_input("v", ty).unwrap();
+/// let plan = RepresentationPlan::dense(&graph).unwrap();
+/// let intent = derive_attention_intent(&graph, &plan, q, k, v, true).unwrap();
+/// assert!(intent.is_executable());
+/// assert_eq!(intent.batch_q_heads, 2);
+/// ```
+///
+/// Invalid zero KV-head geometry is rejected before head arithmetic:
+///
+/// ```
+/// use scirust_attention_intent::derive_attention_intent;
+/// use scirust_compute::{DType, Shape};
+/// use scirust_tensor_ir::{Graph, RepresentationPlan, TensorType};
+///
+/// let mut graph = Graph::new();
+/// let q = graph
+///     .add_input(
+///         "q",
+///         TensorType::new(DType::F32, Shape::new([1usize, 2, 4, 8])),
+///     )
+///     .unwrap();
+/// let k = graph
+///     .add_input(
+///         "k",
+///         TensorType::new(DType::F32, Shape::new([1usize, 0, 4, 8])),
+///     )
+///     .unwrap();
+/// let v = graph
+///     .add_input(
+///         "v",
+///         TensorType::new(DType::F32, Shape::new([1usize, 0, 4, 8])),
+///     )
+///     .unwrap();
+/// let plan = RepresentationPlan::dense(&graph).unwrap();
+/// assert!(derive_attention_intent(&graph, &plan, q, k, v, false).is_err());
+/// ```
 pub fn derive_attention_intent(
     graph: &scirust_tensor_ir::Graph,
     plan: &RepresentationPlan,
