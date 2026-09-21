@@ -1,5 +1,6 @@
 //! Graph pattern matching: subgraph isomorphism, motif discovery, community detection.
 
+pub mod banc_v888;
 pub mod dag;
 
 use serde::{Deserialize, Serialize};
