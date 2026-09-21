@@ -12,6 +12,7 @@ extern crate alloc;
 mod autodiff;
 mod canonical_identity;
 mod cost;
+mod eligibility;
 mod error;
 mod graph;
 mod ids;
@@ -36,6 +37,9 @@ pub use canonical_identity::{
     canonical_representation_plan_bytes,
 };
 pub use cost::{CostVectorError, ExactCost, ExactCostVector, ResidentCost, exact_cost_vector};
+pub use eligibility::{
+    EligibilityBatch, EligibilityError, EligibilityEvidence, EligibilityReport, EligibilityState,
+};
 pub use error::GraphError;
 pub use graph::{Graph, Node, TensorType};
 pub use ids::{ConstantId, NodeId};
