@@ -72,6 +72,15 @@
       ]
     },
     {
+      "source": "scirust-attention-intent/src/lib.rs",
+      "min_runnable_examples": 1,
+      "required_symbols": [
+        "recomputed_workload_fingerprint",
+        "validate",
+        "validate_against"
+      ]
+    },
+    {
       "source": "scirust-tensor-ir/src/cost.rs",
       "min_runnable_examples": 2,
       "required_symbols": [
