@@ -3,6 +3,7 @@
 pub mod banc_v888;
 pub mod dag;
 pub mod directed;
+pub mod directed_metrics;
 
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
