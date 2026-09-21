@@ -112,7 +112,261 @@ pub struct AttentionExecutionIntent {
 }
 
 impl AttentionExecutionIntent {
+    /// Recompute the deterministic workload fingerprint from the current record.
+    ///
+    /// The stored [`Self::workload_fingerprint`] is a cache field, not an
+    /// authoritative identity. Callers that persist or receive an intent can
+    /// recompute it before trusting that cache.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scirust_attention_intent::derive_attention_intent;
+    /// use scirust_compute::{DType, Shape};
+    /// use scirust_tensor_ir::{Graph, RepresentationPlan, TensorType};
+    ///
+    /// let mut graph = Graph::new();
+    /// let ty = TensorType::new(DType::F32, Shape::new([1usize, 1, 1, 4]));
+    /// let q = graph.add_input("q", ty.clone()).unwrap();
+    /// let k = graph.add_input("k", ty.clone()).unwrap();
+    /// let v = graph.add_input("v", ty).unwrap();
+    /// let plan = RepresentationPlan::dense(&graph).unwrap();
+    /// let intent = derive_attention_intent(&graph, &plan, q, k, v, false).unwrap();
+    /// assert_eq!(
+    ///     intent.recomputed_workload_fingerprint(),
+    ///     intent.workload_fingerprint
+    /// );
+    /// ```
+    #[must_use]
+    pub fn recomputed_workload_fingerprint(&self) -> u64 {
+        fingerprint_intent(self)
+    }
+
+    /// Validate the internal consistency of a stored attention intent.
+    ///
+    /// This checks non-zero dimensions, the cached `batch_q_heads` aggregate,
+    /// head grouping, the current v1 value-dimension contract, physical storage
+    /// byte rounding, describable representation variants/dtypes, and the cached
+    /// workload fingerprint. It does not prove that the representation IDs still
+    /// belong to a particular [`RepresentationPlan`]; use
+    /// [`Self::validate_against`] for that stronger check.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IntentError`] when any stored field is inconsistent or the
+    /// cached fingerprint no longer matches the recomputed value.
+    ///
+    /// # Examples
+    ///
+    /// A freshly derived intent validates:
+    ///
+    /// ```
+    /// use scirust_attention_intent::derive_attention_intent;
+    /// use scirust_compute::{DType, Shape};
+    /// use scirust_tensor_ir::{Graph, RepresentationPlan, TensorType};
+    ///
+    /// let mut graph = Graph::new();
+    /// let ty = TensorType::new(DType::F32, Shape::new([1usize, 2, 4, 8]));
+    /// let q = graph.add_input("q", ty.clone()).unwrap();
+    /// let k = graph.add_input("k", ty.clone()).unwrap();
+    /// let v = graph.add_input("v", ty).unwrap();
+    /// let plan = RepresentationPlan::dense(&graph).unwrap();
+    /// let intent = derive_attention_intent(&graph, &plan, q, k, v, true).unwrap();
+    /// assert!(intent.validate().is_ok());
+    /// ```
+    ///
+    /// Mutating a public field without refreshing the derived identity fails:
+    ///
+    /// ```
+    /// use scirust_attention_intent::{derive_attention_intent, IntentError};
+    /// use scirust_compute::{DType, Shape};
+    /// use scirust_tensor_ir::{Graph, RepresentationPlan, TensorType};
+    ///
+    /// let mut graph = Graph::new();
+    /// let ty = TensorType::new(DType::F32, Shape::new([1usize, 1, 2, 4]));
+    /// let q = graph.add_input("q", ty.clone()).unwrap();
+    /// let k = graph.add_input("k", ty.clone()).unwrap();
+    /// let v = graph.add_input("v", ty).unwrap();
+    /// let plan = RepresentationPlan::dense(&graph).unwrap();
+    /// let mut intent = derive_attention_intent(&graph, &plan, q, k, v, false).unwrap();
+    /// intent.q_len = 1;
+    /// assert!(matches!(
+    ///     intent.validate(),
+    ///     Err(IntentError::FingerprintMismatch { .. })
+    /// ));
+    /// ```
+    pub fn validate(&self) -> Result<(), IntentError> {
+        for (field, value) in [
+            ("batch", self.batch),
+            ("q_heads", self.q_heads),
+            ("kv_heads", self.kv_heads),
+            ("q_len", self.q_len),
+            ("kv_len", self.kv_len),
+            ("head_dim", self.head_dim),
+            ("value_dim", self.value_dim),
+        ]
+        {
+            if value == 0
+            {
+                return Err(IntentError::InconsistentIntent { field });
+            }
+        }
+
+        let expected_batch_q_heads = u64::from(self.batch)
+            .checked_mul(u64::from(self.q_heads))
+            .ok_or(IntentError::ShapeOverflow)?;
+        if self.batch_q_heads != expected_batch_q_heads
+        {
+            return Err(IntentError::InconsistentIntent {
+                field: "batch_q_heads",
+            });
+        }
+        if self.value_dim != self.head_dim
+        {
+            return Err(IntentError::UnsupportedValueDim {
+                head_dim: self.head_dim,
+                value_dim: self.value_dim,
+            });
+        }
+        if !self.q_heads.is_multiple_of(self.kv_heads)
+        {
+            return Err(IntentError::InvalidHeadGrouping {
+                q_heads: self.q_heads,
+                kv_heads: self.kv_heads,
+            });
+        }
+
+        let expected_storage_bytes = self.representation.total_storage_bits.get().div_ceil(8);
+        if self.representation.total_storage_bytes != expected_storage_bytes
+        {
+            return Err(IntentError::InconsistentIntent {
+                field: "representation.total_storage_bytes",
+            });
+        }
+
+        for (role, variant) in [
+            (TensorRole::Query, self.representation.query_variant),
+            (TensorRole::Key, self.representation.key_variant),
+            (TensorRole::Value, self.representation.value_variant),
+        ]
+        {
+            match variant
+            {
+                RepresentationVariant::Dense { storage_dtype }
+                    if same_dtype(storage_dtype, self.logical_dtype) =>
+                {},
+                RepresentationVariant::QuantizedPerTensor =>
+                {},
+                _ =>
+                {
+                    return Err(IntentError::UnsupportedRepresentation { role, variant });
+                },
+            }
+        }
+
+        let expected = self.recomputed_workload_fingerprint();
+        if self.workload_fingerprint != expected
+        {
+            return Err(IntentError::FingerprintMismatch {
+                expected,
+                actual: self.workload_fingerprint,
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Re-derive and validate this intent against its canonical graph and plan.
+    ///
+    /// This is the boundary for cache lookup, persistence restore, evidence
+    /// binding or kernel launch. It first performs [`Self::validate`], then
+    /// re-derives the complete intent from the supplied graph/plan/role binding
+    /// and requires full record equality. Therefore a caller cannot make a
+    /// mutation appear valid merely by updating the cached fingerprint too.
+    ///
+    /// # Errors
+    ///
+    /// Propagates derivation/representation errors and returns
+    /// [`IntentError::ContextMismatch`] when the stored record differs from the
+    /// canonical re-derived record.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scirust_attention_intent::derive_attention_intent;
+    /// use scirust_compute::{DType, Shape};
+    /// use scirust_tensor_ir::{Graph, RepresentationPlan, TensorType};
+    ///
+    /// let mut graph = Graph::new();
+    /// let ty = TensorType::new(DType::F32, Shape::new([1usize, 2, 4, 8]));
+    /// let q = graph.add_input("q", ty.clone()).unwrap();
+    /// let k = graph.add_input("k", ty.clone()).unwrap();
+    /// let v = graph.add_input("v", ty).unwrap();
+    /// let plan = RepresentationPlan::dense(&graph).unwrap();
+    /// let intent = derive_attention_intent(&graph, &plan, q, k, v, true).unwrap();
+    /// assert!(intent.validate_against(&graph, &plan, q, k, v, true).is_ok());
+    /// ```
+    ///
+    /// Even a mutation followed by a refreshed fingerprint is rejected by
+    /// contextual re-derivation:
+    ///
+    /// ```
+    /// use scirust_attention_intent::{derive_attention_intent, IntentError};
+    /// use scirust_compute::{DType, Shape};
+    /// use scirust_tensor_ir::{Graph, RepresentationPlan, TensorType};
+    ///
+    /// let mut graph = Graph::new();
+    /// let ty = TensorType::new(DType::F32, Shape::new([1usize, 1, 2, 4]));
+    /// let q = graph.add_input("q", ty.clone()).unwrap();
+    /// let k = graph.add_input("k", ty.clone()).unwrap();
+    /// let v = graph.add_input("v", ty).unwrap();
+    /// let plan = RepresentationPlan::dense(&graph).unwrap();
+    /// let mut intent = derive_attention_intent(&graph, &plan, q, k, v, false).unwrap();
+    /// intent.q_len = 1;
+    /// intent.workload_fingerprint = intent.recomputed_workload_fingerprint();
+    /// assert!(matches!(
+    ///     intent.validate_against(&graph, &plan, q, k, v, false),
+    ///     Err(IntentError::ContextMismatch)
+    /// ));
+    /// ```
+    pub fn validate_against(
+        &self,
+        graph: &scirust_tensor_ir::Graph,
+        plan: &RepresentationPlan,
+        q: NodeId,
+        k: NodeId,
+        v: NodeId,
+        causal: bool,
+    ) -> Result<(), IntentError> {
+        self.validate()?;
+        let canonical = derive_attention_intent(graph, plan, q, k, v, causal)?;
+        if *self != canonical
+        {
+            return Err(IntentError::ContextMismatch);
+        }
+        Ok(())
+    }
+
     /// Canonical record used for workload, caching, and evidence keys.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scirust_attention_intent::derive_attention_intent;
+    /// use scirust_compute::{DType, Shape};
+    /// use scirust_tensor_ir::{Graph, RepresentationPlan, TensorType};
+    ///
+    /// let mut graph = Graph::new();
+    /// let ty = TensorType::new(DType::F32, Shape::new([1usize, 1, 2, 4]));
+    /// let q = graph.add_input("q", ty.clone()).unwrap();
+    /// let k = graph.add_input("k", ty.clone()).unwrap();
+    /// let v = graph.add_input("v", ty).unwrap();
+    /// let plan = RepresentationPlan::dense(&graph).unwrap();
+    /// let intent = derive_attention_intent(&graph, &plan, q, k, v, false).unwrap();
+    /// let record = intent.canonical_record();
+    /// assert!(record.contains("qlen=2"));
+    /// assert!(record.contains("q_repr=0"));
+    /// ```
     #[must_use]
     pub fn canonical_record(&self) -> String {
         format!(
@@ -134,22 +388,46 @@ impl AttentionExecutionIntent {
     /// Whether the physical path of this intent is currently executable.
     ///
     /// Today this means: `value_dim == head_dim` and every bound variant is
-    /// dense. `derive_attention_intent` separately guarantees dense storage dtype
-    /// equality with the logical dtype. Representable quantized intents remain false.
+    /// dense with storage dtype equal to the logical dtype. Representable
+    /// quantized intents remain false.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scirust_attention_intent::{derive_attention_intent, RepresentationVariant};
+    /// use scirust_compute::{DType, Shape};
+    /// use scirust_tensor_ir::{Graph, RepresentationPlan, TensorType};
+    ///
+    /// let mut graph = Graph::new();
+    /// let ty = TensorType::new(DType::F32, Shape::new([1usize, 1, 1, 4]));
+    /// let q = graph.add_input("q", ty.clone()).unwrap();
+    /// let k = graph.add_input("k", ty.clone()).unwrap();
+    /// let v = graph.add_input("v", ty).unwrap();
+    /// let plan = RepresentationPlan::dense(&graph).unwrap();
+    /// let mut intent = derive_attention_intent(&graph, &plan, q, k, v, false).unwrap();
+    /// assert!(intent.is_executable());
+    /// intent.representation.query_variant = RepresentationVariant::Dense {
+    ///     storage_dtype: DType::F16,
+    /// };
+    /// assert!(!intent.is_executable());
+    /// ```
     #[must_use]
     pub const fn is_executable(&self) -> bool {
         self.value_dim == self.head_dim
             && matches!(
                 self.representation.query_variant,
-                RepresentationVariant::Dense { .. }
+                RepresentationVariant::Dense { storage_dtype }
+                    if same_dtype(storage_dtype, self.logical_dtype)
             )
             && matches!(
                 self.representation.key_variant,
-                RepresentationVariant::Dense { .. }
+                RepresentationVariant::Dense { storage_dtype }
+                    if same_dtype(storage_dtype, self.logical_dtype)
             )
             && matches!(
                 self.representation.value_variant,
-                RepresentationVariant::Dense { .. }
+                RepresentationVariant::Dense { storage_dtype }
+                    if same_dtype(storage_dtype, self.logical_dtype)
             )
     }
 
@@ -157,6 +435,26 @@ impl AttentionExecutionIntent {
     /// to FLAT downstream (no FLAT import is required here).
     ///
     /// Returns `(batch, heads, seq_len, head_dim, causal, dtype)`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scirust_attention_intent::derive_attention_intent;
+    /// use scirust_compute::{DType, Shape};
+    /// use scirust_tensor_ir::{Graph, RepresentationPlan, TensorType};
+    ///
+    /// let mut graph = Graph::new();
+    /// let ty = TensorType::new(DType::F32, Shape::new([2usize, 4, 8, 16]));
+    /// let q = graph.add_input("q", ty.clone()).unwrap();
+    /// let k = graph.add_input("k", ty.clone()).unwrap();
+    /// let v = graph.add_input("v", ty).unwrap();
+    /// let plan = RepresentationPlan::dense(&graph).unwrap();
+    /// let intent = derive_attention_intent(&graph, &plan, q, k, v, true).unwrap();
+    /// assert_eq!(
+    ///     intent.flat_shape_tuple(),
+    ///     (8, 4, 8, 16, true, DType::F32)
+    /// );
+    /// ```
     #[must_use]
     pub fn flat_shape_tuple(&self) -> (u64, u32, u32, u32, bool, DType) {
         (
@@ -203,6 +501,20 @@ pub enum IntentError {
     StorageOverflow,
     /// The intent would overflow the address space.
     ShapeOverflow,
+    /// A stored derived/cache field is inconsistent with the primary fields.
+    InconsistentIntent {
+        /// Field whose invariant was violated.
+        field: &'static str,
+    },
+    /// The cached workload fingerprint does not match the current record.
+    FingerprintMismatch {
+        /// Fingerprint recomputed from the current record.
+        expected: u64,
+        /// Fingerprint stored in the public cache field.
+        actual: u64,
+    },
+    /// The stored record differs from a canonical graph/representation re-derivation.
+    ContextMismatch,
 }
 
 impl std::fmt::Display for IntentError {
@@ -240,6 +552,21 @@ impl std::fmt::Display for IntentError {
             },
             Self::StorageOverflow => write!(f, "physical storage accounting overflowed"),
             Self::ShapeOverflow => write!(f, "logical shape accounting overflowed"),
+            Self::InconsistentIntent { field } =>
+            {
+                write!(
+                    f,
+                    "stored attention intent field {field} is internally inconsistent"
+                )
+            },
+            Self::FingerprintMismatch { expected, actual } => write!(
+                f,
+                "stored attention intent fingerprint {actual:#018x} does not match recomputed {expected:#018x}"
+            ),
+            Self::ContextMismatch => write!(
+                f,
+                "stored attention intent differs from canonical graph/representation derivation"
+            ),
         }
     }
 }
@@ -251,6 +578,56 @@ impl std::error::Error for IntentError {}
 ///
 /// See [`IntentError`]. Unsupported quantised/sparse representation paths
 /// fail explicitly; they never masquerade as dense.
+///
+/// # Examples
+///
+/// A dense MHA graph produces an executable intent:
+///
+/// ```
+/// use scirust_attention_intent::derive_attention_intent;
+/// use scirust_compute::{DType, Shape};
+/// use scirust_tensor_ir::{Graph, RepresentationPlan, TensorType};
+///
+/// let mut graph = Graph::new();
+/// let ty = TensorType::new(DType::F32, Shape::new([1usize, 2, 4, 8]));
+/// let q = graph.add_input("q", ty.clone()).unwrap();
+/// let k = graph.add_input("k", ty.clone()).unwrap();
+/// let v = graph.add_input("v", ty).unwrap();
+/// let plan = RepresentationPlan::dense(&graph).unwrap();
+/// let intent = derive_attention_intent(&graph, &plan, q, k, v, true).unwrap();
+/// assert!(intent.is_executable());
+/// assert_eq!(intent.batch_q_heads, 2);
+/// ```
+///
+/// Invalid zero KV-head geometry is rejected before head arithmetic:
+///
+/// ```
+/// use scirust_attention_intent::derive_attention_intent;
+/// use scirust_compute::{DType, Shape};
+/// use scirust_tensor_ir::{Graph, RepresentationPlan, TensorType};
+///
+/// let mut graph = Graph::new();
+/// let q = graph
+///     .add_input(
+///         "q",
+///         TensorType::new(DType::F32, Shape::new([1usize, 2, 4, 8])),
+///     )
+///     .unwrap();
+/// let k = graph
+///     .add_input(
+///         "k",
+///         TensorType::new(DType::F32, Shape::new([1usize, 0, 4, 8])),
+///     )
+///     .unwrap();
+/// let v = graph
+///     .add_input(
+///         "v",
+///         TensorType::new(DType::F32, Shape::new([1usize, 0, 4, 8])),
+///     )
+///     .unwrap();
+/// let plan = RepresentationPlan::dense(&graph).unwrap();
+/// assert!(derive_attention_intent(&graph, &plan, q, k, v, false).is_err());
+/// ```
 pub fn derive_attention_intent(
     graph: &scirust_tensor_ir::Graph,
     plan: &RepresentationPlan,
@@ -351,7 +728,7 @@ pub fn derive_attention_intent(
             value_dim,
         });
     }
-    if q_heads % kv_heads != 0
+    if !q_heads.is_multiple_of(kv_heads)
     {
         return Err(IntentError::InvalidHeadGrouping { q_heads, kv_heads });
     }
@@ -449,10 +826,12 @@ pub fn derive_attention_intent(
         workload_fingerprint: 0,
     };
     let fingerprint = fingerprint_intent(&intent);
-    Ok(AttentionExecutionIntent {
+    let intent = AttentionExecutionIntent {
         workload_fingerprint: fingerprint,
         ..intent
-    })
+    };
+    intent.validate()?;
+    Ok(intent)
 }
 
 fn rank4(shape: &Shape, role: TensorRole) -> Result<[u32; 4], IntentError> {
@@ -509,6 +888,25 @@ fn variant_of(
             unreachable!("PrimitiveRepresentation is exhaustive over known variants in this slice")
         },
     }
+}
+
+const fn same_dtype(left: DType, right: DType) -> bool {
+    matches!(
+        (left, right),
+        (DType::Bool, DType::Bool)
+            | (DType::U8, DType::U8)
+            | (DType::I8, DType::I8)
+            | (DType::U16, DType::U16)
+            | (DType::I16, DType::I16)
+            | (DType::F16, DType::F16)
+            | (DType::Bf16, DType::Bf16)
+            | (DType::U32, DType::U32)
+            | (DType::I32, DType::I32)
+            | (DType::F32, DType::F32)
+            | (DType::U64, DType::U64)
+            | (DType::I64, DType::I64)
+            | (DType::F64, DType::F64)
+    )
 }
 
 fn fingerprint_intent(intent: &AttentionExecutionIntent) -> u64 {
@@ -637,6 +1035,78 @@ mod tests {
             intent.representation.total_storage_bits,
             StorageBits::new(3 * 544)
         );
+    }
+
+    #[test]
+    fn intrinsic_validation_rejects_public_field_drift() {
+        let (graph, q, k, v, plan) = graph_fixture(1, 2, 4, 8);
+        let mut intent = derive_attention_intent(&graph, &plan, q, k, v, false).expect("intent");
+        assert!(intent.validate().is_ok());
+
+        intent.batch_q_heads += 1;
+        assert_eq!(
+            intent.validate(),
+            Err(IntentError::InconsistentIntent {
+                field: "batch_q_heads"
+            })
+        );
+    }
+
+    #[test]
+    fn intrinsic_validation_rejects_stale_fingerprint() {
+        let (graph, q, k, v, plan) = graph_fixture(1, 2, 4, 8);
+        let mut intent = derive_attention_intent(&graph, &plan, q, k, v, false).expect("intent");
+        intent.q_len -= 1;
+        assert!(matches!(
+            intent.validate(),
+            Err(IntentError::FingerprintMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn contextual_validation_rejects_coordinated_mutation() {
+        let (graph, q, k, v, plan) = graph_fixture(1, 2, 4, 8);
+        let mut intent = derive_attention_intent(&graph, &plan, q, k, v, false).expect("intent");
+        intent.q_len -= 1;
+        intent.workload_fingerprint = intent.recomputed_workload_fingerprint();
+        assert!(intent.validate().is_ok());
+        assert_eq!(
+            intent.validate_against(&graph, &plan, q, k, v, false),
+            Err(IntentError::ContextMismatch)
+        );
+    }
+
+    #[test]
+    fn contextual_validation_rejects_representation_id_drift() {
+        let (graph, q, k, v, mut plan) = graph_fixture(1, 2, 4, 8);
+        let mut intent = derive_attention_intent(&graph, &plan, q, k, v, false).expect("intent");
+        let extra = plan
+            .declare_dense(DType::F16)
+            .expect("extra representation");
+        intent.q_representation = extra;
+        intent.workload_fingerprint = intent.recomputed_workload_fingerprint();
+        assert!(intent.validate().is_ok());
+        assert_eq!(
+            intent.validate_against(&graph, &plan, q, k, v, false),
+            Err(IntentError::ContextMismatch)
+        );
+    }
+
+    #[test]
+    fn mutated_dense_dtype_cannot_claim_executability() {
+        let (graph, q, k, v, plan) = graph_fixture(1, 2, 4, 8);
+        let mut intent = derive_attention_intent(&graph, &plan, q, k, v, false).expect("intent");
+        intent.representation.query_variant = RepresentationVariant::Dense {
+            storage_dtype: DType::F16,
+        };
+        assert!(!intent.is_executable());
+        assert!(matches!(
+            intent.validate(),
+            Err(IntentError::UnsupportedRepresentation {
+                role: TensorRole::Query,
+                ..
+            })
+        ));
     }
 
     #[test]
