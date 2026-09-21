@@ -204,8 +204,10 @@ impl AttentionExecutionIntent {
             ("kv_len", self.kv_len),
             ("head_dim", self.head_dim),
             ("value_dim", self.value_dim),
-        ] {
-            if value == 0 {
+        ]
+        {
+            if value == 0
+            {
                 return Err(IntentError::InconsistentIntent { field });
             }
         }
@@ -213,18 +215,21 @@ impl AttentionExecutionIntent {
         let expected_batch_q_heads = u64::from(self.batch)
             .checked_mul(u64::from(self.q_heads))
             .ok_or(IntentError::ShapeOverflow)?;
-        if self.batch_q_heads != expected_batch_q_heads {
+        if self.batch_q_heads != expected_batch_q_heads
+        {
             return Err(IntentError::InconsistentIntent {
                 field: "batch_q_heads",
             });
         }
-        if self.value_dim != self.head_dim {
+        if self.value_dim != self.head_dim
+        {
             return Err(IntentError::UnsupportedValueDim {
                 head_dim: self.head_dim,
                 value_dim: self.value_dim,
             });
         }
-        if !self.q_heads.is_multiple_of(self.kv_heads) {
+        if !self.q_heads.is_multiple_of(self.kv_heads)
+        {
             return Err(IntentError::InvalidHeadGrouping {
                 q_heads: self.q_heads,
                 kv_heads: self.kv_heads,
@@ -232,7 +237,8 @@ impl AttentionExecutionIntent {
         }
 
         let expected_storage_bytes = self.representation.total_storage_bits.get().div_ceil(8);
-        if self.representation.total_storage_bytes != expected_storage_bytes {
+        if self.representation.total_storage_bytes != expected_storage_bytes
+        {
             return Err(IntentError::InconsistentIntent {
                 field: "representation.total_storage_bytes",
             });
@@ -242,19 +248,25 @@ impl AttentionExecutionIntent {
             (TensorRole::Query, self.representation.query_variant),
             (TensorRole::Key, self.representation.key_variant),
             (TensorRole::Value, self.representation.value_variant),
-        ] {
-            match variant {
+        ]
+        {
+            match variant
+            {
                 RepresentationVariant::Dense { storage_dtype }
-                    if same_dtype(storage_dtype, self.logical_dtype) => {}
-                RepresentationVariant::QuantizedPerTensor => {}
-                _ => {
+                    if same_dtype(storage_dtype, self.logical_dtype) =>
+                {},
+                RepresentationVariant::QuantizedPerTensor =>
+                {},
+                _ =>
+                {
                     return Err(IntentError::UnsupportedRepresentation { role, variant });
-                }
+                },
             }
         }
 
         let expected = self.recomputed_workload_fingerprint();
-        if self.workload_fingerprint != expected {
+        if self.workload_fingerprint != expected
+        {
             return Err(IntentError::FingerprintMismatch {
                 expected,
                 actual: self.workload_fingerprint,
@@ -328,7 +340,8 @@ impl AttentionExecutionIntent {
     ) -> Result<(), IntentError> {
         self.validate()?;
         let canonical = derive_attention_intent(graph, plan, q, k, v, causal)?;
-        if *self != canonical {
+        if *self != canonical
+        {
             return Err(IntentError::ContextMismatch);
         }
         Ok(())
@@ -539,9 +552,13 @@ impl std::fmt::Display for IntentError {
             },
             Self::StorageOverflow => write!(f, "physical storage accounting overflowed"),
             Self::ShapeOverflow => write!(f, "logical shape accounting overflowed"),
-            Self::InconsistentIntent { field } => {
-                write!(f, "stored attention intent field {field} is internally inconsistent")
-            }
+            Self::InconsistentIntent { field } =>
+            {
+                write!(
+                    f,
+                    "stored attention intent field {field} is internally inconsistent"
+                )
+            },
             Self::FingerprintMismatch { expected, actual } => write!(
                 f,
                 "stored attention intent fingerprint {actual:#018x} does not match recomputed {expected:#018x}"
@@ -1023,8 +1040,7 @@ mod tests {
     #[test]
     fn intrinsic_validation_rejects_public_field_drift() {
         let (graph, q, k, v, plan) = graph_fixture(1, 2, 4, 8);
-        let mut intent =
-            derive_attention_intent(&graph, &plan, q, k, v, false).expect("intent");
+        let mut intent = derive_attention_intent(&graph, &plan, q, k, v, false).expect("intent");
         assert!(intent.validate().is_ok());
 
         intent.batch_q_heads += 1;
@@ -1039,8 +1055,7 @@ mod tests {
     #[test]
     fn intrinsic_validation_rejects_stale_fingerprint() {
         let (graph, q, k, v, plan) = graph_fixture(1, 2, 4, 8);
-        let mut intent =
-            derive_attention_intent(&graph, &plan, q, k, v, false).expect("intent");
+        let mut intent = derive_attention_intent(&graph, &plan, q, k, v, false).expect("intent");
         intent.q_len -= 1;
         assert!(matches!(
             intent.validate(),
@@ -1051,8 +1066,7 @@ mod tests {
     #[test]
     fn contextual_validation_rejects_coordinated_mutation() {
         let (graph, q, k, v, plan) = graph_fixture(1, 2, 4, 8);
-        let mut intent =
-            derive_attention_intent(&graph, &plan, q, k, v, false).expect("intent");
+        let mut intent = derive_attention_intent(&graph, &plan, q, k, v, false).expect("intent");
         intent.q_len -= 1;
         intent.workload_fingerprint = intent.recomputed_workload_fingerprint();
         assert!(intent.validate().is_ok());
@@ -1065,9 +1079,10 @@ mod tests {
     #[test]
     fn contextual_validation_rejects_representation_id_drift() {
         let (graph, q, k, v, mut plan) = graph_fixture(1, 2, 4, 8);
-        let mut intent =
-            derive_attention_intent(&graph, &plan, q, k, v, false).expect("intent");
-        let extra = plan.declare_dense(DType::F16).expect("extra representation");
+        let mut intent = derive_attention_intent(&graph, &plan, q, k, v, false).expect("intent");
+        let extra = plan
+            .declare_dense(DType::F16)
+            .expect("extra representation");
         intent.q_representation = extra;
         intent.workload_fingerprint = intent.recomputed_workload_fingerprint();
         assert!(intent.validate().is_ok());
@@ -1080,8 +1095,7 @@ mod tests {
     #[test]
     fn mutated_dense_dtype_cannot_claim_executability() {
         let (graph, q, k, v, plan) = graph_fixture(1, 2, 4, 8);
-        let mut intent =
-            derive_attention_intent(&graph, &plan, q, k, v, false).expect("intent");
+        let mut intent = derive_attention_intent(&graph, &plan, q, k, v, false).expect("intent");
         intent.representation.query_variant = RepresentationVariant::Dense {
             storage_dtype: DType::F16,
         };
