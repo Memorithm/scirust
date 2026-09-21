@@ -419,3 +419,28 @@ elastic_flat_contextual_convergence_2026_09_20:
     - no_attention_parity_promotion
     - no_runtime_actuation_authority
     - no_ML_maturity_promotion
+
+v888_connectome_program:
+  status: active_user_directed_2026_09_21
+  source_scope:
+    connectome: FlyWire_BANC_v888_only
+    raw_dataset_in_repository: false
+  SciRust_role: reusable_Rust_sparse_graph_event_spiking_and_portable_compute_substrate
+  ordered_bootstrap:
+    - SR_V888_0_data_contract_and_provenance
+    - SR_V888_1_directed_sparse_graph_substrate
+    - SR_V888_2_structural_descriptor_panel
+    - SR_V888_3_f32_sparse_numerical_kernels
+    - SR_V888_4_deterministic_temporal_event_engine
+    - SR_V888_5_spiking_reference_semantics
+    - SR_V888_6_experimental_surrogate_gradient_boundary
+    - SR_V888_7_CPU_WGPU_portable_acceleration
+    - SR_V888_8_versioned_ecosystem_APIs
+  required_controls:
+    - random_sparse
+    - in_out_degree_matched
+    - reciprocity_matched
+    - modular_or_block_matched
+  nvidia_dependency_for_new_programme: false
+  NNIS_role_for_this_programme: Native_Neural_Inference_Stack_portable_runtime
+  authoritative_main_document: docs/V888_CONNECTOME_BOOTSTRAP.md
