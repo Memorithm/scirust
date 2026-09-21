@@ -134,7 +134,6 @@ impl BancV888Manifest {
     }
 
     /// Validate source identity, schema, checksum syntax, license, and citation.
-    /// Validate v3 row invariants without mutating the row.
     pub fn validate(&self) -> Result<(), BancV888Error> {
         if self.contract != BANC_V888_CONTRACT
         {
@@ -237,6 +236,7 @@ impl BancV888EdgeRow {
         Ok(row)
     }
 
+    /// Validate v3 row invariants without mutating the row.
     pub fn validate(&self) -> Result<(), BancV888Error> {
         if self.pre == self.post
         {
