@@ -117,6 +117,25 @@ A regression test exercises a real `[2,2] F32` tensor replan to a per-tensor U8
 code representation with one F32 scale. The exact representation cost changes
 from 128 bits to 64 bits while the source plan remains unchanged until commit.
 
+## IR-E2 implementation follow-up
+
+The second slice adds three explicitly versioned canonical byte domains:
+
+1. complete graph structural identity, including input display names;
+2. representation-plan graph-anchor identity, deliberately ignoring only input
+   display names to match existing plan-compatibility semantics;
+3. complete representation-plan identity, binding that anchor to the ordered
+   declaration table and canonical node assignments.
+
+The encoder uses explicit variant tags, fixed-width little-endian integers and
+length-prefixed sequences. It adds no cryptographic dependency. Canonical bytes
+are the authoritative comparison surface; downstream SHA-256 or other digests
+remain indexing/provenance values and cannot replace structural validation.
+
+This distinction is required by the Forge integration model: candidate identity
+may be hashed in an external envelope, while Tensor IR remains responsible for
+the deterministic semantic payload being hashed.
+
 ## Next IR candidates
 
 Priority order after this slice:
