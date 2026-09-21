@@ -29,6 +29,7 @@ pub const BANC_V888_DATAVERSE_DOI: &str = "10.7910/DVN/7WTH1N";
 pub struct BancV888NodeId(u64);
 
 impl BancV888NodeId {
+    /// Construct a non-zero BANC root identifier.
     pub fn new(value: u64) -> Result<Self, BancV888Error> {
         if value == 0
         {
@@ -37,6 +38,7 @@ impl BancV888NodeId {
         Ok(Self(value))
     }
 
+    /// Return the exact unsigned root identifier.
     pub fn get(self) -> u64 {
         self.0
     }
@@ -95,6 +97,7 @@ pub struct BancV888Manifest {
 }
 
 impl BancV888Manifest {
+    /// Construct provenance for the recommended v3 neuron-pair edgelist.
     pub fn v3(
         source_uri: impl Into<String>,
         source_sha256: impl Into<String>,
@@ -115,6 +118,7 @@ impl BancV888Manifest {
         Ok(manifest)
     }
 
+    /// Parse and validate a strict versioned manifest from JSON.
     pub fn from_json(json: &str) -> Result<Self, BancV888Error> {
         let manifest: Self = serde_json::from_str(json)
             .map_err(|err| BancV888Error::InvalidManifestJson(err.to_string()))?;
@@ -122,12 +126,15 @@ impl BancV888Manifest {
         Ok(manifest)
     }
 
+    /// Serialize the validated manifest to compact JSON.
     pub fn to_json(&self) -> Result<String, BancV888Error> {
         self.validate()?;
         serde_json::to_string(self)
             .map_err(|err| BancV888Error::InvalidManifestJson(err.to_string()))
     }
 
+    /// Validate source identity, schema, checksum syntax, license, and citation.
+    /// Validate v3 row invariants without mutating the row.
     pub fn validate(&self) -> Result<(), BancV888Error> {
         if self.contract != BANC_V888_CONTRACT
         {
@@ -176,14 +183,17 @@ impl BancV888Manifest {
         Ok(())
     }
 
+    /// Return the external source URI recorded by the importer.
     pub fn source_uri(&self) -> &str {
         &self.source_uri
     }
 
+    /// Return the lowercase SHA-256 digest of the external source bytes.
     pub fn source_sha256(&self) -> &str {
         &self.source_sha256
     }
 
+    /// Return the exact supported source-product filename.
     pub fn source_product(&self) -> &str {
         &self.source_product
     }
@@ -206,6 +216,7 @@ pub struct BancV888EdgeRow {
 }
 
 impl BancV888EdgeRow {
+    /// Construct and validate one v3 directed neuron-pair row.
     pub fn try_new(
         pre: BancV888NodeId,
         post: BancV888NodeId,
@@ -269,6 +280,7 @@ pub struct BancV888Dataset {
 }
 
 impl BancV888Dataset {
+    /// Validate and canonicalize an explicit node universe plus v3 edge rows.
     pub fn from_rows(
         manifest: BancV888Manifest,
         mut nodes: Vec<BancV888NodeId>,
@@ -322,22 +334,27 @@ impl BancV888Dataset {
         })
     }
 
+    /// Return the validated external-source manifest.
     pub fn manifest(&self) -> &BancV888Manifest {
         &self.manifest
     }
 
+    /// Return node identifiers in deterministic ascending order.
     pub fn nodes(&self) -> &[BancV888NodeId] {
         &self.nodes
     }
 
+    /// Return directed edge rows in deterministic pre/post order.
     pub fn edges(&self) -> &[BancV888EdgeRow] {
         &self.edges
     }
 
+    /// Return the size of the explicit node universe.
     pub fn node_count(&self) -> usize {
         self.nodes.len()
     }
 
+    /// Return the number of canonical directed neuron-pair rows.
     pub fn edge_count(&self) -> usize {
         self.edges.len()
     }
