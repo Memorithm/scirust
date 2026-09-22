@@ -2,11 +2,12 @@
 //!
 //! This module provides an ordinary-least-squares primitive for power-law
 //! style relationships of the form y = a * x^b. The fit is performed in
-//! natural-log space. Inputs are canonically sorted before reduction so the
-//! result is independent of original row order for the same finite values.
-//! This is a descriptive regression, not a power-law distribution test or a
-//! causal growth model. Bitwise repeatability is scoped to the same target
-//! and floating-point implementation.
+//! natural-log space. Inputs are canonically sorted before transformation and
+//! reduction. Bitwise repeatability requires the same target and a repeatable
+//! logarithm implementation; Rust's standard logarithm does not guarantee this
+//! on every execution environment. The reduction of fixed log values is
+//! row-order independent. This is descriptive regression, not a power-law
+//! distribution test or a causal growth model.
 
 use core::fmt;
 
@@ -82,9 +83,10 @@ impl KahanSum {
 
 /// Fit a deterministic log-log scaling relation to positive paired samples.
 ///
-/// Paired observations are sorted lexicographically by ln(x) then ln(y) before
-/// reduction, making the fit independent of caller row ordering on the same
-/// target. Complexity is O(n log n) time and O(n) auxiliary storage.
+/// Paired observations are sorted lexicographically before logarithms and
+/// reduction. Row-order bitwise equality requires repeatable logarithms on the
+/// selected target; fixed transformed values always use a canonical reduction.
+/// Complexity is O(n log n) time and O(n) auxiliary storage.
 /// No observations are silently dropped or imputed.
 ///
 /// # Errors
@@ -122,14 +124,51 @@ pub fn log_log_scaling(x: &[f64], y: &[f64]) -> Result<LogLogFit, ScalingError> 
         {
             return Err(ScalingError::NonPositive);
         }
-        pairs.push((predictor.ln(), response.ln()));
+        pairs.push((predictor, response));
     }
 
+    // Rust permits ln() to vary between calls; Miri deliberately exercises
+    // that freedom. Classify exact constant inputs before any logarithm can
+    // manufacture a small, nonzero variance. Validate every row first so a
+    // constant predictor cannot hide an invalid response later in the input.
+    if x.iter().all(|&value| value == x[0])
+    {
+        return Err(ScalingError::DegeneratePredictor);
+    }
+    let constant_response = y.iter().all(|&value| value == y[0]);
+    sort_pairs(&mut pairs);
+    for pair in &mut pairs
+    {
+        pair.0 = pair.0.ln();
+        if !constant_response
+        {
+            pair.1 = pair.1.ln();
+        }
+    }
+    if constant_response
+    {
+        // One transform, then exact copies: no artificial response variance.
+        let log_response = y[0].ln();
+        for pair in &mut pairs
+        {
+            pair.1 = log_response;
+        }
+    }
+    fit_log_pairs(&mut pairs)
+}
+
+fn sort_pairs(pairs: &mut [(f64, f64)]) {
     pairs.sort_by(|left, right| {
         left.0
             .total_cmp(&right.0)
             .then_with(|| left.1.total_cmp(&right.1))
     });
+}
+
+// Separate the deterministic arithmetic from the imprecise transcendental
+// boundary. The caller supplies at least two finite transformed pairs.
+fn fit_log_pairs(pairs: &mut [(f64, f64)]) -> Result<LogLogFit, ScalingError> {
+    sort_pairs(pairs);
     // A rounded mean can differ from an exactly repeated value. Testing the
     // actual range first prevents artificial nonzero variance and false fits.
     if pairs[0].0 == pairs[pairs.len() - 1].0
@@ -149,7 +188,7 @@ pub fn log_log_scaling(x: &[f64], y: &[f64]) -> Result<LogLogFit, ScalingError> 
 
     let mut sum_x = KahanSum::default();
     let mut sum_y = KahanSum::default();
-    for &(lx, ly) in &pairs
+    for &(lx, ly) in pairs.iter()
     {
         sum_x.add(lx);
         sum_y.add(ly);
@@ -161,7 +200,7 @@ pub fn log_log_scaling(x: &[f64], y: &[f64]) -> Result<LogLogFit, ScalingError> 
     let mut sxx = KahanSum::default();
     let mut sxy = KahanSum::default();
     let mut syy = KahanSum::default();
-    for &(lx, ly) in &pairs
+    for &(lx, ly) in pairs.iter()
     {
         let dx = lx - mean_x;
         let dy = ly - mean_y;
@@ -180,7 +219,7 @@ pub fn log_log_scaling(x: &[f64], y: &[f64]) -> Result<LogLogFit, ScalingError> 
     let intercept = mean_y - slope * mean_x;
 
     let mut residual_sum_squares = KahanSum::default();
-    for &(lx, ly) in &pairs
+    for &(lx, ly) in pairs.iter()
     {
         let residual = ly - (intercept + slope * lx);
         residual_sum_squares.add(residual * residual);
@@ -209,6 +248,14 @@ pub fn log_log_scaling(x: &[f64], y: &[f64]) -> Result<LogLogFit, ScalingError> 
 mod tests {
     use super::*;
 
+    fn assert_fit_bits_equal(a: LogLogFit, b: LogLogFit) {
+        assert_eq!(a.n, b.n);
+        assert_eq!(a.slope.to_bits(), b.slope.to_bits());
+        assert_eq!(a.intercept.to_bits(), b.intercept.to_bits());
+        assert_eq!(a.residual_rms.to_bits(), b.residual_rms.to_bits());
+        assert_eq!(a.r_squared.map(f64::to_bits), b.r_squared.map(f64::to_bits));
+    }
+
     #[test]
     fn exact_power_law_recovers_exponent_and_intercept() {
         let x = [1.0_f64, 2.0, 4.0, 8.0, 16.0];
@@ -223,7 +270,7 @@ mod tests {
     }
 
     #[test]
-    fn input_row_order_does_not_change_bits() {
+    fn input_row_order_is_stable_across_logarithm_calls() {
         let x_a = [1.0, 2.0, 3.0, 5.0, 8.0];
         let y_a = [2.0, 4.2, 5.7, 11.1, 17.0];
         let x_b = [8.0, 1.0, 5.0, 3.0, 2.0];
@@ -232,20 +279,46 @@ mod tests {
         let a = log_log_scaling(&x_a, &y_a).unwrap();
         let b = log_log_scaling(&x_b, &y_b).unwrap();
 
-        assert_eq!(a.slope.to_bits(), b.slope.to_bits());
-        assert_eq!(a.intercept.to_bits(), b.intercept.to_bits());
-        assert_eq!(a.residual_rms.to_bits(), b.residual_rms.to_bits());
-        assert_eq!(
-            a.r_squared.unwrap().to_bits(),
-            b.r_squared.unwrap().to_bits()
-        );
+        // This well-conditioned fixture tolerates Miri's per-call ln jitter,
+        // not arithmetic reordering. Native bitwise qualification is retained;
+        // the fixed-log reduction below is bit-tested in every environment.
+        assert_eq!(a.n, b.n);
+        for (left, right) in [
+            (a.slope, b.slope),
+            (a.intercept, b.intercept),
+            (a.residual_rms, b.residual_rms),
+            (a.r_squared.unwrap(), b.r_squared.unwrap()),
+        ]
+        {
+            assert!((left - right).abs() <= 64.0 * f64::EPSILON * left.abs().max(1.0));
+        }
+        if !cfg!(miri)
+        {
+            assert_fit_bits_equal(a, b);
+        }
+    }
+
+    #[test]
+    fn fixed_log_reduction_is_bit_identical_for_every_row_rotation() {
+        let original = [(0.0, 0.7), (0.7, 1.4), (1.1, 1.7), (1.6, 2.4), (2.1, 2.8)];
+        let mut canonical = original;
+        let expected = fit_log_pairs(&mut canonical).unwrap();
+        for shift in 0..original.len()
+        {
+            let mut permuted = original;
+            permuted.rotate_left(shift);
+            assert_fit_bits_equal(expected, fit_log_pairs(&mut permuted).unwrap());
+            permuted.reverse();
+            assert_fit_bits_equal(expected, fit_log_pairs(&mut permuted).unwrap());
+        }
     }
 
     #[test]
     fn constant_response_has_undefined_r_squared() {
         let fit = log_log_scaling(&[1.0, 2.0, 4.0], &[7.0, 7.0, 7.0]).unwrap();
         assert_eq!(fit.r_squared, None);
-        assert!(fit.slope.abs() < 1e-12);
+        assert_eq!(fit.slope, 0.0);
+        assert_eq!(fit.residual_rms, 0.0);
     }
 
     #[test]
@@ -266,6 +339,24 @@ mod tests {
                 assert_eq!(fit.residual_rms, 0.0);
             }
         }
+    }
+
+    #[test]
+    fn constant_inputs_do_not_bypass_validation_of_later_rows() {
+        assert_eq!(
+            log_log_scaling(&[2.0, 2.0], &[1.0, f64::NAN]),
+            Err(ScalingError::NonFinite)
+        );
+        assert_eq!(
+            log_log_scaling(&[1.0, 0.0], &[7.0, 7.0]),
+            Err(ScalingError::NonPositive)
+        );
+    }
+
+    #[test]
+    fn distinct_predictors_collapsed_by_the_log_transform_are_rejected() {
+        let mut pairs = [(1.0, 2.0), (1.0, 3.0)];
+        assert_eq!(fit_log_pairs(&mut pairs), Err(ScalingError::DegeneratePredictor));
     }
 
     #[test]
