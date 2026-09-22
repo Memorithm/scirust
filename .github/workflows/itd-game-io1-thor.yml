@@ -1,0 +1,73 @@
+name: ITD GAME-IO1 process bridge qualification on Thor
+on:
+  push:
+    branches: [research/itd-game-io1-thor]
+    paths: ['.github/workflows/itd-game-io1-thor.yml']
+permissions:
+  contents: read
+concurrency:
+  group: itd-game-process-bridge-thor
+  cancel-in-progress: false
+jobs:
+  qualify:
+    if: github.repository == 'Memorithm/scirust'
+    runs-on: [self-hosted, Linux, ARM64, scirust-arm64, jetson-thor, internal]
+    timeout-minutes: 20
+    env:
+      ITD_SOURCE_SHA: 7edca8e40b715061104e3c33b19f6b1f4e998aad
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTHONHASHSEED: '0'
+    defaults:
+      run:
+        shell: bash
+        working-directory: itd-io1-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          repository: Memorithm/itd-simulator
+          ref: ${{ env.ITD_SOURCE_SHA }}
+          persist-credentials: false
+          path: itd-io1-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Isolate toolchain and retain host identity
+        run: |
+          set -euo pipefail
+          EVIDENCE="$HOME/v888-research-runs/game-io1-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -p "$HOME/v888-research-runs"
+          mkdir "$EVIDENCE"
+          echo "GAME_EVIDENCE=$EVIDENCE" >> "$GITHUB_ENV"
+          echo "CARGO_HOME=$RUNNER_TEMP/itd-io1-tools-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/cargo" >> "$GITHUB_ENV"
+          echo "RUSTUP_HOME=$RUNNER_TEMP/itd-io1-tools-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/rustup" >> "$GITHUB_ENV"
+          test "$(git rev-parse HEAD)" = "$ITD_SOURCE_SHA"
+          { hostname; uname -m; id; printf 'runner=%s\nitd_source=%s\nworkflow_source=%s\n' "$RUNNER_NAME" "$ITD_SOURCE_SHA" "$GITHUB_SHA"; python3 --version; } | tee "$EVIDENCE/runtime.txt"
+          test "$(uname -m)" = aarch64
+          python3 tools/check_manifest.py | tee "$EVIDENCE/manifest.log"
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: 1.89.0
+      - name: Compile Rust and exercise real child processes
+        run: |
+          set -euo pipefail
+          rustc +1.89.0 --version | tee -a "$GAME_EVIDENCE/runtime.txt"
+          rustc +1.89.0 --edition=2021 -D warnings --test research/v888_game/process_game.rs -o "$RUNNER_TEMP/itd-io1-tests-$GITHUB_RUN_ID" 2>&1 | tee "$GAME_EVIDENCE/compile-tests.log"
+          "$RUNNER_TEMP/itd-io1-tests-$GITHUB_RUN_ID" 2>&1 | tee "$GAME_EVIDENCE/rust-tests.log"
+          rustc +1.89.0 --edition=2021 -D warnings -O research/v888_game/process_game.rs -o "$RUNNER_TEMP/itd-io1-$GITHUB_RUN_ID" 2>&1 | tee "$GAME_EVIDENCE/compile-worker.log"
+          python3 research/v888_game/qualify_io.py --binary "$RUNNER_TEMP/itd-io1-$GITHUB_RUN_ID" --output "$GAME_EVIDENCE/pilot" 2>&1 | tee "$GAME_EVIDENCE/io-tests-and-pilot.log"
+          rustc +1.89.0 --edition=2021 -D warnings -O research/v888_game/game.rs -o "$RUNNER_TEMP/itd-env1-$GITHUB_RUN_ID"
+          python3 research/v888_game/qualify.py --binary "$RUNNER_TEMP/itd-env1-$GITHUB_RUN_ID" --output "$GAME_EVIDENCE/env1-regression" 2>&1 | tee "$GAME_EVIDENCE/env1-regression.log"
+          python3 tools/check_manifest.py | tee "$GAME_EVIDENCE/manifest-after.log"
+          git diff --exit-code
+      - name: Retain reviewed sources and fingerprints
+        if: always() && env.GAME_EVIDENCE != ''
+        run: |
+          set -euo pipefail
+          mkdir "$GAME_EVIDENCE/source"
+          cp research/v888_game/*.rs research/v888_game/*.py research/v888_game/*.json research/v888_game/PROCESS_PROTOCOL.md "$GAME_EVIDENCE/source/"
+          cp MANIFEST.sha256 "$GAME_EVIDENCE/MANIFEST.sha256"
+          printf '%s\n' "$ITD_SOURCE_SHA" > "$GAME_EVIDENCE/source_commit.txt"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always() && env.GAME_EVIDENCE != ''
+        with:
+          name: itd-game-io1-${{ env.ITD_SOURCE_SHA }}
+          path: ${{ env.GAME_EVIDENCE }}/
+          if-no-files-found: error
+          retention-days: 30

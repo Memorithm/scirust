@@ -1,0 +1,57 @@
+name: V888 complete synapse audit on Thor
+on:
+  push:
+    branches: [research/v888-growth-thor-20260922]
+    paths: ['scripts/v888_phase1/**', '.github/workflows/v888-synapse-audit-thor.yml']
+permissions:
+  contents: read
+concurrency:
+  group: v888-complete-synapse-audit-thor
+  cancel-in-progress: false
+jobs:
+  audit:
+    if: github.repository == 'Memorithm/scirust'
+    runs-on: [self-hosted, Linux, ARM64, scirust-arm64, jetson-thor, internal]
+    timeout-minutes: 90
+    env:
+      OMP_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Compile and independently test Rust reference
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$HOME/datasets/banc_v888"
+          VENV="$ROOT/.analysis-venv"
+          OUT="$ROOT/analysis/synapse-audit-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "V888_AUDIT_OUTPUT=$OUT" >> "$GITHUB_ENV"
+          rustc +1.89.0 --version
+          rustc +1.89.0 --edition=2021 --test scripts/v888_phase1/endpoint_counts.rs -o "$RUNNER_TEMP/v888-count-tests"
+          "$RUNNER_TEMP/v888-count-tests"
+          rustc +1.89.0 --edition=2021 -O scripts/v888_phase1/endpoint_counts.rs -o "$RUNNER_TEMP/v888-counts"
+          "$VENV/bin/python" -m py_compile scripts/v888_phase1/audit.py scripts/v888_phase1/test_pipeline.py scripts/v888_phase1/reconcile_known_pairs.py
+          "$VENV/bin/python" scripts/v888_phase1/test_pipeline.py "$RUNNER_TEMP/v888-counts"
+          "$VENV/bin/python" scripts/v888_phase1/reconcile_known_pairs.py --self-test
+      - name: Verify source bytes and reconcile full synapse table with induced graph
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$HOME/datasets/banc_v888"
+          exec 9>"$ROOT/.full-synapse-audit.lock"
+          flock -n 9
+          "$ROOT/.analysis-venv/bin/python" scripts/v888_phase1/reconcile_known_pairs.py --data-root "$ROOT" --output "$V888_AUDIT_OUTPUT" --worker "$RUNNER_TEMP/v888-counts"
+          "$ROOT/.analysis-venv/bin/python" -m pip freeze > "$V888_AUDIT_OUTPUT/evidence/environment.txt"
+          printf '%s\n' "$GITHUB_SHA" > "$V888_AUDIT_OUTPUT/evidence/source_commit.txt"
+          sha256sum "$RUNNER_TEMP/v888-counts" > "$V888_AUDIT_OUTPUT/evidence/worker.sha256"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: v888-synapse-audit-${{ github.sha }}
+          path: ${{ env.V888_AUDIT_OUTPUT }}/evidence/
+          if-no-files-found: warn
+          retention-days: 30
