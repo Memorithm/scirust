@@ -1,0 +1,76 @@
+name: V888 VG-3 topology controls on Thor
+
+on:
+  push:
+    branches:
+      - research/v888-growth-vg3-topology-20260922
+    paths:
+      - '.github/workflows/v888-growth-vg3-thor.yml'
+      - 'scripts/v888/analyze_topology_vg3.py'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v888-growth-vg3-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  vg3:
+    name: BANC v888 VG-3 topology controls on Thor
+    runs-on: [self-hosted, Linux, ARM64, scirust-arm64, jetson-thor, internal]
+    timeout-minutes: 120
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+
+      - name: Verify persistent V888 dataset
+        shell: bash
+        run: |
+          set -euo pipefail
+          DATA_ROOT="${V888_DATA_ROOT:-$HOME/datasets/banc_v888}"
+          test -s "$DATA_ROOT/banc_888_meta.feather"
+          test -s "$DATA_ROOT/banc_888_metrics.feather"
+          test -s "$DATA_ROOT/banc_888_edgelist_simple_v3.feather"
+          (cd "$DATA_ROOT" && sha256sum --check manifest.sha256)
+          printf 'runner='
+          hostname
+          free -h || true
+
+      - name: Run VG-3 topology controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          DATA_ROOT="${V888_DATA_ROOT:-$HOME/datasets/banc_v888}"
+          VENV="$DATA_ROOT/.analysis-venv"
+          test -x "$VENV/bin/python"
+          "$VENV/bin/python" scripts/v888/analyze_topology_vg3.py             --data-root "$DATA_ROOT"
+
+      - name: Capture VG-3 evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          DATA_ROOT="${V888_DATA_ROOT:-$HOME/datasets/banc_v888}"
+          EVIDENCE="$RUNNER_TEMP/v888-vg3-evidence"
+          rm -rf "$EVIDENCE"
+          mkdir -p "$EVIDENCE"
+          cp "$DATA_ROOT/manifest.sha256" "$EVIDENCE/"
+          cp -R "$DATA_ROOT/analysis/brain_growth_vg3" "$EVIDENCE/"
+          {
+            printf 'runner_hostname='
+            hostname
+            printf 'git_sha=%s\n' "$GITHUB_SHA"
+            printf 'scope=adult_directed_topology_association_not_developmental_causality\n'
+          } > "$EVIDENCE/runtime.txt"
+
+      - name: Upload compact VG-3 evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: v888-growth-vg3-${{ github.sha }}
+          path: ${{ runner.temp }}/v888-vg3-evidence/
+          if-no-files-found: error
+          retention-days: 14
