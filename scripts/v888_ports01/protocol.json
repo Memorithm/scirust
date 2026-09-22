@@ -1,0 +1,30 @@
+{
+  "schema": "v888-ports-dyn1",
+  "scope": "exploratory_source_bound_impulse_response_not_learning",
+  "core_commit": "75f43ec35b1118c98b23bbde8fc8e1d6bfd42036",
+  "core_sha256": "f3366c06db05569bbd4771d746dc5f8fce020d48c088eb03cc14e431e230415c",
+  "prior_root": "/var/lib/github-runner/v888-research-runs/bool02-35726122553-1",
+  "prior_receipt_sha256": "13389676a618a4c9a4bad32d7102ae630f04e912873f93a04069e0c293aefc13",
+  "case_receipts": {
+    "ranked-n2048-s17": "617ecc90e4956ca5915940791ab13e1a6e06f8eb4f06696d197e5536d7ea817e",
+    "ranked-n2048-s29": "5e1f8dd0488c83ad3bb6467e304427b66fdbfc7b6110ae3917cbb6efb5d64049",
+    "ranked-n2048-s43": "82d55727391abae715f26ae6b4f7c822947c48e33a480d684632fddee7820ef4",
+    "weak_bfs-n128-s17": "86e02ea4260209dbe750c964c6db949dee2eebf9e767e8be6977c56ee5c444af",
+    "weak_bfs-n128-s29": "b0ea77a19a297a06ddc2a8d25912df218d11d7a99ffbfcbf2ec03f76bb715628",
+    "weak_bfs-n128-s43": "8bc14b7ee8dd77c98589efe7cf46b5617629cae6f5a6e25b14a445e3f55d1d4e",
+    "weak_bfs-n2048-s17": "96be97610580fc5aa203eaabf398e2d2c46ae7e20231d3363de86aa70f1ec7a5",
+    "weak_bfs-n2048-s29": "43e9fb441998d604d55c4532313d8d52c096449686cc1748820f229b05c85a64",
+    "weak_bfs-n2048-s43": "b615e2229b6ff5be223d0efa53cb95894fd84ac658b5952cf1e683dfa604707d",
+    "weak_bfs-n512-s17": "35a8c3e8315c2e7cb3205466607262b7b99b63016089b09658837ed693622348",
+    "weak_bfs-n512-s29": "f7044638521684adc9c25a36a2b1a19b10d9838c5f0b69c4ea081d0f2a18d493",
+    "weak_bfs-n512-s43": "f58d7cd6d125ec29270e125c176db4ab39a4e3346a1020d71c2f5be1c4227957"
+  },
+  "arms": ["reference", "edge_count", "degree", "degree_reciprocal", "degree_reciprocal_block"],
+  "ticks": 129,
+  "ports": "panel 0 retains original ports; panels 1..16 rank IDs by SplitMix64(id XOR seed XOR (panel*0x9e3779b97f4a7c15 modulo 2^64)); same ports for all arms; duplicates retained",
+  "additional_port_panels": 16,
+  "dynamics": "reuse unchanged DYN-REF1 Boolean affine and parity/AND; unit weight, delay=1 for every retained directed pair; model parameters, not biology",
+  "drive": "at tick 0 only: masks 0:none, 1:A, 2:B, 3:A+B; zero drive afterwards; reset between trials",
+  "scope_boundaries": ["not a game policy", "no learned parameter or target", "no causal biological inference", "no selection of ports after measurement", "control diversity and partition diagnostics remain separate", "no evidence of uniform null sampling", "raw source dataset unchanged"],
+  "per_process_timeout_seconds": 180
+}
