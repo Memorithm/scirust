@@ -82,7 +82,7 @@ fn execute(ids: &[u64], graph: &[Edge], panel: &[[usize; 3]], ticks: usize, out:
     let mut adjacency = vec![Vec::new(); n];
     let mut reverse = vec![Vec::new(); n];
     for e in graph { adjacency[e.source].push(e.target); reverse[e.target].push(e.source); }
-    let emit = |out: &mut _, s: String| -> Result<(), String> { writeln!(out, "{s}").map_err(|e| e.to_string()) };
+    let emit = |out: &mut dyn Write, s: String| -> Result<(), String> { writeln!(out, "{s}").map_err(|e| e.to_string()) };
     emit(out, format!("{{\"kind\":\"graph\",\"nodes\":{n},\"edges\":{},\"ticks_per_trial\":{ticks}}}", graph.len()))?;
     for (index, &[a, b, readout]) in panel.iter().enumerate() {
         let da = distances(&adjacency, a);
@@ -140,7 +140,7 @@ mod tests {
     }
     #[test]
     fn malformed_nodes_fail() {
-        for s in ["", "0\t1.0\t0", "0\t1\t0\n1\t1\t0\n2\t3\t0", "1\t1\t0\n2\t2\t0\n3\t3\t0"] { assert!(nodes(s).is_err()); }
+        for s in ["", "0\t1.0\t0", "0\t1\t0\n1\t1\t0\n2\t3\t0", "1\t1\t0\n2\t2\t0\n3\t3\t3"] { assert!(nodes(s).is_err()); }
     }
     #[test]
     fn invalid_pairs_fail() {
