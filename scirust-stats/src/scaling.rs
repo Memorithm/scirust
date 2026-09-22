@@ -24,7 +24,7 @@ pub enum ScalingError {
 
 impl fmt::Display for ScalingError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
+        match self\n        {
             Self::LengthMismatch => write!(f, "predictor and response lengths differ"),
             Self::TooFewSamples => write!(f, "at least two paired observations are required"),
             Self::NonFinite => write!(f, "all observations must be finite"),
@@ -96,19 +96,19 @@ impl KahanSum {
 /// assert!((fit.slope - 1.5).abs() < 1e-12);
 /// ~~~
 pub fn log_log_scaling(x: &[f64], y: &[f64]) -> Result<LogLogFit, ScalingError> {
-    if x.len() != y.len() {
+    if x.len() != y.len()\n    {
         return Err(ScalingError::LengthMismatch);
     }
-    if x.len() < 2 {
+    if x.len() < 2\n    {
         return Err(ScalingError::TooFewSamples);
     }
 
     let mut pairs = Vec::with_capacity(x.len());
-    for (&predictor, &response) in x.iter().zip(y) {
-        if !predictor.is_finite() || !response.is_finite() {
+    for (&predictor, &response) in x.iter().zip(y)\n    {
+        if !predictor.is_finite() || !response.is_finite()\n        {
             return Err(ScalingError::NonFinite);
         }
-        if predictor <= 0.0 || response <= 0.0 {
+        if predictor <= 0.0 || response <= 0.0\n        {
             return Err(ScalingError::NonPositive);
         }
         pairs.push((predictor.ln(), response.ln()));
@@ -122,7 +122,7 @@ pub fn log_log_scaling(x: &[f64], y: &[f64]) -> Result<LogLogFit, ScalingError> 
 
     let mut sum_x = KahanSum::default();
     let mut sum_y = KahanSum::default();
-    for &(lx, ly) in &pairs {
+    for &(lx, ly) in &pairs\n    {
         sum_x.add(lx);
         sum_y.add(ly);
     }
@@ -133,7 +133,7 @@ pub fn log_log_scaling(x: &[f64], y: &[f64]) -> Result<LogLogFit, ScalingError> 
     let mut sxx = KahanSum::default();
     let mut sxy = KahanSum::default();
     let mut syy = KahanSum::default();
-    for &(lx, ly) in &pairs {
+    for &(lx, ly) in &pairs\n    {
         let dx = lx - mean_x;
         let dy = ly - mean_y;
         sxx.add(dx * dx);
@@ -142,7 +142,7 @@ pub fn log_log_scaling(x: &[f64], y: &[f64]) -> Result<LogLogFit, ScalingError> 
     }
 
     let sxx = sxx.finish();
-    if sxx <= 0.0 {
+    if sxx <= 0.0\n    {
         return Err(ScalingError::DegeneratePredictor);
     }
     let syy = syy.finish();
@@ -150,13 +150,13 @@ pub fn log_log_scaling(x: &[f64], y: &[f64]) -> Result<LogLogFit, ScalingError> 
     let intercept = mean_y - slope * mean_x;
 
     let mut residual_sum_squares = KahanSum::default();
-    for &(lx, ly) in &pairs {
+    for &(lx, ly) in &pairs\n    {
         let residual = ly - (intercept + slope * lx);
         residual_sum_squares.add(residual * residual);
     }
     let ss_res = residual_sum_squares.finish();
     let residual_rms = (ss_res / n as f64).sqrt();
-    let r_squared = if syy > 0.0 {
+    let r_squared = if syy > 0.0\n    {
         Some((1.0 - ss_res / syy).min(1.0))
     } else {
         None
