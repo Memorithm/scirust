@@ -87,8 +87,11 @@ impl<E> DirectedGraph<E> {
             }
         }
 
-        let out_offsets =
-            offsets_by_node(node_count, edges.iter().map(|edge| edge.source), edges.len());
+        let out_offsets = offsets_by_node(
+            node_count,
+            edges.iter().map(|edge| edge.source),
+            edges.len(),
+        );
 
         let mut in_edge_indices: Vec<usize> = (0..edges.len()).collect();
         in_edge_indices.sort_by_key(|&index| {
@@ -384,18 +387,21 @@ impl fmt::Display for DirectedGraphError {
                 formatter,
                 "directed edge {source} -> {target} is out of bounds for {node_count} nodes"
             ),
-            Self::NodeIndexOutOfBounds { node, node_count } => {
+            Self::NodeIndexOutOfBounds { node, node_count } =>
+            {
                 write!(
                     formatter,
                     "node {node} is out of bounds for {node_count} nodes"
                 )
-            }
-            Self::SelfLoop { node } => {
+            },
+            Self::SelfLoop { node } =>
+            {
                 write!(formatter, "self loop at node {node} is forbidden")
-            }
-            Self::ParallelEdge { source, target } => {
+            },
+            Self::ParallelEdge { source, target } =>
+            {
                 write!(formatter, "parallel edge {source} -> {target} is forbidden")
-            }
+            },
         }
     }
 }
@@ -448,10 +454,7 @@ mod tests {
             .iter()
             .map(|edge| (edge.source, edge.target))
             .collect();
-        assert_eq!(
-            keys,
-            vec![(0, 1), (1, 0), (1, 2), (2, 0), (2, 3), (3, 4)]
-        );
+        assert_eq!(keys, vec![(0, 1), (1, 0), (1, 2), (2, 0), (2, 3), (3, 4)]);
     }
 
     #[test]
@@ -490,11 +493,7 @@ mod tests {
             })
         );
         assert_eq!(
-            DirectedGraph::from_edges(
-                2,
-                vec![edge(1, 1, 1)],
-                DirectedGraphOptions::default(),
-            ),
+            DirectedGraph::from_edges(2, vec![edge(1, 1, 1)], DirectedGraphOptions::default(),),
             Err(DirectedGraphError::SelfLoop { node: 1 })
         );
     }
@@ -556,11 +555,7 @@ mod tests {
             })
         ));
         assert!(matches!(
-            DirectedGraph::from_edges(
-                2,
-                vec![edge(0, 2, 1)],
-                DirectedGraphOptions::default(),
-            ),
+            DirectedGraph::from_edges(2, vec![edge(0, 2, 1)], DirectedGraphOptions::default(),),
             Err(DirectedGraphError::NodeOutOfBounds { .. })
         ));
     }
