@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "milestone": "V888-BOOL-0.1",
+  "programme_revision": "2026-09-22.1",
+  "classification": "software_and_source_graph_qualification_not_confirmatory_AI",
+  "hypothesis": "After restricting raw v3 contacts to both endpoints in the frozen metadata node set, every directed pair has exactly the published v3 edgelist multiplicity.",
+  "source": {
+    "dataset": "BANC",
+    "materialization": "v888",
+    "detector": "v3",
+    "metadata_rows": 188508,
+    "edgelist_rows": 13620865,
+    "raw_rows": 198816365,
+    "induced_contacts": 42309621,
+    "synapses_sha256": "0dfb5cf89ba156d076beab2da38d87eaa63dcbe45d76f86b108570fb5b961dd0",
+    "baseline_audit_commit": "a1c0968b94b90b0fc0d3905126fad6491f777089"
+  },
+  "acceptance": [
+    "Every raw pre/post record is read exactly once per run; counters account for all metadata-membership categories.",
+    "Reference nodes are unique sorted unsigned 64-bit integers; no floating-point identity conversion.",
+    "Reference directed pairs are unique, strictly positive-weight and have known unequal endpoints.",
+    "Zero differing pair multiplicities and zero unexpected induced pairs; matching node totals alone is insufficient.",
+    "Canonical CSR has deterministic node IDs, row offsets, ascending targets and integer contact weights.",
+    "Independent Python readback checks byte length, dimensions, index bounds, row ordering and weight total.",
+    "Synthetic wrong-pair equal-node-total, count-mismatch, malformed-input and reordered-input tests pass.",
+    "Graph files stay outside Git and are not released when pairwise reconciliation fails."
+  ],
+  "resource_bounds": {"max_nodes": 1000000, "max_reference_pairs": 20000000, "max_raw_records": 250000000, "arrow_batch_rows": 131072, "address_space_gib": 8, "job_timeout_minutes": 45},
+  "execution": {"host_role": "Thor", "rust_toolchain": "1.89.0", "backend": "CPU", "new_download": false, "raw_mutation": false, "automatic_merge": false},
+  "excluded_claims": ["synapse_ID_uniqueness", "physiological_conductance_or_sign", "Boolean_task_performance", "V888_topology_advantage", "biological_growth_causality", "GPU_speedup", "public_API_promotion"]
+}
