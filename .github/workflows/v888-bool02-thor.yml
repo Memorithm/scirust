@@ -19,8 +19,6 @@ jobs:
       ARROW_NUM_THREADS: '1'
       PYTHONDONTWRITEBYTECODE: '1'
       V888_DATA_ROOT: /mnt/nvme/github-runners/home/datasets/banc_v888
-      CARGO_HOME: ${{ runner.temp }}/v888-toolchain-${{ github.run_id }}-${{ github.run_attempt }}/cargo
-      RUSTUP_HOME: ${{ runner.temp }}/v888-toolchain-${{ github.run_id }}-${{ github.run_attempt }}/rustup
     defaults:
       run:
         shell: bash
@@ -39,8 +37,11 @@ jobs:
           mkdir "$TESTS"
           echo "V888_BOOL_TESTS=$TESTS" >> "$GITHUB_ENV"
           echo "V888_BOOL_OUTPUT=$OUT" >> "$GITHUB_ENV"
+          echo "CARGO_HOME=$RUNNER_TEMP/v888-toolchain-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/cargo" >> "$GITHUB_ENV"
+          echo "RUSTUP_HOME=$RUNNER_TEMP/v888-toolchain-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/rustup" >> "$GITHUB_ENV"
           { hostname; uname -m; id; printf 'runner=%s\ncommit=%s\ndata_root=%s\noutput=%s\n' "$RUNNER_NAME" "$GITHUB_SHA" "$V888_DATA_ROOT" "$OUT"; } | tee "$TESTS/runtime.txt"
           test "$(uname -m)" = aarch64
+          ls -ld "$V888_DATA_ROOT" "$V888_DATA_ROOT/analysis/bool01-35717145115-1/graph.csr" "$V888_DATA_ROOT/.analysis-venv/bin/python" | tee -a "$TESTS/runtime.txt"
           test -r "$V888_DATA_ROOT/analysis/bool01-35717145115-1/graph.csr"
           test -x "$V888_DATA_ROOT/.analysis-venv/bin/python"
           "$V888_DATA_ROOT/.analysis-venv/bin/python" -c 'import shutil,sys; assert shutil.disk_usage(sys.argv[1]).free >= 4*1024**3' "$HOME"
