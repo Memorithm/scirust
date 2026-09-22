@@ -1,0 +1,21 @@
+{
+  "schema": "v888-dyn-ref1-protocol-v1",
+  "status": "frozen_synthetic_software_qualification_not_a_confirmatory_model_study",
+  "scope": "Independent preparatory reference for V888-BOOL-0.3; does not complete parent 0.2 or qualify topology attribution",
+  "source_data": "synthetic graphs only; no BANC files accessed",
+  "tick_rule": "At tick t read spikes at t-delay; t<delay reads zero; all nodes commit simultaneously",
+  "delay": {"minimum": 1, "maximum": 64, "unit": "discrete updates, not physiological time"},
+  "models": {
+    "lif": "v_next = leak*v + sum(integer_weight*delayed_spike) + current_drive; fire if >= threshold; reset zero; refractory discards incoming drive",
+    "integer": "v_next = clip(trunc_toward_zero(v/divisor) + exact_signed_sum + drive, -cap, cap); threshold/reset/refractory as declared",
+    "boolean_affine": "external_bit XOR parity(all incoming delayed bits); unit weights only",
+    "boolean_nonlinear": "affine output XOR AND(first,second incoming delayed bits); first/second ordered by source index; unit weights only"
+  },
+  "population_bounds": {"node_limit": 1000000, "payload_limit": "caller-declared direct vector bytes including ring and scratch", "work": "caller-declared max ticks and complete edge visits; reject before state commit"},
+  "differential_panel": {"random_seeds": 32, "seed_start": 20260922, "random_ticks": 64, "random_nodes": "2 + seed mod 11", "edge_probability": 0.28, "random_edge_delays": [1,7], "models_per_seed": 4, "explicit_delay_cases": [1,2,7,64], "programmed_cycle_ticks": 128, "quiescent_ticks": 128},
+  "independent_oracle": "Python arbitrary-precision signed sums; target-gather complete-history implementation independent of Rust source-scatter ring",
+  "acceptance": {"spikes_integer_refractory_counters": "exact", "lif_voltage_abs_tolerance": 1e-12, "lif_voltage_rel_tolerance": 1e-12, "repeat": "byte-identical complete traces on the same host/code/toolchain", "negative_inputs": "reject malformed topology/configuration/budget/records; no false success"},
+  "reset": "clear activity, pending delay history and episode counters; retain immutable model parameters and connectivity; no learning is implemented",
+  "not_claimed": ["biological fidelity", "learned memory", "V888 topology superiority", "game-task success", "event-driven speedup", "packed Boolean memory", "uniform null mixing", "GPU execution", "whole-process memory measurement", "public library API promotion"],
+  "next": "qualify graph/port/control diagnostics and a reviewed V888 integration; add game protocol adapter and separate learned-state persistence without label/history leakage"
+}
