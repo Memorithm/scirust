@@ -541,3 +541,35 @@ vg1_evidence_2026_09_22:
     - residuals_are_not_growth_rates
     - adult_snapshot_does_not_establish_developmental_causality
     - region_cell_type_reconstruction_and_annotation_effects_require_controls
+
+
+vg2_evidence_2026_09_22:
+  status: coverage_limited_exploratory_evidence
+  tracking_issue: https://github.com/Memorithm/scirust/issues/1500
+  workflow_run: 35708072025
+  evidence_head: c9b71b1a7d4ebb57328f70827d84e7086bcc89a9
+  report: docs/research/V888_GROWTH_VG2.md
+  mitochondrial_coverage:
+    total_rows: 188508
+    both_positive: 13950
+    positive_fraction: 0.0740021644
+    zero_rows: 160866
+    null_or_nonfinite_rows: 13692
+  positive_subset_spearman:
+    mitochondria_vs_volume: 0.6534157177
+    mitochondria_vs_cable: 0.6137924590
+    mitochondria_vs_dendrite_length: 0.5464138686
+    mitochondria_vs_endpoints: 0.5380964523
+    mitochondria_vs_branchpoints: 0.4820538805
+    mitochondria_vs_inputs: 0.4515139298
+    mitochondria_vs_axon_length: 0.4417046409
+    mitochondria_vs_outputs: 0.3616831182
+    mitochondria_vs_mitochondrial_volume: 0.7565171313
+  decision:
+    - do_not_promote_mitochondrial_abundance_as_global_growth_driver
+    - audit_CAVE_mitochondria_assignment_and_zero_semantics_before_inference
+    - retain_positive_subset_associations_as_conditional_evidence_only
+  scientific_boundary:
+    - recorded_zero_is_not_biological_absence_without_provenance
+    - selected_positive_subset_is_not_population_representative
+    - adult_association_does_not_establish_metabolic_causality
