@@ -493,3 +493,51 @@ v888_growth_program_2026_09_22:
     - adult_v888_snapshot_does_not_establish_causal_growth_mechanisms
     - region_lineage_annotation_and_reconstruction_bias_must_be_controlled
     - no_SML_or_TDI_growth_rule_promotion_before_VG_5_gate
+
+
+vg1_evidence_2026_09_22:
+  status: exploratory_adult_snapshot_evidence_complete
+  tracking_issue: https://github.com/Memorithm/scirust/issues/1500
+  workflow_run: 35707647966
+  evidence_head: 6e1d3361241d9704e0a38e26d38f286d55fa48c2
+  report: docs/research/V888_GROWTH_VG1.md
+  manifest_verified_before_analysis: true
+  annotated_neurons: 50501
+  hemilineage_labels: 259
+  sensitivity:
+    declared_labels: 255
+    declared_n_ge_20_groups: 225
+  region_scaling:
+    central_brain:
+      groups: 207
+      cable: 0.7335814406
+      volume: 0.6800372760
+      branchpoints: 0.9040440373
+      endpoints: 0.8581706193
+      inputs: 0.7615069758
+      outputs: 0.7203010232
+    optic_lobe:
+      groups: 34
+      cable: 0.9327368015
+      volume: 0.9481484358
+      branchpoints: 1.2018056000
+      endpoints: 1.1390486014
+      dendrite_length: 1.0258450318
+      inputs: 1.0183796976
+      outputs: 0.9103151051
+    ventral_nerve_cord:
+      groups: 60
+      cable: 0.9027205042
+      volume: 0.9049410215
+      branchpoints: 1.1611797488
+      endpoints: 1.1164640789
+      inputs: 0.9673630854
+      outputs: 1.0002996976
+  interpretation:
+    - no_single_global_adult_lineage_growth_exponent
+    - lineage_size_to_architecture_allocation_is_region_dependent
+    - central_brain_more_sublinear_than_optic_lobe_or_vnc_in_this_snapshot
+  scientific_boundary:
+    - residuals_are_not_growth_rates
+    - adult_snapshot_does_not_establish_developmental_causality
+    - region_cell_type_reconstruction_and_annotation_effects_require_controls
