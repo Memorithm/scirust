@@ -199,8 +199,12 @@ def main() -> None:
     meta_subset_columns = [id_meta, hemilineage]
     if region is not None:
         meta_subset_columns.append(region)
+    metric_payload_columns = [
+        name for name in METRIC_COLUMNS if name in metrics.columns
+    ]
+    metrics_subset = metrics[[id_metrics, *metric_payload_columns]].copy()
     joined = meta[meta_subset_columns].merge(
-        metrics,
+        metrics_subset,
         left_on=id_meta,
         right_on=id_metrics,
         how="inner",
