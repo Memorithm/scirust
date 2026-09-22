@@ -1,0 +1,78 @@
+name: V888 source-bound ports and Boolean impulse probes
+on:
+  push:
+    branches: [research/v888-ports-dyn1]
+    paths: ['scripts/v888_ports01/**', '.github/workflows/v888-ports-dyn1-thor.yml']
+permissions:
+  contents: read
+concurrency:
+  group: v888-ports-dyn1-thor
+  cancel-in-progress: false
+jobs:
+  qualify:
+    if: github.repository == 'Memorithm/scirust' && github.ref == 'refs/heads/research/v888-ports-dyn1'
+    runs-on: [self-hosted, Linux, ARM64, scirust-arm64, jetson-thor, internal]
+    timeout-minutes: 45
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      OMP_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+      V888_DATA_ROOT: /mnt/nvme/github-runners/home/datasets/banc_v888
+    defaults:
+      run:
+        shell: bash
+        working-directory: v888-ports-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          path: v888-ports-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Isolate build and retained output
+        run: |
+          set -euo pipefail
+          TESTS="$RUNNER_TEMP/v888-ports-tests-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          OUT="$HOME/v888-research-runs/ports-dyn1-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir "$TESTS"
+          echo "V888_PORTS_TESTS=$TESTS" >> "$GITHUB_ENV"
+          echo "V888_PORTS_OUTPUT=$OUT" >> "$GITHUB_ENV"
+          echo "CARGO_HOME=$RUNNER_TEMP/v888-ports-toolchain-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/cargo" >> "$GITHUB_ENV"
+          echo "RUSTUP_HOME=$RUNNER_TEMP/v888-ports-toolchain-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/rustup" >> "$GITHUB_ENV"
+          { hostname; uname -m; id; printf 'runner=%s\ncommit=%s\noutput=%s\n' "$RUNNER_NAME" "$GITHUB_SHA" "$OUT"; } | tee "$TESTS/runtime.txt"
+          test "$(uname -m)" = aarch64
+          echo 'f3366c06db05569bbd4771d746dc5f8fce020d48c088eb03cc14e431e230415c  scripts/v888_dyn01/recurrent.rs' | sha256sum -c -
+          test -x "$V888_DATA_ROOT/.analysis-venv/bin/python"
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: 1.89.0
+      - name: Compile unchanged recurrent library and source-binding tests
+        run: |
+          set -euo pipefail
+          T="$V888_PORTS_TESTS"
+          rustc +1.89.0 --version | tee -a "$T/runtime.txt"
+          rustc +1.89.0 --edition=2021 -D warnings --test scripts/v888_dyn01/recurrent.rs -o "$T/core-tests"
+          "$T/core-tests" | tee "$T/core-tests.log"
+          rustc +1.89.0 --edition=2021 -D warnings -O --crate-name recurrent --crate-type rlib scripts/v888_dyn01/recurrent.rs -o "$T/librecurrent.rlib"
+          rustc +1.89.0 --edition=2021 -D warnings --test scripts/v888_ports01/driver.rs --extern recurrent="$T/librecurrent.rlib" -o "$T/binding-tests"
+          "$T/binding-tests" | tee "$T/binding-tests.log"
+          rustc +1.89.0 --edition=2021 -D warnings -O scripts/v888_ports01/driver.rs --extern recurrent="$T/librecurrent.rlib" -o "$T/ports-dyn1"
+      - name: Qualify actual graphs without changing source ports or raw data
+        run: |
+          set -euo pipefail
+          ulimit -v 8388608
+          "$V888_DATA_ROOT/.analysis-venv/bin/python" scripts/v888_ports01/qualify.py --worker "$V888_PORTS_TESTS/ports-dyn1" --output "$V888_PORTS_OUTPUT" 2>&1 | tee "$V888_PORTS_TESTS/qualification.log"
+          cp "$V888_PORTS_TESTS/runtime.txt" "$V888_PORTS_OUTPUT/"
+          cp "$V888_PORTS_TESTS/"*.log "$V888_PORTS_OUTPUT/"
+          cp scripts/v888_dyn01/recurrent.rs "$V888_PORTS_OUTPUT/source/"
+          sha256sum scripts/v888_ports01/* scripts/v888_dyn01/recurrent.rs > "$V888_PORTS_OUTPUT/source.sha256"
+          "$V888_DATA_ROOT/.analysis-venv/bin/python" -m pip freeze > "$V888_PORTS_OUTPUT/environment.txt"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always() && env.V888_PORTS_TESTS != ''
+        with:
+          name: v888-ports-dyn1-${{ github.sha }}
+          path: |
+            ${{ env.V888_PORTS_OUTPUT }}/
+            ${{ env.V888_PORTS_TESTS }}/*.log
+            ${{ env.V888_PORTS_TESTS }}/runtime.txt
+          if-no-files-found: warn
+          retention-days: 30
