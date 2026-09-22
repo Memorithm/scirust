@@ -13,6 +13,9 @@ jobs:
     if: github.repository == 'Memorithm/scirust'
     runs-on: [self-hosted, Linux, ARM64, scirust-arm64, jetson-thor, internal]
     timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}/bool01-${{ github.run_id }}-${{ github.run_attempt }}
     env:
       OMP_NUM_THREADS: '1'
       OPENBLAS_NUM_THREADS: '1'
@@ -22,6 +25,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           ref: ${{ github.sha }}
+          path: bool01-${{ github.run_id }}-${{ github.run_attempt }}
           persist-credentials: false
       - name: Record execution host and qualify Rust plus independent oracles
         shell: bash
