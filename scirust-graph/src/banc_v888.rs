@@ -175,9 +175,7 @@ impl BancV888Manifest {
         }
         if self.node_universe != "explicit_list"
         {
-            return Err(BancV888Error::WrongNodeUniverse(
-                self.node_universe.clone(),
-            ));
+            return Err(BancV888Error::WrongNodeUniverse(self.node_universe.clone()));
         }
         Ok(())
     }
@@ -199,7 +197,10 @@ impl BancV888Manifest {
 }
 
 fn is_sha256(value: &str) -> bool {
-    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
 }
 
 /// One row of `banc_888_edgelist_simple_v3.feather`.
@@ -405,35 +406,44 @@ impl fmt::Display for BancV888Error {
         match self
         {
             Self::InvalidNodeId(value) => write!(f, "invalid BANC v888 node id: {value}"),
-            Self::InvalidManifestJson(message) => {
+            Self::InvalidManifestJson(message) =>
+            {
                 write!(f, "invalid BANC v888 manifest JSON: {message}")
-            }
+            },
             Self::WrongContract(value) => write!(f, "unsupported BANC contract: {value}"),
             Self::WrongDataset(value) => write!(f, "unsupported dataset: {value}"),
-            Self::WrongMaterialization(value) => {
+            Self::WrongMaterialization(value) =>
+            {
                 write!(f, "unsupported BANC materialization: {value}")
-            }
+            },
             Self::WrongProduct(value) => write!(f, "unsupported BANC source product: {value}"),
             Self::WrongSchema(value) => write!(f, "unsupported BANC source schema: {value}"),
             Self::EmptySourceUri => write!(f, "BANC source URI must not be empty"),
             Self::InvalidSha256(value) => write!(f, "invalid BANC source SHA-256: {value}"),
             Self::WrongLicense(value) => write!(f, "unexpected BANC source license: {value}"),
             Self::WrongCitationDoi(value) => write!(f, "unexpected BANC citation DOI: {value}"),
-            Self::WrongNodeUniverse(value) => {
+            Self::WrongNodeUniverse(value) =>
+            {
                 write!(f, "unsupported BANC node-universe policy: {value}")
-            }
+            },
             Self::EmptyNodeUniverse => write!(f, "BANC node universe must not be empty"),
             Self::DuplicateNode(node) => write!(f, "duplicate BANC node id: {node}"),
             Self::UnknownNode(node) => write!(f, "BANC edge references unknown node: {node}"),
-            Self::DuplicateEdge { pre, post } => {
+            Self::DuplicateEdge { pre, post } =>
+            {
                 write!(f, "duplicate BANC edge: {pre} -> {post}")
-            }
-            Self::Autapse(node) => {
-                write!(f, "BANC v3 edgelist must not contain autapse at node {node}")
-            }
-            Self::ZeroCount { pre, post } => {
+            },
+            Self::Autapse(node) =>
+            {
+                write!(
+                    f,
+                    "BANC v3 edgelist must not contain autapse at node {node}"
+                )
+            },
+            Self::ZeroCount { pre, post } =>
+            {
                 write!(f, "BANC edge {pre} -> {post} has zero synapse count")
-            }
+            },
             Self::InconsistentTotals {
                 pre,
                 post,
@@ -444,9 +454,10 @@ impl fmt::Display for BancV888Error {
                 f,
                 "BANC edge {pre} -> {post} count {count} exceeds pre/post totals ({pre_count}, {post_count})"
             ),
-            Self::InvalidNorm { pre, post, norm } => {
+            Self::InvalidNorm { pre, post, norm } =>
+            {
                 write!(f, "BANC edge {pre} -> {post} has invalid norm {norm}")
-            }
+            },
         }
     }
 }
@@ -470,8 +481,7 @@ mod tests {
     }
 
     fn edge(pre: u64, post: u64, count: u32) -> BancV888EdgeRow {
-        BancV888EdgeRow::try_new(id(pre), id(post), count, 0.25, count * 4, count * 5)
-            .unwrap()
+        BancV888EdgeRow::try_new(id(pre), id(post), count, 0.25, count * 4, count * 5).unwrap()
     }
 
     #[test]
@@ -479,10 +489,7 @@ mod tests {
         let node = id(720_575_941_521_131_930);
         let json = serde_json::to_string(&node).unwrap();
         assert_eq!(json, "\"720575941521131930\"");
-        assert_eq!(
-            serde_json::from_str::<BancV888NodeId>(&json).unwrap(),
-            node
-        );
+        assert_eq!(serde_json::from_str::<BancV888NodeId>(&json).unwrap(), node);
         assert!(serde_json::from_str::<BancV888NodeId>("720575941521131930").is_err());
     }
 
