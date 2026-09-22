@@ -1,0 +1,70 @@
+name: ITD two-door environment qualification on Thor
+on:
+  push:
+    branches: [research/itd-two-doors-thor-qualification]
+    paths: ['.github/workflows/itd-two-doors-thor.yml']
+permissions:
+  contents: read
+concurrency:
+  group: itd-two-doors-thor-reference
+  cancel-in-progress: false
+jobs:
+  qualify:
+    if: github.repository == 'Memorithm/scirust'
+    runs-on: [self-hosted, Linux, ARM64, scirust-arm64, jetson-thor, internal]
+    timeout-minutes: 20
+    env:
+      ITD_SOURCE_SHA: 3637b1f3e4f18474d4e497eecda083e1cca449a6
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTHONHASHSEED: '0'
+    defaults:
+      run:
+        shell: bash
+        working-directory: itd-game-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          repository: Memorithm/itd-simulator
+          ref: ${{ env.ITD_SOURCE_SHA }}
+          persist-credentials: false
+          path: itd-game-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Record host and isolate tools and evidence
+        run: |
+          set -euo pipefail
+          EVIDENCE="$HOME/v888-research-runs/game-env-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -p "$HOME/v888-research-runs"
+          mkdir "$EVIDENCE"
+          echo "GAME_EVIDENCE=$EVIDENCE" >> "$GITHUB_ENV"
+          echo "CARGO_HOME=$RUNNER_TEMP/itd-game-tools-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/cargo" >> "$GITHUB_ENV"
+          echo "RUSTUP_HOME=$RUNNER_TEMP/itd-game-tools-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/rustup" >> "$GITHUB_ENV"
+          test "$(git rev-parse HEAD)" = "$ITD_SOURCE_SHA"
+          { hostname; uname -m; id; printf 'runner=%s\nitd_source=%s\nworkflow_source=%s\n' "$RUNNER_NAME" "$ITD_SOURCE_SHA" "$GITHUB_SHA"; python3 --version; } | tee "$EVIDENCE/runtime.txt"
+          test "$(uname -m)" = aarch64
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: 1.89.0
+      - name: Compile and exercise environment references
+        run: |
+          set -euo pipefail
+          python3 tools/check_manifest.py | tee "$GAME_EVIDENCE/manifest-check.log"
+          rustc +1.89.0 --version | tee -a "$GAME_EVIDENCE/runtime.txt"
+          rustc +1.89.0 --edition=2021 -D warnings --test research/v888_game/game.rs -o "$RUNNER_TEMP/itd-game-tests-$GITHUB_RUN_ID" 2>&1 | tee "$GAME_EVIDENCE/compile-tests.log"
+          "$RUNNER_TEMP/itd-game-tests-$GITHUB_RUN_ID" 2>&1 | tee "$GAME_EVIDENCE/rust-tests.log"
+          rustc +1.89.0 --edition=2021 -D warnings -O research/v888_game/game.rs -o "$RUNNER_TEMP/itd-two-doors-$GITHUB_RUN_ID" 2>&1 | tee "$GAME_EVIDENCE/compile-worker.log"
+          python3 research/v888_game/qualify.py --binary "$RUNNER_TEMP/itd-two-doors-$GITHUB_RUN_ID" --output "$GAME_EVIDENCE/pilot" 2>&1 | tee "$GAME_EVIDENCE/oracle-and-pilot.log"
+          git diff --exit-code
+      - name: Retain source and verified manifest
+        if: always() && env.GAME_EVIDENCE != ''
+        run: |
+          set -euo pipefail
+          mkdir "$GAME_EVIDENCE/source"
+          cp research/v888_game/* "$GAME_EVIDENCE/source/"
+          cp MANIFEST.sha256 "$GAME_EVIDENCE/MANIFEST.sha256"
+          printf '%s\n' "$ITD_SOURCE_SHA" > "$GAME_EVIDENCE/source_commit.txt"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always() && env.GAME_EVIDENCE != ''
+        with:
+          name: itd-two-doors-${{ env.ITD_SOURCE_SHA }}
+          path: ${{ env.GAME_EVIDENCE }}/
+          if-no-files-found: error
+          retention-days: 30

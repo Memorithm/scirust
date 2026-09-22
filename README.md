@@ -204,3 +204,7 @@ granted by that license. See [`LICENSING.md`](LICENSING.md) for the separate
 commercial licensing path.
 
 Copyright © 2026 Tarek Zekriti.
+
+## BANC v888 sparse recurrent research
+
+The active BANC v888 research bootstrap is [`docs/V888_CONNECTOME_BOOTSTRAP.md`](docs/V888_CONNECTOME_BOOTSTRAP.md). It defines the V888-only provenance boundary and the Rust-first path for directed sparse graphs, structural controls, event-driven dynamics, spiking reference semantics, surrogate gradients, and portable CPU/WGPU execution. Raw connectome data is not vendored into SciRust, and the track introduces no NVIDIA dependency.
