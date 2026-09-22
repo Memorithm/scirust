@@ -36,7 +36,7 @@ jobs:
           test -s "$DATA_ROOT/banc_888_meta.feather"
           test -s "$DATA_ROOT/banc_888_metrics.feather"
           test -s "$DATA_ROOT/banc_888_synapses_v3_enriched.parquet"
-          sha256sum --check "$DATA_ROOT/manifest.sha256"
+          (cd "$DATA_ROOT" && sha256sum --check manifest.sha256)
           printf 'runner='
           hostname
           du -sh "$DATA_ROOT"
