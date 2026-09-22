@@ -84,6 +84,7 @@ pub mod lottery;
 pub mod resampling;
 pub mod rng;
 pub mod robust;
+pub mod scaling;
 pub mod sensitivity;
 pub mod survival;
 
@@ -109,6 +110,7 @@ pub use robust::{
     interquartile_range, median_absolute_deviation, median_of_means, trimmed_mean, weighted_median,
     winsorized_mean,
 };
+pub use scaling::{LogLogFit, ScalingError, log_log_scaling};
 pub use survival::{
     KaplanMeierPoint, LogRankResult, NelsonAalenPoint, RightCensoredObservation, SurvivalError,
     kaplan_meier, log_rank, nelson_aalen,
@@ -144,6 +146,7 @@ pub mod prelude {
         interquartile_range, median_absolute_deviation, median_of_means, trimmed_mean,
         weighted_median, winsorized_mean,
     };
+    pub use crate::scaling::{LogLogFit, ScalingError, log_log_scaling};
     pub use crate::survival::{
         KaplanMeierPoint, LogRankResult, NelsonAalenPoint, RightCensoredObservation, SurvivalError,
         kaplan_meier, log_rank, nelson_aalen,
