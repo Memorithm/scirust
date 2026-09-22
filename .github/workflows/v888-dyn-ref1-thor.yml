@@ -1,0 +1,76 @@
+name: V888 DYN-REF1 recurrent CPU qualification on Thor
+on:
+  push:
+    branches: [research/v888-dyn-ref1]
+    paths: ['scripts/v888_dyn01/**', '.github/workflows/v888-dyn-ref1-thor.yml']
+permissions:
+  contents: read
+concurrency:
+  group: v888-dyn-ref1-thor
+  cancel-in-progress: false
+jobs:
+  qualify:
+    if: github.repository == 'Memorithm/scirust'
+    runs-on: [self-hosted, Linux, ARM64, scirust-arm64, jetson-thor, internal]
+    timeout-minutes: 15
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTHONHASHSEED: '0'
+    defaults:
+      run:
+        shell: bash
+        working-directory: v888-dyn-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          path: v888-dyn-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Record actual host and isolate compiler and evidence
+        run: |
+          set -euo pipefail
+          OUT="$HOME/v888-research-runs/dyn-ref1-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -p "$HOME/v888-research-runs"
+          mkdir "$OUT"
+          echo "DYN_EVIDENCE=$OUT" >> "$GITHUB_ENV"
+          echo "CARGO_HOME=$RUNNER_TEMP/v888-dyn-tools-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/cargo" >> "$GITHUB_ENV"
+          echo "RUSTUP_HOME=$RUNNER_TEMP/v888-dyn-tools-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/rustup" >> "$GITHUB_ENV"
+          { hostname; uname -m; id; printf 'runner=%s\nsource=%s\n' "$RUNNER_NAME" "$GITHUB_SHA"; python3 --version; } | tee "$OUT/runtime.txt"
+          test "$(uname -m)" = aarch64
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: 1.89.0
+      - name: Compile reference library, unit tests and independent driver
+        run: |
+          set -euo pipefail
+          rustc +1.89.0 --version | tee -a "$DYN_EVIDENCE/runtime.txt"
+          BIN="$RUNNER_TEMP/v888-dyn-bin-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir "$BIN"
+          echo "DYN_BIN=$BIN" >> "$GITHUB_ENV"
+          rustc +1.89.0 --edition=2021 -D warnings --test scripts/v888_dyn01/recurrent.rs -o "$BIN/unit-tests" 2>&1 | tee "$DYN_EVIDENCE/compile-tests.log"
+          "$BIN/unit-tests" 2>&1 | tee "$DYN_EVIDENCE/rust-tests.log"
+          rustc +1.89.0 --edition=2021 -D warnings -O --crate-name recurrent --crate-type rlib scripts/v888_dyn01/recurrent.rs -o "$BIN/librecurrent.rlib" 2>&1 | tee "$DYN_EVIDENCE/compile-library.log"
+          rustc +1.89.0 --edition=2021 -D warnings -O scripts/v888_dyn01/driver.rs --extern recurrent="$BIN/librecurrent.rlib" -o "$BIN/dyn-ref1" 2>&1 | tee "$DYN_EVIDENCE/compile-driver.log"
+      - name: Independently check dynamics, delayed memory, reset, budgets and replay
+        run: |
+          set -euo pipefail
+          ulimit -v 2097152
+          python3 scripts/v888_dyn01/qualify.py --binary "$DYN_BIN/dyn-ref1" --output "$DYN_EVIDENCE/pilot" 2>&1 | tee "$DYN_EVIDENCE/pilot.log"
+          git diff --exit-code
+          test -z "$(git status --porcelain=v1 --untracked-files=no)"
+      - name: Retain pinned source fingerprints, not datasets or executable binaries
+        if: always() && env.DYN_EVIDENCE != ''
+        run: |
+          set -euo pipefail
+          mkdir "$DYN_EVIDENCE/source"
+          cp scripts/v888_dyn01/*.rs scripts/v888_dyn01/*.py scripts/v888_dyn01/*.json "$DYN_EVIDENCE/source/"
+          sha256sum scripts/v888_dyn01/* > "$DYN_EVIDENCE/source.sha256"
+          printf '%s\n' "$GITHUB_SHA" > "$DYN_EVIDENCE/source_commit.txt"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always() && env.DYN_EVIDENCE != ''
+        with:
+          name: v888-dyn-ref1-${{ github.sha }}
+          path: ${{ env.DYN_EVIDENCE }}/
+          if-no-files-found: error
+          retention-days: 30
