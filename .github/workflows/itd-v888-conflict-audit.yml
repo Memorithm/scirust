@@ -1,0 +1,93 @@
+name: Inspect ITD and V888 PR conflicts on Thor
+on:
+  push:
+    branches: [repair/itd-v888-conflict-audit-20260922]
+    paths: ['.github/workflows/itd-v888-conflict-audit.yml']
+permissions:
+  contents: read
+concurrency:
+  group: itd-v888-conflict-audit
+  cancel-in-progress: false
+jobs:
+  inspect:
+    if: github.repository == 'Memorithm/scirust'
+    runs-on: [self-hosted, Linux, ARM64, scirust-arm64, jetson-thor, internal]
+    timeout-minutes: 20
+    steps:
+      - name: Inspect exact PR heads with isolated local merges
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/conflict-audit-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir "$OUT"
+          echo "REPAIR_EVIDENCE=$OUT/evidence" >> "$GITHUB_ENV"
+          export AUDIT_ROOT="$OUT"
+          python3 - <<'PY'
+          import json, os, pathlib, subprocess, urllib.request
+          root = pathlib.Path(os.environ['AUDIT_ROOT'])
+          evidence = root / 'evidence'
+          evidence.mkdir()
+          def api(repo, suffix):
+              req = urllib.request.Request('https://api.github.com/repos/'+repo+'/'+suffix,
+                  headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'], 'Accept':'application/vnd.github+json'})
+              with urllib.request.urlopen(req, timeout=60) as r: return json.load(r)
+          def git(path, *args, check=True):
+              p = subprocess.run(['git', *args], cwd=path, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=300)
+              if check and p.returncode: raise RuntimeError(p.stdout)
+              return p
+          runtime = {'run_id':os.environ['GITHUB_RUN_ID'], 'source':os.environ['GITHUB_SHA'], 'host':subprocess.check_output(['hostname'],text=True).strip(), 'arch':subprocess.check_output(['uname','-m'],text=True).strip(), 'runner':os.environ['RUNNER_NAME'], 'remote_refs_changed':False}
+          (evidence/'runtime.json').write_text(json.dumps(runtime,indent=2)+'\n')
+          report = []
+          targets = [('Memorithm/itd-simulator','main',[42,44,45,46,47,48,49,50,52,53,55,56]), ('Memorithm/scirust','master',[1494,1497,1501,1503,1504,1506,1508,1509])]
+          for repo, default_branch, numbers in targets:
+              directory = root / repo.split('/')[1]
+              p = subprocess.run(['git','clone','--filter=blob:none','--no-checkout','https://github.com/'+repo+'.git',str(directory)],text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=300)
+              (evidence/(repo.split('/')[1]+'-clone.log')).write_text(p.stdout)
+              if p.returncode: raise RuntimeError(p.stdout)
+              git(directory,'config','user.name','MEMOPERF')
+              git(directory,'config','user.email','contact@checkupauto.fr')
+              default = api(repo,'branches/'+default_branch)['commit']['sha']
+              git(directory,'fetch','--no-tags','origin',default)
+              for number in numbers:
+                  pr = api(repo,'pulls/'+str(number))
+                  item = {'repository':repo,'number':number,'state':pr['state'],'merged':pr.get('merged',False),'head':pr['head']['ref'],'head_sha':pr['head']['sha'],'base':pr['base']['ref'],'base_sha':pr['base']['sha'],'default':default_branch,'default_sha':default,'github_mergeable':pr.get('mergeable'),'github_mergeable_state':pr.get('mergeable_state')}
+                  report.append(item)
+                  if item['state'] != 'open' or item['merged']: continue
+                  h = item['head_sha']
+                  git(directory,'fetch','--no-tags','origin',h)
+                  dest = evidence / (repo.split('/')[1]+'-'+str(number))
+                  dest.mkdir()
+                  for label, target in [('original',item['base_sha']), ('default',default)]:
+                      git(directory,'fetch','--no-tags','origin',target)
+                      git(directory,'checkout','--force','--detach',h)
+                      merge = git(directory,'merge','--no-commit','--no-ff',target,check=False)
+                      (dest/(label+'-merge.log')).write_text(merge.stdout)
+                      conflicts = git(directory,'diff','--name-only','--diff-filter=U').stdout.splitlines()
+                      item[label+'_conflicts'] = conflicts
+                      item[label+'_merge_exit'] = merge.returncode
+                      patch = git(directory,'diff','--cc').stdout
+                      (dest/(label+'-conflicts.diff')).write_text(patch)
+                      for path in conflicts:
+                          f = directory/path
+                          if f.is_file() and f.stat().st_size < 1000000:
+                              out = dest/(label+'-conflicted')/path
+                              out.parent.mkdir(parents=True,exist_ok=True)
+                              out.write_bytes(f.read_bytes())
+                      if label == 'default':
+                          item['merge_base'] = git(directory,'merge-base',h,target).stdout.strip()
+                          (dest/'head-to-default.diff').write_text(git(directory,'diff',target,h).stdout)
+                      git(directory,'merge','--abort',check=False)
+                      git(directory,'reset','--hard',h)
+                  print(json.dumps(item),flush=True)
+                  (evidence/'report.json').write_text(json.dumps(report,indent=2)+'\n')
+          (evidence/'report.json').write_text(json.dumps(report,indent=2)+'\n')
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always() && env.REPAIR_EVIDENCE != ''
+        with:
+          name: itd-v888-conflicts-${{ github.run_id }}
+          path: ${{ env.REPAIR_EVIDENCE }}/
+          if-no-files-found: error
+          retention-days: 14
