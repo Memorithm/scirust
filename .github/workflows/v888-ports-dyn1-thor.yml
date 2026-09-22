@@ -9,7 +9,36 @@ concurrency:
   group: v888-ports-dyn1-thor
   cancel-in-progress: false
 jobs:
+  prepare:
+    if: github.repository == 'Memorithm/scirust' && github.ref == 'refs/heads/research/v888-ports-dyn1'
+    runs-on: [self-hosted, Linux, ARM64, scirust-arm64, jetson-thor, internal]
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        slot: [1, 2, 3, 4]
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      OPENBLAS_NUM_THREADS: '1'
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          path: v888-prepare-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.slot }}
+      - name: Publish only readable verified subset artifacts to a new same-host cache
+        working-directory: v888-prepare-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.slot }}
+        run: |
+          set -euo pipefail
+          /mnt/nvme/github-runners/home/datasets/banc_v888/.analysis-venv/bin/python scripts/v888_ports01/host_run.py --prepare-cache --preparation-output "$RUNNER_TEMP/v888-prepare-${GITHUB_RUN_ID}-${{ matrix.slot }}.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: v888-preparation-${{ github.run_id }}-${{ matrix.slot }}
+          path: ${{ runner.temp }}/v888-prepare-${{ github.run_id }}-${{ matrix.slot }}.json
+          if-no-files-found: error
+          retention-days: 30
   qualify:
+    needs: prepare
     if: github.repository == 'Memorithm/scirust' && github.ref == 'refs/heads/research/v888-ports-dyn1'
     runs-on: [self-hosted, Linux, ARM64, scirust-arm64, jetson-thor, internal]
     timeout-minutes: 45
@@ -60,7 +89,7 @@ jobs:
         run: |
           set -euo pipefail
           ulimit -v 8388608
-          "$V888_DATA_ROOT/.analysis-venv/bin/python" scripts/v888_ports01/host_run.py --worker "$V888_PORTS_TESTS/ports-dyn1" --output "$V888_PORTS_OUTPUT" --inputs "$V888_PORTS_TESTS/prior-inputs" 2>&1 | tee "$V888_PORTS_TESTS/qualification.log"
+          "$V888_DATA_ROOT/.analysis-venv/bin/python" scripts/v888_ports01/host_run.py --worker "$V888_PORTS_TESTS/ports-dyn1" --output "$V888_PORTS_OUTPUT" 2>&1 | tee "$V888_PORTS_TESTS/qualification.log"
           cp "$V888_PORTS_TESTS/runtime.txt" "$V888_PORTS_OUTPUT/"
           cp "$V888_PORTS_TESTS/"*.log "$V888_PORTS_OUTPUT/"
           cp scripts/v888_dyn01/recurrent.rs "$V888_PORTS_OUTPUT/source/"
