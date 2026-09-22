@@ -151,12 +151,10 @@ def permute_topology_within_strata(
         positions = np.asarray(list(indices), dtype=int)
         if positions.size < 2:
             continue
-        permuted = rng.permutation(positions)
+        order = rng.permutation(len(positions))
         for column in topology_columns:
             values = shuffled.loc[positions, column].to_numpy(copy=True)
-            shuffled.loc[positions, column] = values[
-                np.argsort(np.argsort(permuted))
-            ]
+            shuffled.loc[positions, column] = values[order]
     return shuffled
 
 
