@@ -34,16 +34,17 @@ jobs:
           rustc +1.89.0 --edition=2021 --test scripts/v888_phase1/endpoint_counts.rs -o "$RUNNER_TEMP/v888-count-tests"
           "$RUNNER_TEMP/v888-count-tests"
           rustc +1.89.0 --edition=2021 -O scripts/v888_phase1/endpoint_counts.rs -o "$RUNNER_TEMP/v888-counts"
-          "$VENV/bin/python" -m py_compile scripts/v888_phase1/audit.py scripts/v888_phase1/test_pipeline.py
+          "$VENV/bin/python" -m py_compile scripts/v888_phase1/audit.py scripts/v888_phase1/test_pipeline.py scripts/v888_phase1/reconcile_known_pairs.py
           "$VENV/bin/python" scripts/v888_phase1/test_pipeline.py "$RUNNER_TEMP/v888-counts"
-      - name: Verify source bytes and scan full synapse table
+          "$VENV/bin/python" scripts/v888_phase1/reconcile_known_pairs.py --self-test
+      - name: Verify source bytes and reconcile full synapse table with induced graph
         shell: bash
         run: |
           set -euo pipefail
           ROOT="$HOME/datasets/banc_v888"
           exec 9>"$ROOT/.full-synapse-audit.lock"
           flock -n 9
-          "$ROOT/.analysis-venv/bin/python" scripts/v888_phase1/audit.py --data-root "$ROOT" --output "$V888_AUDIT_OUTPUT" --worker "$RUNNER_TEMP/v888-counts"
+          "$ROOT/.analysis-venv/bin/python" scripts/v888_phase1/reconcile_known_pairs.py --data-root "$ROOT" --output "$V888_AUDIT_OUTPUT" --worker "$RUNNER_TEMP/v888-counts"
           "$ROOT/.analysis-venv/bin/python" -m pip freeze > "$V888_AUDIT_OUTPUT/evidence/environment.txt"
           printf '%s\n' "$GITHUB_SHA" > "$V888_AUDIT_OUTPUT/evidence/source_commit.txt"
           sha256sum "$RUNNER_TEMP/v888-counts" > "$V888_AUDIT_OUTPUT/evidence/worker.sha256"
