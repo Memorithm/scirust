@@ -46,7 +46,7 @@ fn execute(line: &str) -> Result<String, &'static str> {
         for _ in 0..n { drive.push(value::<i32>(&mut f)?); }
         network.step(&drive)?;
         let c=network.counters();
-        traces.push(format!("{{\"spikes\":{:?},\"integer\":{:?},\"voltage\":{:?},\"refractory\":{:?},\"counters\":{{\"ticks\":{},\"edge_visits\":{},\"active_edge_events\":{},\"spikes\":{},\"clipped_nodes\":{},\"refractory_nodes\":{}}}}",
+        traces.push(format!("{{\"spikes\":{:?},\"integer\":{:?},\"voltage\":{:?},\"refractory\":{:?},\"counters\":{{\"ticks\":{},\"edge_visits\":{},\"active_edge_events\":{},\"spikes\":{},\"clipped_nodes\":{},\"refractory_nodes\":{}}}}}",
             network.spikes(),network.integer_state(),network.voltage_state(),network.refractory_state(),
             c.ticks,c.edge_visits,c.active_edge_events,c.spikes,c.clipped_nodes,c.refractory_nodes));
     }
