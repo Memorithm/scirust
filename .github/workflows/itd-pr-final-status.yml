@@ -1,0 +1,53 @@
+name: Final read-only ITD PR repair verification
+on:
+  push:
+    branches: [repair/itd-v888-conflict-audit-20260922]
+    paths: ['.github/workflows/itd-pr-final-status.yml']
+permissions:
+  contents: read
+jobs:
+  verify:
+    if: github.repository == 'Memorithm/scirust'
+    runs-on: [self-hosted, Linux, ARM64, scirust-arm64, jetson-thor, internal]
+    timeout-minutes: 10
+    steps:
+      - name: Verify exact published heads and collect CI observations
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/itd-final-repair-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir "$OUT"
+          export REPAIR_FINAL="$OUT"
+          echo "REPAIR_FINAL=$OUT" >> "$GITHUB_ENV"
+          python3 - <<'PY'
+          import concurrent.futures, datetime, json, os, pathlib, subprocess, urllib.request
+          repo = 'Memorithm/itd-simulator'
+          base = '21e03405aa19fbeae6d0c083635b7e6fdb306c24'
+          heads = {42:'4f374f9a1cac8f6141110173d0617f2f6d2685b9',44:'ed18b387ac24a8267ff9b8a3c88513d622ccd6dd',45:'2ebd2db6d9df4fcab0039703ac58509a51eff6f5',46:'b65e9df4c89678302af37bef56236bf6dcdefa7b',47:'d3b64d88e281511dcf472d8287d22d1c277a2eb4',48:'a9af1ffc46172171e9ceeb8168fd20b3e60895ce',49:'7860e37a933ec5150cf3c134a5546c65dc5336ac',50:'3229a839a4837ea37fac71c88dd0a1734e0a982a',52:'8141216f228768cae6e9ade73147aba847bd29bc',53:'462a3b1a94b48ab7caa71978858436f352994342',55:'f6877a4dfc4e208edf52724bc62ed75430915a1a',56:'5ffcc24e7dabffa5074370bb91ac6c81a170b539'}
+          def api(suffix):
+              req = urllib.request.Request('https://api.github.com/repos/'+repo+'/'+suffix, headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json'})
+              with urllib.request.urlopen(req, timeout=60) as r: return json.load(r)
+          def one(pair):
+              n, h = pair
+              pr = api('pulls/'+str(n))
+              compare = api('compare/'+base+'...'+h)
+              checks = api('commits/'+h+'/check-runs?per_page=100')
+              runs = api('actions/runs?head_sha='+h+'&per_page=100')
+              return {'pr':n,'head':pr['head']['sha'],'base':pr['base']['ref'],'base_sha':pr['base']['sha'],'state':pr['state'],'merged':pr['merged'],'mergeable':pr['mergeable'],'mergeable_state':pr['mergeable_state'],'expected_head_matches':pr['head']['sha']==h,'behind_main':compare['behind_by'],'merge_base':compare['merge_base_commit']['sha'],'checks':[{'name':c['name'],'status':c['status'],'conclusion':c['conclusion']} for c in checks['check_runs']], 'runs':[{'id':r['id'],'event':r['event'],'status':r['status'],'conclusion':r['conclusion'],'name':r['name'],'sha':r['head_sha']} for r in runs['workflow_runs']]}
+          result = {'observed_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'main':api('branches/main')['commit']['sha'],'runtime':{'host':subprocess.check_output(['hostname'],text=True).strip(),'arch':subprocess.check_output(['uname','-m'],text=True).strip(),'runner':os.environ['RUNNER_NAME'],'run':os.environ['GITHUB_RUN_ID']},'refs_modified':False}
+          with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+              result['prs'] = list(pool.map(one,heads.items()))
+          pathlib.Path(os.environ['REPAIR_FINAL'],'status.json').write_text(json.dumps(result,indent=2)+'\n')
+          print(json.dumps(result,indent=2))
+          assert result['main']==base
+          assert all(p['expected_head_matches'] and p['base']=='main' and p['behind_main']==0 and p['merge_base']==base for p in result['prs'])
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always() && env.REPAIR_FINAL != ''
+        with:
+          name: itd-pr-final-state-${{ github.run_id }}
+          path: ${{ env.REPAIR_FINAL }}/
+          if-no-files-found: error
+          retention-days: 14
