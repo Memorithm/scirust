@@ -1,0 +1,64 @@
+schema_version: 1
+kind: v888_growth_execution_checkpoint
+observed_date: '2026-09-22'
+execution_host_role: Thor
+raw_data_external_to_git: true
+source_scope:
+  dataset: BANC
+  materialization: v888
+  detector: v3
+  snapshot_is_adult_cross_sectional: true
+  developmental_causality_established: false
+selected_data:
+  neuron_metadata_rows: 188508
+  raw_synapse_rows: 198816365
+  raw_synapse_bytes: 19733123829
+  raw_synapse_sha256: 0dfb5cf89ba156d076beab2da38d87eaa63dcbe45d76f86b108570fb5b961dd0
+  raw_synapse_upstream_generation: '1786578708197684'
+  upstream_md5_verified_for_meta_metrics_edges_synapses: true
+phase0:
+  run: 35706848881
+  status: completed
+  artifact_sha256: 22f6dcc3a25bce8535a9ea8946cd2a9971f9080423c0ae6901b898fc2000481e
+  annotated_neurons: 50501
+  distinct_hemilineage_strings: 259
+  limitations:
+    - label_strings_are_not_certified_independent_lineages
+    - metadata_synapse_counts_documented_as_detector_v2
+    - summed_metrics_and_neuron_counts_may_use_different_valid_subsets
+full_endpoint_audit:
+  run: 35709233870
+  source_commit: e7a61ed220d994076adb6504025cd72fdd1f73e8
+  artifact_sha256: a54e364ca84eef5c58ba10ff7b035a80663fa5073878c4b0c1b461bf6c4edd2f
+  status: completed_diagnostic_scope_mismatch_identified
+  raw_synapse_rows_read: 198816365
+  edgelist_rows_read: 13620865
+  edgelist_total_weight: 42309621
+  raw_pre_endpoint_absent_from_metadata: 14694258
+  raw_post_endpoint_absent_from_metadata: 141812486
+  raw_autapses_observed: 0
+  raw_size_below_10_observed: 0
+  annotation_group_key: [region, side, hemilineage, neuromere]
+  annotation_groups: 1252
+  full_raw_vs_edgelist_node_total_mismatches: 175386
+  scientific_readiness: not_interchangeable_without_explicit_node_set_filter
+  raw_records_retained: true
+induced_graph_reconciliation:
+  source_commit: 6c74a9dc42a7b9ae82e6bd0c8499446041ae9bcd
+  run: 35710150870
+  status_at_checkpoint: running
+  policy: keep_raw_synapse_iff_both_endpoints_are_in_frozen_metadata_node_set
+  intended_check: exact_incoming_and_outgoing_integer_totals_per_node_against_v3_edgelist
+  not_a_claim: pairwise_edge_identity_or_synapse_ID_uniqueness
+rust_stats:
+  pull_request: 1501
+  source_commit: d4133656b88dc7be53d81cd682dd38d86f2d8777
+  correction: detect_constant_log_ranges_before_rounded_mean_reduction
+  focused_reference_ci: passed
+  full_repository_ci: pending
+  downstream_promotion: not_yet_qualified
+pipeline_pull_request: 1502
+ownership:
+  reusable_statistics: SciRust
+  current_audit_executable: research_staging_not_public_graph_API
+  no_implicit_model_or_runtime_policy_transfer: true
