@@ -34,7 +34,7 @@ def fixture(mode, n, edges, drives, params=None, name="synthetic"):
 
 def encode(c):
     mode = c["mode"] if c["mode"] in ("lif", "integer") else "boolean"
-    values = ["DYN1", mode, c["n"], len(c["edges"]), len(c["drives"]), *c["params"], c["max_ticks"], c["max_visits"], c["max_payload"]
+    values = ["DYN1", mode, c["n"], len(c["edges"]), len(c["drives"]), *c["params"], c["max_ticks"], c["max_visits"], c["max_payload"]]
     values += [v for edge in c["edges"] for v in edge]
     values += [v for drive in c["drives"] for v in drive]
     return " ".join(map(str, values)) + "\n"
