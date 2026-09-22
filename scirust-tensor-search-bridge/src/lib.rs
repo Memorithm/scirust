@@ -173,27 +173,48 @@ pub enum SearchBridgeError {
 
 impl fmt::Display for SearchBridgeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Canonical(error) => write!(formatter, "canonical candidate identity failed: {error}"),
-            Self::Prepared(error) => write!(formatter, "prepared candidate transition failed: {error}"),
-            Self::Representation(error) => write!(formatter, "candidate projection failed: {error}"),
-            Self::EmptyVerifierIdentity => formatter.write_str("verifier identity must be non-empty"),
-            Self::EmptyVerificationEvidenceIdentity => {
+        match self
+        {
+            Self::Canonical(error) =>
+            {
+                write!(formatter, "canonical candidate identity failed: {error}")
+            },
+            Self::Prepared(error) =>
+            {
+                write!(formatter, "prepared candidate transition failed: {error}")
+            },
+            Self::Representation(error) =>
+            {
+                write!(formatter, "candidate projection failed: {error}")
+            },
+            Self::EmptyVerifierIdentity =>
+            {
+                formatter.write_str("verifier identity must be non-empty")
+            },
+            Self::EmptyVerificationEvidenceIdentity =>
+            {
                 formatter.write_str("verification evidence identity must be non-empty")
-            }
-            Self::EmptyVerificationReason => {
+            },
+            Self::EmptyVerificationReason =>
+            {
                 formatter.write_str("verification reason code must be non-empty")
-            }
-            Self::EmptyEnvironmentIdentity => {
+            },
+            Self::EmptyEnvironmentIdentity =>
+            {
                 formatter.write_str("measurement environment identity must be non-empty")
-            }
-            Self::EmptyObjectives => formatter.write_str("measurement must contain at least one objective"),
-            Self::NonFiniteObjective { index } => {
+            },
+            Self::EmptyObjectives =>
+            {
+                formatter.write_str("measurement must contain at least one objective")
+            },
+            Self::NonFiniteObjective { index } =>
+            {
                 write!(formatter, "objective {index} is not finite")
-            }
-            Self::EmptySearchEvidenceIdentity => {
+            },
+            Self::EmptySearchEvidenceIdentity =>
+            {
                 formatter.write_str("search evidence identity must be non-empty")
-            }
+            },
             Self::EmptySearchReason => formatter.write_str("search reason code must be non-empty"),
         }
     }
@@ -201,7 +222,8 @@ impl fmt::Display for SearchBridgeError {
 
 impl std::error::Error for SearchBridgeError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
+        match self
+        {
             Self::Canonical(error) => Some(error),
             Self::Prepared(error) => Some(error),
             Self::Representation(error) => Some(error),
@@ -384,14 +406,17 @@ pub fn record_verification(
     reason_code: impl Into<String>,
 ) -> Result<VerificationOutcome, SearchBridgeError> {
     let verifier_identity = verifier_identity.into();
-    if verifier_identity.trim().is_empty() {
+    if verifier_identity.trim().is_empty()
+    {
         return Err(SearchBridgeError::EmptyVerifierIdentity);
     }
-    if evidence_identity.is_empty() {
+    if evidence_identity.is_empty()
+    {
         return Err(SearchBridgeError::EmptyVerificationEvidenceIdentity);
     }
     let reason_code = reason_code.into();
-    if reason_code.trim().is_empty() {
+    if reason_code.trim().is_empty()
+    {
         return Err(SearchBridgeError::EmptyVerificationReason);
     }
     let verification = VerificationEvidence {
@@ -399,12 +424,15 @@ pub fn record_verification(
         evidence_identity,
         reason_code,
     };
-    if passed {
+    if passed
+    {
         Ok(VerificationOutcome::Passed(VerifiedTensorCandidate {
             candidate,
             verification,
         }))
-    } else {
+    }
+    else
+    {
         Ok(VerificationOutcome::Failed(FailedVerification {
             candidate,
             verification,
@@ -450,7 +478,8 @@ pub fn permit_measurement(
     verified: VerifiedTensorCandidate,
     environment_identity: Vec<u8>,
 ) -> Result<MeasurementPermit, SearchBridgeError> {
-    if environment_identity.is_empty() {
+    if environment_identity.is_empty()
+    {
         return Err(SearchBridgeError::EmptyEnvironmentIdentity);
     }
     Ok(MeasurementPermit {
@@ -499,11 +528,14 @@ pub fn record_measurements(
     permit: MeasurementPermit,
     objectives: Vec<f64>,
 ) -> Result<MeasuredTensorCandidate, SearchBridgeError> {
-    if objectives.is_empty() {
+    if objectives.is_empty()
+    {
         return Err(SearchBridgeError::EmptyObjectives);
     }
-    for (index, value) in objectives.iter().enumerate() {
-        if !value.is_finite() {
+    for (index, value) in objectives.iter().enumerate()
+    {
+        if !value.is_finite()
+        {
             return Err(SearchBridgeError::NonFiniteObjective { index });
         }
     }
@@ -568,11 +600,13 @@ pub fn record_search_disposition(
     search_evidence_identity: Vec<u8>,
     reason_code: impl Into<String>,
 ) -> Result<SearchRecord, SearchBridgeError> {
-    if search_evidence_identity.is_empty() {
+    if search_evidence_identity.is_empty()
+    {
         return Err(SearchBridgeError::EmptySearchEvidenceIdentity);
     }
     let reason_code = reason_code.into();
-    if reason_code.trim().is_empty() {
+    if reason_code.trim().is_empty()
+    {
         return Err(SearchBridgeError::EmptySearchReason);
     }
     Ok(SearchRecord {
@@ -717,9 +751,11 @@ pub fn commit_search_record(
     plan: &mut RepresentationPlan,
     graph: &Graph,
 ) -> Result<CommitResult, SearchBridgeError> {
-    match record.disposition {
+    match record.disposition
+    {
         SearchDisposition::Rejected => Ok(CommitResult::NotCommitted),
-        SearchDisposition::Survivor => {
+        SearchDisposition::Survivor =>
+        {
             record
                 .measured
                 .permit
@@ -728,7 +764,7 @@ pub fn commit_search_record(
                 .prepared
                 .commit(plan, graph)?;
             Ok(CommitResult::Committed)
-        }
+        },
     }
 }
 
@@ -759,7 +795,9 @@ mod tests {
             "mismatch",
         )
         .unwrap();
-        let VerificationOutcome::Failed(failed) = outcome else {
+        let VerificationOutcome::Failed(failed) = outcome
+        else
+        {
             panic!("must retain negative verification");
         };
         assert_eq!(failed_verification_outcome(&failed), TrialOutcome::Failed);
@@ -777,7 +815,8 @@ mod tests {
             "bit-exact",
         )
         .unwrap()
-        else {
+        else
+        {
             panic!("candidate should pass");
         };
         let permit = permit_measurement(verified, b"env:cpu".to_vec()).unwrap();
@@ -819,7 +858,10 @@ mod tests {
             }],
         )
         .unwrap();
-        assert_ne!(candidate.base_plan_identity, candidate.candidate_plan_identity);
+        assert_ne!(
+            candidate.base_plan_identity,
+            candidate.candidate_plan_identity
+        );
 
         let VerificationOutcome::Passed(verified) = record_verification(
             candidate,
@@ -829,12 +871,15 @@ mod tests {
             "equivalent",
         )
         .unwrap()
-        else {
+        else
+        {
             panic!("candidate should pass");
         };
-        let measured =
-            record_measurements(permit_measurement(verified, b"env".to_vec()).unwrap(), vec![1.0])
-                .unwrap();
+        let measured = record_measurements(
+            permit_measurement(verified, b"env".to_vec()).unwrap(),
+            vec![1.0],
+        )
+        .unwrap();
         let record = record_search_disposition(
             measured,
             SearchDisposition::Survivor,
@@ -854,20 +899,18 @@ mod tests {
     fn stale_survivor_commit_fails_closed() {
         let (graph, node, mut plan) = fixture();
         let candidate = prepare_candidate(TrialId::new(4), &graph, &plan, vec![]).unwrap();
-        let VerificationOutcome::Passed(verified) = record_verification(
-            candidate,
-            "oracle",
-            b"verification:4".to_vec(),
-            true,
-            "ok",
-        )
-        .unwrap()
-        else {
+        let VerificationOutcome::Passed(verified) =
+            record_verification(candidate, "oracle", b"verification:4".to_vec(), true, "ok")
+                .unwrap()
+        else
+        {
             panic!("candidate should pass");
         };
-        let measured =
-            record_measurements(permit_measurement(verified, b"env".to_vec()).unwrap(), vec![1.0])
-                .unwrap();
+        let measured = record_measurements(
+            permit_measurement(verified, b"env".to_vec()).unwrap(),
+            vec![1.0],
+        )
+        .unwrap();
         let record = record_search_disposition(
             measured,
             SearchDisposition::Survivor,
@@ -888,7 +931,8 @@ mod tests {
         let candidate = prepare_candidate(TrialId::new(5), &graph, &plan, vec![]).unwrap();
         let VerificationOutcome::Passed(verified) =
             record_verification(candidate, "oracle", b"v".to_vec(), true, "ok").unwrap()
-        else {
+        else
+        {
             panic!("candidate should pass");
         };
         let permit = permit_measurement(verified, b"env".to_vec()).unwrap();
