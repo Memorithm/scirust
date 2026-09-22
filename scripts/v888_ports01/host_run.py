@@ -4,6 +4,7 @@ An account already able to read the qualified subsets may publish a new,
 read-only, hash-verified cache on the same host. No source directory permissions
 are changed. Unavailable preparation slots are not qualifications; the consumer
 must independently verify every pinned receipt and consumed file before work.
+The bounded cache uses /dev/shm rather than runner-private temporary directories.
 """
 from __future__ import annotations
 
@@ -23,7 +24,7 @@ def cache_path(protocol):
     digest = protocol['prior_receipt_sha256']
     if len(digest) != 64 or any(c not in '0123456789abcdef' for c in digest):
         raise ValueError('invalid cache identity')
-    return Path('/tmp') / ('memorithm-v888-bool02-' + digest)
+    return Path('/dev/shm') / ('memorithm-v888-bool02-' + digest)
 
 
 def file_identities(protocol, root):
@@ -58,8 +59,11 @@ def prepare(protocol):
             identities = verify_location(protocol, root)
         except (PermissionError, FileNotFoundError):
             continue
+        total = sum((root / relative).stat().st_size for relative in identities)
+        if total > 128 * 1024 * 1024 or shutil.disk_usage(cache.parent).free < total + 1024 * 1024:
+            raise ValueError('bounded shared cache capacity unavailable')
         # New cache only: source permissions, existing caches and datasets untouched.
-        stage = Path(tempfile.mkdtemp(prefix=cache.name + '-stage-', dir='/tmp'))
+        stage = Path(tempfile.mkdtemp(prefix=cache.name + '-stage-', dir=cache.parent))
         for relative, expected in identities.items():
             target = stage / relative
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -81,7 +85,8 @@ def prepare(protocol):
             # are verified independently; our complete duplicate is retained.
         verify_location(protocol, cache)
         return dict(ready=True, method='new_read_only_same_host_cache', root=str(cache),
-                    source_root=str(root), files=len(identities), source_permissions_changed=False)
+                    source_root=str(root), files=len(identities), payload_bytes=total,
+                    source_permissions_changed=False)
     return dict(ready=False, reason='this_runner_account_cannot_read_prior_artifacts',
                 runner=os.environ.get('RUNNER_NAME'), uid=os.getuid())
 
