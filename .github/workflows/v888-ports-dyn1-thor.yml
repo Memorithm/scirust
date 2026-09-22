@@ -60,7 +60,7 @@ jobs:
         run: |
           set -euo pipefail
           ulimit -v 8388608
-          "$V888_DATA_ROOT/.analysis-venv/bin/python" scripts/v888_ports01/qualify.py --worker "$V888_PORTS_TESTS/ports-dyn1" --output "$V888_PORTS_OUTPUT" 2>&1 | tee "$V888_PORTS_TESTS/qualification.log"
+          "$V888_DATA_ROOT/.analysis-venv/bin/python" scripts/v888_ports01/host_run.py --worker "$V888_PORTS_TESTS/ports-dyn1" --output "$V888_PORTS_OUTPUT" --inputs "$V888_PORTS_TESTS/prior-inputs" 2>&1 | tee "$V888_PORTS_TESTS/qualification.log"
           cp "$V888_PORTS_TESTS/runtime.txt" "$V888_PORTS_OUTPUT/"
           cp "$V888_PORTS_TESTS/"*.log "$V888_PORTS_OUTPUT/"
           cp scripts/v888_dyn01/recurrent.rs "$V888_PORTS_OUTPUT/source/"
