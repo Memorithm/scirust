@@ -444,3 +444,52 @@ v888_connectome_program:
   nvidia_dependency_for_new_programme: false
   NNIS_role_for_this_programme: Native_Neural_Inference_Stack_portable_runtime
   authoritative_main_document: docs/V888_CONNECTOME_BOOTSTRAP.md
+
+
+v888_growth_program_2026_09_22:
+  status: active_phase0_evidence_complete
+  tracking_issue: https://github.com/Memorithm/scirust/issues/1500
+  primary_host: jetson_thor_self_hosted_runner
+  raw_data_policy:
+    stored_outside_repository: true
+    persistent_host_root: "$HOME/datasets/banc_v888"
+    raw_files_uploaded_to_github: false
+  adult_snapshot:
+    dataset: BANC_v888
+    metadata_rows: 188508
+    metrics_rows: 188508
+    edgelist_v3_rows: 13620865
+    individual_synapse_v3_rows: 198816365
+    individual_synapse_v3_bytes: 19733123829
+    individual_synapse_v3_sha256: 0dfb5cf89ba156d076beab2da38d87eaa63dcbe45d76f86b108570fb5b961dd0
+    individual_synapse_v3_row_groups: 1989
+    hemilineage_annotated_neurons: 50501
+    hemilineage_groups: 259
+  phase0_execution:
+    workflow_run: 35706848881
+    evidence_head: e803a9265ecf04cc31bf4f399f965be014ada006
+    status: green
+    report: docs/research/V888_GROWTH_PHASE0.md
+  phase0_observations:
+    interpretation: exploratory_adult_allocation_scaling_not_developmental_causality
+    lineage_total_scaling:
+      l2_nodes: {slope: 0.7780635933, r2: 0.7811154033}
+      cable_length: {slope: 0.7757235231, r2: 0.7695101347}
+      branchpoints: {slope: 0.8947259030, r2: 0.7212379035}
+      endpoints: {slope: 0.8531790798, r2: 0.7153268913}
+      dendrite_length: {slope: 0.7742823028, r2: 0.6884664437}
+      input_connections: {slope: 0.7776787727, r2: 0.6794520224}
+      segmentation_volume: {slope: 0.7271697886, r2: 0.6623734433}
+      axon_length: {slope: 0.7586974094, r2: 0.6195644887}
+      output_connections: {slope: 0.8371808678, r2: 0.6035902691}
+  ordered_next_steps:
+    - VG_1_region_stratified_and_residual_scaling
+    - VG_2_metabolic_scaling_with_missingness_audit
+    - VG_3_directed_topology_and_matched_graph_controls
+    - VG_4_individual_synapse_allocation_geometry
+    - VG_5_independent_developmental_or_temporal_comparison
+    - VG_6_bounded_artificial_growth_rule_translation
+  scientific_boundary:
+    - adult_v888_snapshot_does_not_establish_causal_growth_mechanisms
+    - region_lineage_annotation_and_reconstruction_bias_must_be_controlled
+    - no_SML_or_TDI_growth_rule_promotion_before_VG_5_gate
