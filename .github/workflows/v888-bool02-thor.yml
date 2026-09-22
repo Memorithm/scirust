@@ -1,0 +1,68 @@
+name: V888-BOOL-0.2a subsets and controls on Thor
+on:
+  push:
+    branches: [research/v888-bool-02a-subsets-controls]
+    paths: ['scripts/v888_bool02/**', '.github/workflows/v888-bool02-thor.yml']
+permissions:
+  contents: read
+concurrency:
+  group: v888-complete-synapse-audit-thor
+  cancel-in-progress: false
+jobs:
+  qualify:
+    if: github.repository == 'Memorithm/scirust'
+    runs-on: [self-hosted, Linux, ARM64, scirust-arm64, jetson-thor, internal]
+    timeout-minutes: 30
+    env:
+      OMP_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+      ARROW_NUM_THREADS: '1'
+      PYTHONDONTWRITEBYTECODE: '1'
+    defaults:
+      run:
+        shell: bash
+        working-directory: v888-bool02-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          path: v888-bool02-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Compile and qualify independent Rust and Python oracles
+        run: |
+          set -euo pipefail
+          ROOT="$HOME/datasets/banc_v888"
+          TESTS="$RUNNER_TEMP/v888-bool02-tests-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          OUT="$ROOT/analysis/bool02-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir "$TESTS"
+          echo "V888_BOOL_TESTS=$TESTS" >> "$GITHUB_ENV"
+          echo "V888_BOOL_OUTPUT=$OUT" >> "$GITHUB_ENV"
+          { hostname; uname -m; printf 'runner=%s\ncommit=%s\n' "$RUNNER_NAME" "$GITHUB_SHA"; rustc +1.89.0 --version; df -h "$ROOT"; } | tee "$TESTS/runtime.txt"
+          test "$(uname -m)" = aarch64
+          "$ROOT/.analysis-venv/bin/python" -c 'import shutil,sys; assert shutil.disk_usage(sys.argv[1]).free >= 4*1024**3' "$ROOT"
+          rustc +1.89.0 --edition=2021 -D warnings --test scripts/v888_bool02/subset_controls.rs -o "$TESTS/rust-tests" 2>&1 | tee "$TESTS/compile-tests.log"
+          "$TESTS/rust-tests" 2>&1 | tee "$TESTS/rust-tests.log"
+          rustc +1.89.0 --edition=2021 -D warnings -O scripts/v888_bool02/subset_controls.rs -o "$TESTS/subset-controls" 2>&1 | tee "$TESTS/compile-worker.log"
+          "$ROOT/.analysis-venv/bin/python" -m py_compile scripts/v888_bool02/oracle.py scripts/v888_bool02/test_controls.py scripts/v888_bool02/run.py
+          "$ROOT/.analysis-venv/bin/python" scripts/v888_bool02/test_controls.py "$TESTS/subset-controls" -v 2>&1 | tee "$TESTS/process-tests.log"
+      - name: Generate source-bound subsets, verify every cut edge and replay every control
+        run: |
+          set -euo pipefail
+          ROOT="$HOME/datasets/banc_v888"
+          exec 9>"$ROOT/.full-synapse-audit.lock"
+          flock -n 9
+          ulimit -v 8388608
+          "$ROOT/.analysis-venv/bin/python" scripts/v888_bool02/run.py --data-root "$ROOT" --output "$V888_BOOL_OUTPUT" --worker "$V888_BOOL_TESTS/subset-controls" 2>&1 | tee "$V888_BOOL_TESTS/pilot.log"
+          cp "$V888_BOOL_TESTS/runtime.txt" "$V888_BOOL_OUTPUT/evidence/"
+          cp "$V888_BOOL_TESTS/"*.log "$V888_BOOL_OUTPUT/evidence/"
+          "$ROOT/.analysis-venv/bin/python" -m pip freeze > "$V888_BOOL_OUTPUT/evidence/environment.txt"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always() && env.V888_BOOL_TESTS != ''
+        with:
+          name: v888-bool02-${{ github.sha }}
+          path: |
+            ${{ env.V888_BOOL_OUTPUT }}/evidence/
+            ${{ env.V888_BOOL_TESTS }}/*.log
+            ${{ env.V888_BOOL_TESTS }}/runtime.txt
+          if-no-files-found: warn
+          retention-days: 30
