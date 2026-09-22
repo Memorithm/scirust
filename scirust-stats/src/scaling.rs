@@ -4,6 +4,9 @@
 //! style relationships of the form y = a * x^b. The fit is performed in
 //! natural-log space. Inputs are canonically sorted before reduction so the
 //! result is independent of original row order for the same finite values.
+//! This is a descriptive regression, not a power-law distribution test or a
+//! causal growth model. Bitwise repeatability is scoped to the same target
+//! and floating-point implementation.
 
 use core::fmt;
 
@@ -80,7 +83,9 @@ impl KahanSum {
 /// Fit a deterministic log-log scaling relation to positive paired samples.
 ///
 /// Paired observations are sorted lexicographically by ln(x) then ln(y) before
-/// reduction, making the fit independent of caller row ordering.
+/// reduction, making the fit independent of caller row ordering on the same
+/// target. Complexity is O(n log n) time and O(n) auxiliary storage.
+/// No observations are silently dropped or imputed.
 ///
 /// # Errors
 ///
@@ -125,6 +130,22 @@ pub fn log_log_scaling(x: &[f64], y: &[f64]) -> Result<LogLogFit, ScalingError> 
             .total_cmp(&right.0)
             .then_with(|| left.1.total_cmp(&right.1))
     });
+    // A rounded mean can differ from an exactly repeated value. Testing the
+    // actual range first prevents artificial nonzero variance and false fits.
+    if pairs[0].0 == pairs[pairs.len() - 1].0
+    {
+        return Err(ScalingError::DegeneratePredictor);
+    }
+    if pairs.iter().all(|&(_, ly)| ly == pairs[0].1)
+    {
+        return Ok(LogLogFit {
+            n: pairs.len(),
+            slope: 0.0,
+            intercept: pairs[0].1,
+            r_squared: None,
+            residual_rms: 0.0,
+        });
+    }
 
     let mut sum_x = KahanSum::default();
     let mut sum_y = KahanSum::default();
@@ -169,7 +190,9 @@ pub fn log_log_scaling(x: &[f64], y: &[f64]) -> Result<LogLogFit, ScalingError> 
     let r_squared = if syy > 0.0
     {
         Some((1.0 - ss_res / syy).min(1.0))
-    } else {
+    }
+    else
+    {
         None
     };
 
@@ -223,6 +246,26 @@ mod tests {
         let fit = log_log_scaling(&[1.0, 2.0, 4.0], &[7.0, 7.0, 7.0]).unwrap();
         assert_eq!(fit.r_squared, None);
         assert!(fit.slope.abs() < 1e-12);
+    }
+
+    #[test]
+    fn constant_ranges_are_detected_before_mean_rounding() {
+        for value in [1.1, 2.0, 7.0, 1.0e200]
+        {
+            for n in 2..64
+            {
+                let constant = vec![value; n];
+                let varying: Vec<f64> = (1..=n).map(|x| x as f64).collect();
+                assert_eq!(
+                    log_log_scaling(&constant, &varying).unwrap_err(),
+                    ScalingError::DegeneratePredictor
+                );
+                let fit = log_log_scaling(&varying, &constant).unwrap();
+                assert_eq!(fit.r_squared, None);
+                assert_eq!(fit.slope, 0.0);
+                assert_eq!(fit.residual_rms, 0.0);
+            }
+        }
     }
 
     #[test]
