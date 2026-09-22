@@ -85,3 +85,7 @@ Update the off-main roadmap and the ML maturity overlay when applicable when:
 Do not merge the roadmap or ML maturity overlay itself into the default branch unless the user explicitly requests it.
 
 This file is only the bootstrap pointer. The off-main roadmap plus the ML maturity overlay are the persistent sources of current agent strategy and ML execution priorities.
+
+## Mandatory BANC v888 research bootstrap
+
+For BANC v888, sparse recurrent graph, event-driven, spiking, SML CSP, FLAT sparse-routing, or portable NNIS integration work, also read [`docs/V888_CONNECTOME_BOOTSTRAP.md`](docs/V888_CONNECTOME_BOOTSTRAP.md). The programme is V888-only, keeps raw connectome data external, and introduces no NVIDIA dependency. For this programme NNIS is consumed as the portable **Native Neural Inference Stack** runtime (CPU/WGPU); legacy NVIDIA-specific NNIS paths are not the implementation target.

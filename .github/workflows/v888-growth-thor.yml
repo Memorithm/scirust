@@ -1,0 +1,97 @@
+name: V888 Thor dataset and growth phase 0
+
+on:
+  push:
+    branches:
+      - research/v888-growth-thor-20260922
+    paths:
+      - '.github/workflows/v888-growth-thor.yml'
+      - 'scripts/v888/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v888-growth-thor-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  sync-and-profile:
+    name: BANC v888 sync + growth phase 0 on Thor
+    runs-on: [self-hosted, Linux, ARM64, scirust-arm64, jetson-thor, internal]
+    timeout-minutes: 360
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+
+    steps:
+      - name: Check out research branch
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+
+      - name: Record Thor environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          hostname
+          uname -a
+          id
+          printf 'HOME=%s\n' "$HOME"
+          df -h "$HOME"
+          free -h || true
+          command -v curl
+          command -v sha256sum
+          python3 --version
+
+      - name: Synchronize BANC v888 public dataset
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/v888/sync_banc_v888.sh
+
+      - name: Prepare persistent analysis environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          DATA_ROOT="${V888_DATA_ROOT:-$HOME/datasets/banc_v888}"
+          VENV="$DATA_ROOT/.analysis-venv"
+          if [[ ! -x "$VENV/bin/python" ]]; then
+            python3 -m venv "$VENV"
+          fi
+          "$VENV/bin/python" -m pip install --upgrade pip
+          "$VENV/bin/python" -m pip install             'numpy>=2,<3'             'pandas>=2,<3'             'pyarrow>=18,<23'
+
+      - name: Profile adult connectome growth proxies
+        shell: bash
+        run: |
+          set -euo pipefail
+          DATA_ROOT="${V888_DATA_ROOT:-$HOME/datasets/banc_v888}"
+          VENV="$DATA_ROOT/.analysis-venv"
+          "$VENV/bin/python" scripts/v888/profile_banc_v888_growth.py             --data-root "$DATA_ROOT"
+
+      - name: Capture compact evidence bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          DATA_ROOT="${V888_DATA_ROOT:-$HOME/datasets/banc_v888}"
+          EVIDENCE="$RUNNER_TEMP/v888-growth-evidence"
+          rm -rf "$EVIDENCE"
+          mkdir -p "$EVIDENCE"
+          cp "$DATA_ROOT/manifest.sha256" "$EVIDENCE/"
+          cp -R "$DATA_ROOT/analysis/brain_growth_phase0" "$EVIDENCE/"
+          {
+            printf 'runner_hostname='
+            hostname
+            printf 'git_sha=%s\n' "$GITHUB_SHA"
+            printf 'data_root=%s\n' "$DATA_ROOT"
+            du -sh "$DATA_ROOT"
+            df -h "$DATA_ROOT"
+          } > "$EVIDENCE/runtime.txt"
+
+      - name: Upload compact research evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: v888-growth-phase0-${{ github.sha }}
+          path: ${{ runner.temp }}/v888-growth-evidence/
+          if-no-files-found: error
+          retention-days: 14
