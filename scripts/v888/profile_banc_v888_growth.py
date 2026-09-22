@@ -30,6 +30,11 @@ METRIC_COLUMNS = (
     "mitochondria_volume",
     "pd_width",
     "segregation_index",
+    "branchpoints",
+    "endpoints",
+    "axon_length",
+    "dend_length",
+    "projection_score",
 )
 
 SUM_METRICS = (
@@ -40,6 +45,10 @@ SUM_METRICS = (
     "output_connections",
     "mitochondria",
     "mitochondria_volume",
+    "branchpoints",
+    "endpoints",
+    "axon_length",
+    "dend_length",
 )
 
 
