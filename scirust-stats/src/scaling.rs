@@ -356,7 +356,10 @@ mod tests {
     #[test]
     fn distinct_predictors_collapsed_by_the_log_transform_are_rejected() {
         let mut pairs = [(1.0, 2.0), (1.0, 3.0)];
-        assert_eq!(fit_log_pairs(&mut pairs), Err(ScalingError::DegeneratePredictor));
+        assert_eq!(
+            fit_log_pairs(&mut pairs),
+            Err(ScalingError::DegeneratePredictor)
+        );
     }
 
     #[test]
