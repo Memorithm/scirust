@@ -12,51 +12,44 @@ jobs:
   qualify:
     if: github.repository == 'Memorithm/scirust'
     runs-on: [self-hosted, Linux, ARM64, scirust-arm64, jetson-thor, internal]
-    timeout-minutes: 20
+    timeout-minutes: 30
     defaults:
       run:
         shell: bash
-        working-directory: pr1512-${{ github.run_id }}-${{ github.run_attempt }}
+        working-directory: pr1513-${{ github.run_id }}-${{ github.run_attempt }}
     env:
-      EXPECTED_REVISION: 79d3b09de35bd78efa61a50efc510103b33921a3
-      PYTHONDONTWRITEBYTECODE: "1"
+      CARGO_INCREMENTAL: 0
+      RUST_BACKTRACE: 1
+      RUSTFLAGS: -D warnings
+      EXPECTED_REVISION: a67c4878fbab1e51efcccb814abb28e486ed2d62
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           ref: ${{ env.EXPECTED_REVISION }}
           persist-credentials: false
-          path: pr1512-${{ github.run_id }}-${{ github.run_attempt }}
-      - name: Prepare exact-head smoke environment
+          path: pr1513-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Prepare exact-head qualification
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_REVISION"
           test "$(uname -m)" = aarch64
-          TESTS="$RUNNER_TEMP/pr1512-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          mkdir -p "$TESTS"
-          echo "PR1512_TESTS=$TESTS" >> "$GITHUB_ENV"
-          ROOT="$HOME/datasets/banc_v888"
-          test -x "$ROOT/.analysis-venv/bin/python"
-          echo "PR1512_PYTHON=$ROOT/.analysis-venv/bin/python" >> "$GITHUB_ENV"
+          tmpdir="$(mktemp -d "$GITHUB_WORKSPACE/.pr1513-tmp.XXXXXX")"
+          chmod 700 "$tmpdir"
+          echo "TMPDIR=$tmpdir" >> "$GITHUB_ENV"
           uname -a
       - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
         with:
-          toolchain: 1.89.0
-      - name: Compile and run exact-pair Rust tests
+          toolchain: nightly-2026-07-02
+          components: rustfmt, clippy
+      - name: Verify pinned formatting
         run: |
           set -euo pipefail
-          rustc +1.89.0 --edition=2021 -D warnings --test scripts/v888_bool01/pair_graph.rs -o "$PR1512_TESTS/rust-tests"
-          "$PR1512_TESTS/rust-tests"
-          rustc +1.89.0 --edition=2021 -D warnings -O scripts/v888_bool01/pair_graph.rs -o "$PR1512_TESTS/pair-graph"
-      - name: Qualify independent Python/process oracles
-        run: |
-          set -euo pipefail
-          "$PR1512_PYTHON" -m py_compile scripts/v888_bool01/qualify.py scripts/v888_bool01/test_qualification.py
-          "$PR1512_PYTHON" scripts/v888_bool01/test_qualification.py "$PR1512_TESTS/pair-graph" -v
-          "$PR1512_PYTHON" - <<'PY'
-          import json
-          from pathlib import Path
-          p = Path("scripts/v888_bool01/protocol.json")
-          data = json.loads(p.read_text(encoding="utf-8"))
-          assert isinstance(data, dict) and data
-          print("protocol_keys", sorted(data))
-          PY
+          cargo +nightly-2026-07-02 fmt --all -- --check
+          cargo +nightly-2026-07-02 fmt --manifest-path scirust-hypermemory/Cargo.toml --all -- --check
+          git diff --check
+      - name: Test Tensor IR
+        run: cargo +nightly-2026-07-02 test --locked -p scirust-tensor-ir
+      - name: Check Tensor IR no-std surface
+        run: cargo +nightly-2026-07-02 check --locked -p scirust-tensor-ir --no-default-features
+      - name: Clippy Tensor IR
+        run: cargo +nightly-2026-07-02 clippy --locked -p scirust-tensor-ir --all-targets -- -D warnings
