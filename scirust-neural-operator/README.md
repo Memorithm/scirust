@@ -9,10 +9,11 @@ needed for neural operators. It does **not** embed or wrap the Python
 Current foundation:
 
 - trainable 1-D Fourier Neural Operator through SciRust N-D autodiff;
+- trainable 2-D Fourier Neural Operator with canonical conjugate modes and Boolean selected-mode routing;
 - reusable trained-parameter snapshots plus fast/portable radix-2 FFT CPU inference without changing the dense-DFT training path;
 - exact `F_2` affine operators and bit-packed Boolean vectors;
 - exact ANF/Zhegalkin operators with truth-table Möbius synthesis;
-- complete bounded sparse-ANF synthesis over unique Development assignments, refusing candidate-budget truncation;
+- complete bounded sparse-ANF synthesis over unique Development assignments, refusing candidate-budget truncation, with a distinct post-selection Validation type;
 - ordered Boolean routing for surrogate/exact/verify/abstain execution;
 - hybrid executor that invokes the learned and authoritative paths according to the route and falls back to the exact output when verification exceeds tolerance;
 - Boolean early-dispatch of Fourier modes before spectral channel mixing, with explicit arithmetic-work accounting;
@@ -22,6 +23,7 @@ Current foundation:
 - per-channel normalization;
 - absolute and relative Lp losses;
 - exact-vs-surrogate accuracy metrics;
+- measured exact-vs-surrogate benchmark harness with alternating execution order, timing distributions and repeat-drift diagnostics;
 - training-amortisation / break-even metrics.
 
 The reference-solver rule is deliberate: a learned operator is a surrogate. It
