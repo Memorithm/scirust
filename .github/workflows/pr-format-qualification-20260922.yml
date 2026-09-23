@@ -11,93 +11,44 @@ permissions:
 jobs:
   qualify:
     if: github.repository == 'Memorithm/scirust'
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, ARM64, scirust-arm64, jetson-thor, internal]
     timeout-minutes: 30
-    permissions:
-      contents: write
+    defaults:
+      run:
+        shell: bash
+        working-directory: pr1511-${{ github.run_id }}-${{ github.run_attempt }}
     env:
       CARGO_INCREMENTAL: 0
       RUST_BACKTRACE: 1
       RUSTFLAGS: -D warnings
-      PR_NUMBER: "1511"
-      EXPECTED_REVISION: "e11cb40a531ccfbe74283d15a9d944bf32e58351"
+      EXPECTED_REVISION: e11cb40a531ccfbe74283d15a9d944bf32e58351
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           ref: ${{ env.EXPECTED_REVISION }}
           persist-credentials: false
+          path: pr1511-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Prepare runner-owned temporary directory
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_REVISION"
+          tmpdir="$(mktemp -d "$GITHUB_WORKSPACE/.pr1511-tmp.XXXXXX")"
+          chmod 700 "$tmpdir"
+          echo "TMPDIR=$tmpdir" >> "$GITHUB_ENV"
+          uname -a
+          uname -m
+          test "$(uname -m)" = aarch64
       - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
         with:
           toolchain: nightly-2026-07-02
           components: rustfmt, clippy
-      - name: Apply and verify the repository-pinned formatter
-        shell: bash
+      - name: Verify pinned formatting
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$EXPECTED_REVISION"
-          cargo +nightly-2026-07-02 fmt --all
-          cargo +nightly-2026-07-02 fmt --manifest-path scirust-hypermemory/Cargo.toml
           cargo +nightly-2026-07-02 fmt --all -- --check
-          cargo +nightly-2026-07-02 fmt --manifest-path scirust-hypermemory/Cargo.toml -- --check
+          cargo +nightly-2026-07-02 fmt --manifest-path scirust-hypermemory/Cargo.toml --all -- --check
           git diff --check
-          git diff --stat
-      - name: Qualify scirust-graph
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo +nightly-2026-07-02 test --locked -p scirust-graph
-          cargo +nightly-2026-07-02 clippy --locked -p scirust-graph --all-targets -- -D warnings
-      - name: Publish an unreferenced candidate commit for review
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-          import subprocess
-          import urllib.request
-
-          def git(*args):
-              return subprocess.check_output(['git', *args], text=True).strip()
-
-          head = git('rev-parse', 'HEAD')
-          assert head == os.environ['EXPECTED_REVISION']
-          paths = [p for p in git('diff', '--name-only').splitlines() if p]
-          assert len(paths) <= 64
-          assert all(p.endswith('.rs') and '..' not in Path(p).parts for p in paths)
-          if not paths:
-              print(json.dumps({'pr': 1511, 'source': head, 'status': 'already_formatted_and_targeted_tests_passed'}))
-              raise SystemExit(0)
-
-          tree_entries = []
-          for path in paths:
-              mode = git('ls-files', '-s', '--', path).split()[0]
-              tree_entries.append({'path': path, 'mode': mode, 'type': 'blob', 'content': Path(path).read_text(encoding='utf-8')})
-          subprocess.run(['git', 'diff', '--check'], check=True)
-          subprocess.run(['git', 'add', '--', *paths], check=True)
-          expected_tree = git('write-tree')
-          repo = os.environ['GITHUB_REPOSITORY']
-
-          def post(endpoint, payload):
-              request = urllib.request.Request(
-                  'https://api.github.com/repos/' + repo + endpoint,
-                  data=json.dumps(payload).encode(), method='POST',
-                  headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
-                           'Accept': 'application/vnd.github+json',
-                           'Content-Type': 'application/json',
-                           'X-GitHub-Api-Version': '2022-11-28'})
-              with urllib.request.urlopen(request, timeout=60) as response:
-                  return json.load(response)
-
-          tree = post('/git/trees', {'base_tree': git('rev-parse', 'HEAD^{tree}'), 'tree': tree_entries})
-          assert tree['sha'] == expected_tree
-          candidate = post('/git/commits', {
-              'message': 'style: apply pinned rustfmt to PR #1511 with targeted regression qualification',
-              'tree': tree['sha'], 'parents': [head]})
-          print(json.dumps({'pr': 1511, 'source': head, 'candidate': candidate['sha'],
-                            'tree': tree['sha'], 'formatted_files': paths,
-                            'status': 'targeted_tests_passed_no_branch_updated'}, sort_keys=True))
-          PY
+      - name: Test scirust-graph
+        run: cargo +nightly-2026-07-02 test --locked -p scirust-graph
+      - name: Clippy scirust-graph
+        run: cargo +nightly-2026-07-02 clippy --locked -p scirust-graph --all-targets -- -D warnings
