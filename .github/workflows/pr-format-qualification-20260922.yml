@@ -54,7 +54,7 @@ jobs:
       - name: Test Tensor IR
         run: cargo +nightly-2026-07-02 test --locked -p scirust-tensor-ir
       - name: Check Tensor IR no-std surface
-        run: cargo +nightly-2026-07-02 check --locked -p scirust-tensor-ir --no-default-features
+        run: RUSTFLAGS="" cargo +nightly-2026-07-02 check --locked -p scirust-tensor-ir --no-default-features
       - name: Clippy Tensor IR
         run: cargo +nightly-2026-07-02 clippy --locked -p scirust-tensor-ir --all-targets -- -D warnings
       - name: Publish tested formatting candidate
