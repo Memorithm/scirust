@@ -1,0 +1,70 @@
+name: V888-BOOL-0.1 exact graph qualification on Thor
+on:
+  push:
+    branches: [research/v888-bool-0-1-graph-identity]
+    paths: ['scripts/v888_bool01/**', '.github/workflows/v888-bool01-thor.yml']
+permissions:
+  contents: read
+concurrency:
+  group: v888-complete-synapse-audit-thor
+  cancel-in-progress: false
+jobs:
+  qualify:
+    if: github.repository == 'Memorithm/scirust'
+    runs-on: [self-hosted, Linux, ARM64, scirust-arm64, jetson-thor, internal]
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}/bool01-${{ github.run_id }}-${{ github.run_attempt }}
+    env:
+      OMP_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+      ARROW_NUM_THREADS: '1'
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ github.sha }}
+          path: bool01-${{ github.run_id }}-${{ github.run_attempt }}
+          persist-credentials: false
+      - name: Record execution host and qualify Rust plus independent oracles
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$HOME/datasets/banc_v888"
+          TESTS="$RUNNER_TEMP/v888-bool01-tests-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          OUT="$ROOT/analysis/bool01-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -p "$TESTS"
+          echo "V888_BOOL_OUTPUT=$OUT" >> "$GITHUB_ENV"
+          echo "V888_BOOL_TESTS=$TESTS" >> "$GITHUB_ENV"
+          { hostname; uname -m; printf 'runner=%s\ncommit=%s\n' "$RUNNER_NAME" "$GITHUB_SHA"; rustc +1.89.0 --version; df -h "$ROOT"; } | tee "$TESTS/runtime.txt"
+          test "$(uname -m)" = aarch64
+          "$ROOT/.analysis-venv/bin/python" -c 'import shutil,sys; assert shutil.disk_usage(sys.argv[1]).free >= 2*1024**3, "insufficient scratch space"' "$ROOT"
+          rustc +1.89.0 --edition=2021 --test scripts/v888_bool01/pair_graph.rs -o "$TESTS/rust-tests"
+          "$TESTS/rust-tests" | tee "$TESTS/rust-tests.log"
+          rustc +1.89.0 --edition=2021 -O scripts/v888_bool01/pair_graph.rs -o "$TESTS/pair-graph"
+          "$ROOT/.analysis-venv/bin/python" -m py_compile scripts/v888_bool01/qualify.py scripts/v888_bool01/test_qualification.py
+          "$ROOT/.analysis-venv/bin/python" scripts/v888_bool01/test_qualification.py "$TESTS/pair-graph" -v 2>&1 | tee "$TESTS/process-tests.log"
+      - name: Reconcile every raw endpoint pair and verify canonical CSR
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$HOME/datasets/banc_v888"
+          exec 9>"$ROOT/.full-synapse-audit.lock"
+          flock -n 9
+          ulimit -v 8388608
+          "$ROOT/.analysis-venv/bin/python" scripts/v888_bool01/qualify.py --data-root "$ROOT" --output "$V888_BOOL_OUTPUT" --worker "$V888_BOOL_TESTS/pair-graph"
+          cp "$V888_BOOL_TESTS/runtime.txt" "$V888_BOOL_OUTPUT/evidence/"
+          cp "$V888_BOOL_TESTS/rust-tests.log" "$V888_BOOL_OUTPUT/evidence/"
+          cp "$V888_BOOL_TESTS/process-tests.log" "$V888_BOOL_OUTPUT/evidence/"
+          "$ROOT/.analysis-venv/bin/python" -m pip freeze > "$V888_BOOL_OUTPUT/evidence/environment.txt"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: v888-bool01-${{ github.sha }}
+          path: |
+            ${{ env.V888_BOOL_OUTPUT }}/evidence/
+            ${{ env.V888_BOOL_TESTS }}/*.log
+            ${{ env.V888_BOOL_TESTS }}/runtime.txt
+          if-no-files-found: warn
+          retention-days: 30
