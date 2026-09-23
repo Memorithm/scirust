@@ -83,6 +83,13 @@ pub enum NeuralOperatorError {
     #[error("ANF monomial mask {mask:#x} references a variable outside arity {variables}")]
     InvalidMonomialMask { mask: u64, variables: usize },
 
+    #[error("2-D Fourier bound on {axis} requests {requested}, above Nyquist {nyquist}")]
+    InvalidFourierModeBound {
+        axis: &'static str,
+        requested: usize,
+        nyquist: usize,
+    },
+
     #[error("spectral mode {mode} is outside configured range 0..{configured_modes}")]
     InvalidSpectralMode {
         mode: usize,
@@ -113,6 +120,9 @@ pub enum NeuralOperatorError {
 
     #[error("no exact ANF candidate exists inside the declared bounded grammar")]
     NoExactAnfCandidate,
+
+    #[error("benchmark repeats must be positive, got {repeats}")]
+    InvalidBenchmarkRepeats { repeats: usize },
 
     #[error("verification tolerance must be finite and non-negative, got {tolerance}")]
     InvalidVerificationTolerance { tolerance: f64 },
