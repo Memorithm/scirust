@@ -102,18 +102,27 @@ pub enum EligibilityError {
 
 impl fmt::Display for EligibilityError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
+        match self
+        {
             Self::Canonical(error) => write!(formatter, "eligibility anchor failed: {error}"),
             Self::InvalidCandidate { index, source } => write!(
                 formatter,
                 "eligibility candidate {index} is not valid for the anchored plan: {source}"
             ),
-            Self::EmptyEvidenceDomain { index } => {
-                write!(formatter, "eligibility entry {index} has an empty evidence domain")
-            }
-            Self::EmptyEvidenceIdentity { index } => {
-                write!(formatter, "eligibility entry {index} has an empty evidence identity")
-            }
+            Self::EmptyEvidenceDomain { index } =>
+            {
+                write!(
+                    formatter,
+                    "eligibility entry {index} has an empty evidence domain"
+                )
+            },
+            Self::EmptyEvidenceIdentity { index } =>
+            {
+                write!(
+                    formatter,
+                    "eligibility entry {index} has an empty evidence identity"
+                )
+            },
             Self::DuplicateCandidate {
                 node,
                 representation,
@@ -133,7 +142,8 @@ impl fmt::Display for EligibilityError {
 #[cfg(feature = "std")]
 impl std::error::Error for EligibilityError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
+        match self
+        {
             Self::Canonical(error) => Some(error),
             Self::InvalidCandidate { source, .. } => Some(source),
             Self::EmptyEvidenceDomain { .. }
@@ -229,25 +239,28 @@ impl EligibilityBatch {
         let plan_identity = canonical_representation_plan_bytes(plan, graph)?;
         let mut seen = BTreeSet::new();
 
-        for (index, entry) in entries.iter().enumerate() {
-            if entry.evidence_domain.trim().is_empty() {
+        for (index, entry) in entries.iter().enumerate()
+        {
+            if entry.evidence_domain.trim().is_empty()
+            {
                 return Err(EligibilityError::EmptyEvidenceDomain { index });
             }
-            if entry.evidence_identity.is_empty() {
+            if entry.evidence_identity.is_empty()
+            {
                 return Err(EligibilityError::EmptyEvidenceIdentity { index });
             }
 
             let key = (entry.candidate.node, entry.candidate.representation);
-            if !seen.insert(key) {
+            if !seen.insert(key)
+            {
                 return Err(EligibilityError::DuplicateCandidate {
                     node: entry.candidate.node,
                     representation: entry.candidate.representation,
                 });
             }
 
-            PreparedReplan::prepare(plan, graph, &[entry.candidate]).map_err(|source| {
-                EligibilityError::InvalidCandidate { index, source }
-            })?;
+            PreparedReplan::prepare(plan, graph, &[entry.candidate])
+                .map_err(|source| EligibilityError::InvalidCandidate { index, source })?;
         }
 
         Ok(Self {
@@ -345,13 +358,16 @@ impl EligibilityBatch {
         plan: &RepresentationPlan,
     ) -> Result<EligibilityReport, EligibilityError> {
         let current = canonical_representation_plan_bytes(plan, graph)?;
-        if current != self.plan_identity {
+        if current != self.plan_identity
+        {
             return Err(EligibilityError::StalePlanEvidence);
         }
 
         let mut report = EligibilityReport::default();
-        for entry in &self.entries {
-            match entry.state {
+        for entry in &self.entries
+        {
+            match entry.state
+            {
                 EligibilityState::Unknown => report.unknown.push(entry.clone()),
                 EligibilityState::Eligible => report.eligible.push(entry.clone()),
                 EligibilityState::Ineligible => report.ineligible.push(entry.clone()),
@@ -432,7 +448,12 @@ mod tests {
         let batch = EligibilityBatch::new(
             &graph,
             &plan,
-            vec![evidence(node, dense, EligibilityState::Ineligible, b"reject")],
+            vec![evidence(
+                node,
+                dense,
+                EligibilityState::Ineligible,
+                b"reject",
+            )],
         )
         .unwrap();
         let report = batch.report(&graph, &plan).unwrap();

@@ -90,14 +90,20 @@ pub enum CostVectorError {
 
 impl fmt::Display for CostVectorError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
+        match self
+        {
             Self::Graph(error) => write!(formatter, "invalid graph for cost accounting: {error}"),
-            Self::Semantic(error) => {
-                write!(formatter, "invalid graph semantics for cost accounting: {error}")
-            }
-            Self::Representation(error) => {
+            Self::Semantic(error) =>
+            {
+                write!(
+                    formatter,
+                    "invalid graph semantics for cost accounting: {error}"
+                )
+            },
+            Self::Representation(error) =>
+            {
                 write!(formatter, "invalid representation cost accounting: {error}")
-            }
+            },
             Self::Physical(error) => write!(formatter, "invalid physical cost accounting: {error}"),
             Self::ResidentClassWithoutPhysicalScope => formatter.write_str(
                 "resident materialization class requires an explicit physical accounting scope",
@@ -106,12 +112,14 @@ impl fmt::Display for CostVectorError {
                 formatter,
                 "transfer {index} byte length {byte_len} does not fit canonical u64 accounting"
             ),
-            Self::TransferTotalOverflow => {
+            Self::TransferTotalOverflow =>
+            {
                 formatter.write_str("exact transfer-byte aggregation overflowed u64")
-            }
-            Self::CheckpointCountOverflow => {
+            },
+            Self::CheckpointCountOverflow =>
+            {
                 formatter.write_str("checkpoint marker count overflowed u64")
-            }
+            },
         }
     }
 }
@@ -119,7 +127,8 @@ impl fmt::Display for CostVectorError {
 #[cfg(feature = "std")]
 impl std::error::Error for CostVectorError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
+        match self
+        {
             Self::Graph(error) => Some(error),
             Self::Semantic(error) => Some(error),
             Self::Representation(error) => Some(error),
@@ -237,17 +246,20 @@ pub fn exact_cost_vector(
 
     let representation_storage_bits = plan.total_storage_bits(graph)?;
 
-    let (serialized_bits, resident) = match (physical_scope, resident_class) {
+    let (serialized_bits, resident) = match (physical_scope, resident_class)
+    {
         (None, None) => (ExactCost::Unknown, ExactCost::Unknown),
         (None, Some(_)) => return Err(CostVectorError::ResidentClassWithoutPhysicalScope),
-        (Some(scope), None) => {
+        (Some(scope), None) =>
+        {
             scope.validate()?;
             (
                 ExactCost::Known(scope.serialized_bits()?),
                 ExactCost::Unknown,
             )
-        }
-        (Some(scope), Some(class)) => {
+        },
+        (Some(scope), Some(class)) =>
+        {
             scope.validate()?;
             (
                 ExactCost::Known(scope.serialized_bits()?),
@@ -256,14 +268,17 @@ pub fn exact_cost_vector(
                     bits: scope.resident_bits(class)?,
                 }),
             )
-        }
+        },
     };
 
-    let transfer_bytes = match transfers {
+    let transfer_bytes = match transfers
+    {
         None => ExactCost::Unknown,
-        Some(transfers) => {
+        Some(transfers) =>
+        {
             let mut total = 0u64;
-            for (index, transfer) in transfers.iter().enumerate() {
+            for (index, transfer) in transfers.iter().enumerate()
+            {
                 let bytes = u64::try_from(transfer.byte_len()).map_err(|_| {
                     CostVectorError::TransferLengthOverflow {
                         index,
@@ -275,7 +290,7 @@ pub fn exact_cost_vector(
                     .ok_or(CostVectorError::TransferTotalOverflow)?;
             }
             ExactCost::Known(total)
-        }
+        },
     };
 
     let checkpoint_count = graph
@@ -299,15 +314,12 @@ pub fn exact_cost_vector(
 mod tests {
     use alloc::vec;
 
-    use scirust_compute::{
-        DeviceId, DeviceKind, TensorResidency, TransferMode, TransferRequest,
-    };
+    use scirust_compute::{DeviceId, DeviceKind, TensorResidency, TransferMode, TransferRequest};
 
     use super::*;
     use crate::{
-        ContentIdentity, LayoutIdentity, PhysicalSegment, PhysicalSegmentId,
-        PhysicalSegmentRole, ReconstructionRole, ResidentMaterialization, SegmentLifetime,
-        TensorType,
+        ContentIdentity, LayoutIdentity, PhysicalSegment, PhysicalSegmentId, PhysicalSegmentRole,
+        ReconstructionRole, ResidentMaterialization, SegmentLifetime, TensorType,
     };
 
     fn graph() -> (Graph, RepresentationPlan) {
