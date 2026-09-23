@@ -15,11 +15,13 @@
 //! out-of-distribution fallback.
 
 pub mod anf_search;
+pub mod benchmark;
 pub mod boolean;
 pub mod dataset;
 pub mod error;
 pub mod fft_inference;
 pub mod fno;
+pub mod fno2d;
 pub mod grid;
 pub mod hybrid;
 pub mod loss;
@@ -29,14 +31,19 @@ pub mod spectral;
 pub mod spectral_routing;
 
 pub use anf_search::{
-    BooleanDevelopmentExample, BooleanDevelopmentSet, SparseAnfSearchConfig, SparseAnfSearchResult,
-    search_sparse_anf,
+    BooleanDevelopmentExample, BooleanDevelopmentSet, BooleanValidationSet, SparseAnfSearchConfig,
+    SparseAnfSearchResult, SparseAnfValidation, search_sparse_anf,
+};
+pub use benchmark::{
+    BenchmarkAccuracy, BenchmarkConfig, SurrogateBenchmarkReport, TimingStats,
+    benchmark_exact_vs_surrogate,
 };
 pub use boolean::{AnfOperator, AnfPolynomial, BooleanComplexity, F2LinearOperator, PackedBits};
-pub use dataset::{OperatorDataset1d, OperatorSample1d};
+pub use dataset::{OperatorDataset1d, OperatorDataset2d, OperatorSample1d, OperatorSample2d};
 pub use error::{NeuralOperatorError, Result};
 pub use fft_inference::{FftInferenceMode, Fno1dFftInference};
 pub use fno::{FitReport, Fno1dConfig, Fno1dOperator, LearnedOperator};
+pub use fno2d::{Fno2dConfig, Fno2dOperator};
 pub use grid::PeriodicGrid1d;
 pub use hybrid::{
     BooleanRouteRule, BooleanRouter, HybridAction, HybridExecution, HybridExecutor,
@@ -56,5 +63,8 @@ pub use spectral_routing::{
 // Existing SciRust operator-learning primitives remain available through the
 // dedicated crate so callers do not have to know their historical locations.
 pub use scirust_core::nn::deeponet::DeepONet;
-pub use scirust_core::nn::fno::{Fno1dInferenceSnapshot, FnoSpectralConv1d, NdFno};
+pub use scirust_core::nn::fno::{
+    Fno1dInferenceSnapshot, FnoSpectralConv1d, FnoSpectralConv2d, FourierMode2d, NdFno, NdFno2d,
+    low_frequency_modes_2d,
+};
 pub use scirust_core::nn::pinn::{Pinn1D, PinnSolution, solve_harmonic};
