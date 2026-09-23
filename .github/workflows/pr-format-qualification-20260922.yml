@@ -21,7 +21,7 @@ jobs:
       CARGO_INCREMENTAL: 0
       RUST_BACKTRACE: 1
       RUSTFLAGS: -D warnings
-      EXPECTED_REVISION: 05bcb2e6276f2afb487bd3f3e4c1008e4b58c8bc
+      EXPECTED_REVISION: fa59508a226c20d87b6c369498bcdd34907aa169
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
