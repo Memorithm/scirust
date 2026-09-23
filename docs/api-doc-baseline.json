@@ -138,6 +138,7 @@
     "scirust-tensor-ir": 31,
     "scirust-tensor-reference": 12,
     "scirust-tensor-runtime": 53,
+    "scirust-tensor-search-bridge": 0,
     "scirust-thermo": 0,
     "scirust-tn": 3,
     "scirust-tolerance": 0,

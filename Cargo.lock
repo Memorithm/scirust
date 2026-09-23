@@ -870,14 +870,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "elastic-core"
+version = "0.1.0"
+source = "git+https://github.com/Memorithm/ElasticXxx.git?rev=9130a412857335cc5120b013b91552dd0808f9f1#9130a412857335cc5120b013b91552dd0808f9f1"
+
+[[package]]
+name = "elastic-eir"
+version = "0.1.0"
+source = "git+https://github.com/Memorithm/ElasticXxx.git?rev=9130a412857335cc5120b013b91552dd0808f9f1#9130a412857335cc5120b013b91552dd0808f9f1"
+dependencies = [
+ "elastic-core",
+]
+
+[[package]]
 name = "elastic-kernel"
 version = "0.1.0"
-source = "git+https://github.com/Memorithm/ElasticXxx.git?rev=354cfb372f568338b29a357b0671bf9315097b1d#354cfb372f568338b29a357b0671bf9315097b1d"
+source = "git+https://github.com/Memorithm/ElasticXxx.git?rev=9130a412857335cc5120b013b91552dd0808f9f1#9130a412857335cc5120b013b91552dd0808f9f1"
 dependencies = [
- "memorithm-elastic-core",
- "memorithm-elastic-eir",
- "serde",
- "serde_json",
+ "elastic-core",
+ "elastic-eir",
 ]
 
 [[package]]
@@ -921,7 +932,7 @@ checksum = "d45db016d36b838f563236e9193d0ee6ce38f3f68b6c94e914b4929c96bbb890"
 [[package]]
 name = "flat-attention"
 version = "0.1.0"
-source = "git+https://github.com/Memorithm/FLAT-ATTENTION?rev=7a5db9127bd9b76f6f4e58a47a371658f0c8f5e5#7a5db9127bd9b76f6f4e58a47a371658f0c8f5e5"
+source = "git+https://github.com/Memorithm/FLAT-ATTENTION?rev=4529a2079434965e13e90ddd2e98ecc88ee0cb3a#4529a2079434965e13e90ddd2e98ecc88ee0cb3a"
 dependencies = [
  "ordered-float",
 ]
@@ -938,12 +949,12 @@ dependencies = [
 [[package]]
 name = "flat-elastic-kernel"
 version = "0.1.0"
-source = "git+https://github.com/Memorithm/FLAT-ATTENTION?rev=7a5db9127bd9b76f6f4e58a47a371658f0c8f5e5#7a5db9127bd9b76f6f4e58a47a371658f0c8f5e5"
+source = "git+https://github.com/Memorithm/FLAT-ATTENTION?rev=4529a2079434965e13e90ddd2e98ecc88ee0cb3a#4529a2079434965e13e90ddd2e98ecc88ee0cb3a"
 dependencies = [
+ "elastic-core",
+ "elastic-eir",
  "elastic-kernel",
- "flat-attention 0.1.0 (git+https://github.com/Memorithm/FLAT-ATTENTION?rev=7a5db9127bd9b76f6f4e58a47a371658f0c8f5e5)",
- "memorithm-elastic-core",
- "memorithm-elastic-eir",
+ "flat-attention 0.1.0 (git+https://github.com/Memorithm/FLAT-ATTENTION?rev=4529a2079434965e13e90ddd2e98ecc88ee0cb3a)",
 ]
 
 [[package]]
@@ -1808,15 +1819,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "matchers"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d1525a2a28c7f4fa0fc98bb91ae755d1e2d1505079e05539e35bc876b5d65ae9"
-dependencies = [
- "regex-automata",
-]
-
-[[package]]
 name = "matrixmultiply"
 version = "0.3.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1831,88 +1833,6 @@ name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
-
-[[package]]
-name = "memorithm-elastic"
-version = "0.1.0"
-source = "git+https://github.com/Memorithm/ElasticXxx.git?rev=354cfb372f568338b29a357b0671bf9315097b1d#354cfb372f568338b29a357b0671bf9315097b1d"
-dependencies = [
- "memorithm-elastic-adapters",
- "memorithm-elastic-core",
- "memorithm-elastic-eir",
- "memorithm-elastic-kv",
- "memorithm-elastic-macros",
- "memorithm-elastic-runtime",
-]
-
-[[package]]
-name = "memorithm-elastic-adapters"
-version = "0.1.0"
-source = "git+https://github.com/Memorithm/ElasticXxx.git?rev=354cfb372f568338b29a357b0671bf9315097b1d#354cfb372f568338b29a357b0671bf9315097b1d"
-dependencies = [
- "memorithm-elastic-core",
- "memorithm-elastic-eir",
- "serde",
-]
-
-[[package]]
-name = "memorithm-elastic-core"
-version = "0.1.0"
-source = "git+https://github.com/Memorithm/ElasticXxx.git?rev=354cfb372f568338b29a357b0671bf9315097b1d#354cfb372f568338b29a357b0671bf9315097b1d"
-
-[[package]]
-name = "memorithm-elastic-eir"
-version = "0.1.0"
-source = "git+https://github.com/Memorithm/ElasticXxx.git?rev=354cfb372f568338b29a357b0671bf9315097b1d#354cfb372f568338b29a357b0671bf9315097b1d"
-dependencies = [
- "memorithm-elastic-core",
-]
-
-[[package]]
-name = "memorithm-elastic-kv"
-version = "0.1.0"
-source = "git+https://github.com/Memorithm/ElasticXxx.git?rev=354cfb372f568338b29a357b0671bf9315097b1d#354cfb372f568338b29a357b0671bf9315097b1d"
-dependencies = [
- "memorithm-elastic-core",
- "memorithm-elastic-eir",
- "memorithm-elastic-runtime",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "memorithm-elastic-language-syntax"
-version = "0.1.0"
-source = "git+https://github.com/Memorithm/ElasticXxx.git?rev=354cfb372f568338b29a357b0671bf9315097b1d#354cfb372f568338b29a357b0671bf9315097b1d"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
-name = "memorithm-elastic-macros"
-version = "0.1.0"
-source = "git+https://github.com/Memorithm/ElasticXxx.git?rev=354cfb372f568338b29a357b0671bf9315097b1d#354cfb372f568338b29a357b0671bf9315097b1d"
-dependencies = [
- "memorithm-elastic-language-syntax",
-]
-
-[[package]]
-name = "memorithm-elastic-runtime"
-version = "0.1.0"
-source = "git+https://github.com/Memorithm/ElasticXxx.git?rev=354cfb372f568338b29a357b0671bf9315097b1d#354cfb372f568338b29a357b0671bf9315097b1d"
-dependencies = [
- "log",
- "memorithm-elastic-adapters",
- "memorithm-elastic-core",
- "memorithm-elastic-eir",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
- "tracing",
- "tracing-subscriber",
-]
 
 [[package]]
 name = "metal"
@@ -2048,15 +1968,6 @@ dependencies = [
  "scirust-fractional",
  "scirust-nonlocal-relativity",
  "scirust-relativity",
-]
-
-[[package]]
-name = "nu-ansi-term"
-version = "0.50.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
-dependencies = [
- "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3001,9 +2912,9 @@ version = "0.14.0"
 dependencies = [
  "chrono",
  "elastic-autotuner",
- "flat-attention 0.1.0 (git+https://github.com/Memorithm/FLAT-ATTENTION?rev=7a5db9127bd9b76f6f4e58a47a371658f0c8f5e5)",
+ "elastic-core",
+ "flat-attention 0.1.0 (git+https://github.com/Memorithm/FLAT-ATTENTION?rev=4529a2079434965e13e90ddd2e98ecc88ee0cb3a)",
  "flat-elastic-kernel",
- "memorithm-elastic",
  "rand 0.8.7",
  "scirust-compute",
  "scirust-core",
@@ -4370,6 +4281,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "scirust-tensor-search-bridge"
+version = "0.1.0"
+dependencies = [
+ "scirust-opt-core",
+ "scirust-tensor-ir",
+]
+
+[[package]]
 name = "scirust-thermo"
 version = "0.1.0"
 
@@ -4562,15 +4481,6 @@ dependencies = [
  "cfg-if",
  "cpufeatures 0.2.17",
  "digest",
-]
-
-[[package]]
-name = "sharded-slab"
-version = "0.1.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
-dependencies = [
- "lazy_static",
 ]
 
 [[package]]
@@ -4840,15 +4750,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "thread_local"
-version = "1.1.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1ad99c4c6d32803332c548b1af0540b357b3f5fc0be8f6c6bfe8b2e6ae784070"
-dependencies = [
- "cfg-if",
-]
-
-[[package]]
 name = "tinystr"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5066,36 +4967,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a"
 dependencies = [
  "once_cell",
- "valuable",
-]
-
-[[package]]
-name = "tracing-log"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ee855f1f400bd0e5c02d150ae5de3840039a3f54b025156404e34c23c03f47c3"
-dependencies = [
- "log",
- "once_cell",
- "tracing-core",
-]
-
-[[package]]
-name = "tracing-subscriber"
-version = "0.3.23"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb7f578e5945fb242538965c2d0b04418d38ec25c79d160cd279bf0731c8d319"
-dependencies = [
- "matchers",
- "nu-ansi-term",
- "once_cell",
- "regex-automata",
- "sharded-slab",
- "smallvec",
- "thread_local",
- "tracing",
- "tracing-core",
- "tracing-log",
 ]
 
 [[package]]
@@ -5240,12 +5111,6 @@ dependencies = [
  "js-sys",
  "wasm-bindgen",
 ]
-
-[[package]]
-name = "valuable"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
 name = "vcpkg"
