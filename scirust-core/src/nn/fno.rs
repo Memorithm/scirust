@@ -1014,7 +1014,8 @@ mod tests {
         let (first2, last2) = run();
         assert_eq!(first.to_bits(), first2.to_bits());
         assert_eq!(last.to_bits(), last2.to_bits());
-    }    #[test]
+    }
+    #[test]
     fn low_frequency_modes_2d_are_canonical_conjugate_representatives() {
         let modes = low_frequency_modes_2d(5, 5, 1, 1);
         assert_eq!(modes.len(), 5);
@@ -1175,5 +1176,4 @@ mod tests {
             );
         }
     }
-
 }
