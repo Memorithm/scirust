@@ -12,93 +12,44 @@ jobs:
   qualify:
     if: github.repository == 'Memorithm/scirust'
     runs-on: [self-hosted, Linux, ARM64, scirust-arm64, jetson-thor, internal]
-    timeout-minutes: 40
-    permissions:
-      contents: write
+    timeout-minutes: 60
     defaults:
       run:
         shell: bash
-        working-directory: pr1513-${{ github.run_id }}-${{ github.run_attempt }}
+        working-directory: neural-operator-${{ github.run_id }}-${{ github.run_attempt }}
     env:
       CARGO_INCREMENTAL: 0
       RUST_BACKTRACE: 1
       RUSTFLAGS: -D warnings
-      EXPECTED_REVISION: a67c4878fbab1e51efcccb814abb28e486ed2d62
+      EXPECTED_REVISION: 005de553b44db0f105763d45298bbc17b00cfe43
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           ref: ${{ env.EXPECTED_REVISION }}
           persist-credentials: false
-          path: pr1513-${{ github.run_id }}-${{ github.run_attempt }}
+          path: neural-operator-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Prepare exact-head qualification
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_REVISION"
           test "$(uname -m)" = aarch64
-          tmpdir="$(mktemp -d "$GITHUB_WORKSPACE/.pr1513-tmp.XXXXXX")"
+          tmpdir="$(mktemp -d "$GITHUB_WORKSPACE/.neural-op-tmp.XXXXXX")"
           chmod 700 "$tmpdir"
           echo "TMPDIR=$tmpdir" >> "$GITHUB_ENV"
+          uname -a
       - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
         with:
           toolchain: nightly-2026-07-02
           components: rustfmt, clippy
-      - name: Apply repository-pinned formatter
+      - name: Verify pinned formatting
         run: |
           set -euo pipefail
-          cargo +nightly-2026-07-02 fmt --all
-          cargo +nightly-2026-07-02 fmt --manifest-path scirust-hypermemory/Cargo.toml --all
           cargo +nightly-2026-07-02 fmt --all -- --check
           cargo +nightly-2026-07-02 fmt --manifest-path scirust-hypermemory/Cargo.toml --all -- --check
           git diff --check
-          git diff --stat
-      - name: Test Tensor IR
-        run: cargo +nightly-2026-07-02 test --locked -p scirust-tensor-ir
-      - name: Check Tensor IR no-std surface
-        run: RUSTFLAGS="" cargo +nightly-2026-07-02 check --locked -p scirust-tensor-ir --no-default-features
-      - name: Clippy Tensor IR
-        run: cargo +nightly-2026-07-02 clippy --locked -p scirust-tensor-ir --all-targets -- -D warnings
-      - name: Publish tested formatting candidate
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import json, os, subprocess, urllib.request
-          from pathlib import Path
-
-          def git(*args):
-              return subprocess.check_output(["git", *args], text=True).strip()
-
-          head = git("rev-parse", "HEAD")
-          assert head == os.environ["EXPECTED_REVISION"]
-          paths = [p for p in git("diff", "--name-only").splitlines() if p]
-          assert paths, "expected rustfmt changes"
-          assert len(paths) <= 16
-          assert all(p.endswith(".rs") and ".." not in Path(p).parts for p in paths)
-          subprocess.run(["git", "diff", "--check"], check=True)
-          subprocess.run(["git", "add", "--", *paths], check=True)
-          expected_tree = git("write-tree")
-          repo = os.environ["GITHUB_REPOSITORY"]
-
-          def post(endpoint, payload):
-              req = urllib.request.Request(
-                  "https://api.github.com/repos/" + repo + endpoint,
-                  data=json.dumps(payload).encode(), method="POST",
-                  headers={"Authorization":"Bearer " + os.environ["GH_TOKEN"],
-                           "Accept":"application/vnd.github+json",
-                           "Content-Type":"application/json",
-                           "X-GitHub-Api-Version":"2022-11-28"})
-              with urllib.request.urlopen(req, timeout=60) as response:
-                  return json.load(response)
-
-          entries=[]
-          for path in paths:
-              mode=git("ls-files","-s","--",path).split()[0]
-              entries.append({"path":path,"mode":mode,"type":"blob","content":Path(path).read_text(encoding="utf-8")})
-          tree=post("/git/trees",{"base_tree":git("rev-parse","HEAD^{tree}"),"tree":entries})
-          assert tree["sha"] == expected_tree
-          commit=post("/git/commits",{
-              "message":"style(tensor-ir): apply repository-pinned rustfmt",
-              "tree":tree["sha"],"parents":[head]})
-          print(json.dumps({"source":head,"candidate":commit["sha"],"tree":tree["sha"],"formatted_files":paths},sort_keys=True))
-          PY
+      - name: Test core FNO
+        run: cargo +nightly-2026-07-02 test --locked -p scirust-core nn::fno --lib
+      - name: Test neural operator all targets
+        run: cargo +nightly-2026-07-02 test --locked -p scirust-neural-operator --all-targets
+      - name: Clippy neural operator stack
+        run: cargo +nightly-2026-07-02 clippy --locked -p scirust-core -p scirust-neural-operator --all-targets -- -D warnings
