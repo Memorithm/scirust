@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "milestone": "V888-BOOL-0.2a",
+  "parent_milestone": "V888-BOOL-0.2",
+  "classification": "exploratory_source_and_software_qualification_not_task_confirmation",
+  "observed_on": "2026-09-22",
+  "source": {
+    "dataset": "BANC",
+    "materialization": "v888",
+    "detector": "v3",
+    "graph_relative_path": "analysis/bool01-35717145115-1/graph.csr",
+    "qualification_relative_path": "analysis/bool01-35717145115-1/evidence/graph_qualification.json",
+    "qualification_sha256": "0d1ecd09f2f74b3ad50e194e79844d25bcd323470e7c09ada2b195ba4a91ce23",
+    "graph_sha256": "385111a69cc8a1d748c0bdfd9b0b738c51fe83cde98f45762553435a2d15a2a4",
+    "graph_identity_sha256": "3cfbed6392a097865147ac08fae65f36a986b2ba6d386b1f5d61b9cfbefd1dd9",
+    "metadata_sha256": "86ccf5df0c67419f8c5f43e93a7ed38d23a080e9f7fde26737290252f3780098",
+    "source_nodes": 188508,
+    "source_pairs": 13620865,
+    "source_contacts": 42309621
+  },
+  "grid": {
+    "weak_bfs_sizes": [128, 512, 2048],
+    "ranked_sizes": [2048],
+    "seeds": [17, 29, 43],
+    "repeat_every_case": true
+  },
+  "selection": {
+    "rank": "ascending (SplitMix64-finalizer-with-increment(root_id XOR seed), root_id)",
+    "weak_bfs": "weak directed-neighbor BFS, each neighbor list rank-ordered; rank-ordered unvisited roots refill disconnected components; retain first N dequeued nodes then sort original IDs",
+    "ranked": "N smallest rank keys without looking at edges; sparse/disconnected outcomes are retained",
+    "boundary": "every crossing directed pair of the qualified induced source is saved with original u64 endpoints, measured contacts and incoming/outgoing category; raw unknown-endpoint boundary remains distinct"
+  },
+  "arms": ["reference", "edge_count", "degree", "degree_reciprocal", "degree_reciprocal_block"],
+  "controls": {
+    "edge_count": "Floyd sampling of exactly E non-self directed pairs",
+    "degree": "bounded directed double-edge switches with four distinct endpoints; preserve each vertex in/out degree",
+    "degree_reciprocal": "also preserve each vertex reciprocal-neighbor count",
+    "degree_reciprocal_block": "also preserve the complete directed block-pair edge-count matrix",
+    "attempt_budget": "min(32 * E, 1000000) proposals per rewired arm",
+    "blocks": "frozen source metadata region labels, whitespace trimmed, null/empty explicit; anatomical blocks, not inferred functional communities or preserved modularity",
+    "weights": "unit edge in every comparison arm, including reference; original measured multiplicities saved separately, not reassigned as conductance",
+    "limitations": ["no guarantee of uniform switch-chain sampling", "no mixing-time or null-ensemble qualification", "connectivity and higher motifs are not preserved", "weighted strengths are not matched", "unchanged and edge-empty controls must remain visible"]
+  },
+  "ports": "same three distinct indices for every arm, selected by sorted SplitMix64(root_id XOR seed XOR 0x1234abcd); no performance-dependent placement or training",
+  "acceptance": [
+    "Source graph, previous qualification and metadata hashes match before and after use.",
+    "Rust synthetic tests and independent Python/process tests pass before real data.",
+    "Independent reader verifies exact induced pairs, measured weights and every crossing edge.",
+    "Every declared degree, reciprocity and block invariant agrees with an independent recount.",
+    "Every case replays with identical output file hashes.",
+    "Port disconnection, no-change controls, sampling bias and unavailable mixing evidence remain explicit."
+  ],
+  "execution": {"host": "Thor", "backend": "CPU", "rust": "1.89.0", "new_download": false, "raw_mutation": false, "address_space_gib": 8, "per_process_timeout_seconds": 180, "job_timeout_minutes": 30},
+  "next_scope": "V888-BOOL-0.2b: assess control diversity/mixing, anatomical versus structural partitions and port-placement sensitivity before attributing neural-task effects",
+  "authority": {"final_holdout_access": false, "runtime_actuation": false, "model_promotion": false, "automatic_merge": false}
+}

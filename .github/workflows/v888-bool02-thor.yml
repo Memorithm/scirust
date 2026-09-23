@@ -1,0 +1,80 @@
+name: V888-BOOL-0.2a subsets and controls on Thor
+on:
+  push:
+    branches: [research/v888-bool-02a-subsets-controls]
+    paths: ['scripts/v888_bool02/**', '.github/workflows/v888-bool02-thor.yml']
+permissions:
+  contents: read
+concurrency:
+  group: v888-complete-synapse-audit-thor
+  cancel-in-progress: false
+jobs:
+  qualify:
+    if: github.repository == 'Memorithm/scirust'
+    runs-on: [self-hosted, Linux, ARM64, scirust-arm64, jetson-thor, internal]
+    timeout-minutes: 30
+    env:
+      OMP_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+      ARROW_NUM_THREADS: '1'
+      PYTHONDONTWRITEBYTECODE: '1'
+      V888_DATA_ROOT: /mnt/nvme/github-runners/home/datasets/banc_v888
+    defaults:
+      run:
+        shell: bash
+        working-directory: v888-bool02-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          path: v888-bool02-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Resolve shared source and runner-owned output without changing permissions
+        run: |
+          set -euo pipefail
+          TESTS="$RUNNER_TEMP/v888-bool02-tests-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          OUT="$HOME/v888-research-runs/bool02-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir "$TESTS"
+          echo "V888_BOOL_TESTS=$TESTS" >> "$GITHUB_ENV"
+          echo "V888_BOOL_OUTPUT=$OUT" >> "$GITHUB_ENV"
+          echo "CARGO_HOME=$RUNNER_TEMP/v888-toolchain-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/cargo" >> "$GITHUB_ENV"
+          echo "RUSTUP_HOME=$RUNNER_TEMP/v888-toolchain-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/rustup" >> "$GITHUB_ENV"
+          { hostname; uname -m; id; printf 'runner=%s\ncommit=%s\ndata_root=%s\noutput=%s\n' "$RUNNER_NAME" "$GITHUB_SHA" "$V888_DATA_ROOT" "$OUT"; } | tee "$TESTS/runtime.txt"
+          test "$(uname -m)" = aarch64
+          ls -ld "$V888_DATA_ROOT" "$V888_DATA_ROOT/analysis/bool01-35717145115-1/graph.csr" "$V888_DATA_ROOT/.analysis-venv/bin/python" | tee -a "$TESTS/runtime.txt"
+          test -r "$V888_DATA_ROOT/analysis/bool01-35717145115-1/graph.csr"
+          test -x "$V888_DATA_ROOT/.analysis-venv/bin/python"
+          "$V888_DATA_ROOT/.analysis-venv/bin/python" -c 'import shutil,sys; assert shutil.disk_usage(sys.argv[1]).free >= 4*1024**3' "$HOME"
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: 1.89.0
+      - name: Compile and qualify independent Rust and Python oracles
+        run: |
+          set -euo pipefail
+          TESTS="$V888_BOOL_TESTS"
+          rustc +1.89.0 --version | tee -a "$TESTS/runtime.txt"
+          rustc +1.89.0 --edition=2021 -D warnings --test scripts/v888_bool02/subset_controls.rs -o "$TESTS/rust-tests" 2>&1 | tee "$TESTS/compile-tests.log"
+          "$TESTS/rust-tests" 2>&1 | tee "$TESTS/rust-tests.log"
+          rustc +1.89.0 --edition=2021 -D warnings -O scripts/v888_bool02/subset_controls.rs -o "$TESTS/subset-controls" 2>&1 | tee "$TESTS/compile-worker.log"
+          "$V888_DATA_ROOT/.analysis-venv/bin/python" -m py_compile scripts/v888_bool02/oracle.py scripts/v888_bool02/test_controls.py scripts/v888_bool02/run.py
+          "$V888_DATA_ROOT/.analysis-venv/bin/python" scripts/v888_bool02/test_controls.py "$TESTS/subset-controls" -v 2>&1 | tee "$TESTS/process-tests.log"
+      - name: Generate source-bound subsets, verify every cut edge and replay every control
+        run: |
+          set -euo pipefail
+          exec 9<"$V888_DATA_ROOT/analysis/bool01-35717145115-1/graph.csr"
+          flock -s -n 9
+          ulimit -v 8388608
+          "$V888_DATA_ROOT/.analysis-venv/bin/python" scripts/v888_bool02/run.py --data-root "$V888_DATA_ROOT" --output "$V888_BOOL_OUTPUT" --worker "$V888_BOOL_TESTS/subset-controls" 2>&1 | tee "$V888_BOOL_TESTS/pilot.log"
+          cp "$V888_BOOL_TESTS/runtime.txt" "$V888_BOOL_OUTPUT/evidence/"
+          cp "$V888_BOOL_TESTS/"*.log "$V888_BOOL_OUTPUT/evidence/"
+          "$V888_DATA_ROOT/.analysis-venv/bin/python" -m pip freeze > "$V888_BOOL_OUTPUT/evidence/environment.txt"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always() && env.V888_BOOL_TESTS != ''
+        with:
+          name: v888-bool02-${{ github.sha }}
+          path: |
+            ${{ env.V888_BOOL_OUTPUT }}/evidence/
+            ${{ env.V888_BOOL_TESTS }}/*.log
+            ${{ env.V888_BOOL_TESTS }}/runtime.txt
+          if-no-files-found: warn
+          retention-days: 30
