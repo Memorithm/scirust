@@ -30,7 +30,8 @@ pub fn directed_degree_profile<E>(
     let mut max_in_degree = 0usize;
     let mut max_out_degree = 0usize;
 
-    for node in 0..graph.node_count() {
+    for node in 0..graph.node_count()
+    {
         let inbound = graph.in_degree(node)?;
         let outbound = graph.out_degree(node)?;
         *in_histogram.entry(inbound).or_insert(0) += 1;
@@ -100,7 +101,8 @@ pub fn strong_component_summary<E>(graph: &DirectedGraph<E>) -> StrongComponentS
         .max()
         .map_or(0usize, |maximum| maximum + 1);
     let mut component_sizes = vec![0usize; component_count];
-    for label in labels {
+    for label in labels
+    {
         component_sizes[label] += 1;
     }
     let largest_component = component_sizes.iter().copied().max().unwrap_or(0);
@@ -141,9 +143,11 @@ where
     let mut outgoing = vec![0.0f64; graph.node_count()];
     let mut total = 0.0f64;
 
-    for edge in graph.edges() {
+    for edge in graph.edges()
+    {
         let value = weight(&edge.value);
-        if !value.is_finite() {
+        if !value.is_finite()
+        {
             return Err(DirectedDescriptorError::NonFiniteWeight {
                 source: edge.source,
                 target: edge.target,
@@ -174,10 +178,7 @@ where
 pub enum DirectedDescriptorError {
     Graph(DirectedGraphError),
     AccountingOverflow,
-    NonFiniteWeight {
-        source: usize,
-        target: usize,
-    },
+    NonFiniteWeight { source: usize, target: usize },
     WeightAccumulationOverflow,
 }
 
@@ -189,18 +190,21 @@ impl From<DirectedGraphError> for DirectedDescriptorError {
 
 impl fmt::Display for DirectedDescriptorError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
+        match self
+        {
             Self::Graph(error) => write!(formatter, "{error}"),
-            Self::AccountingOverflow => {
+            Self::AccountingOverflow =>
+            {
                 formatter.write_str("directed descriptor accounting overflowed")
-            }
+            },
             Self::NonFiniteWeight { source, target } => write!(
                 formatter,
                 "directed edge {source} -> {target} projected to a non-finite weight"
             ),
-            Self::WeightAccumulationOverflow => {
+            Self::WeightAccumulationOverflow =>
+            {
                 formatter.write_str("directed weighted-strength accumulation became non-finite")
-            }
+            },
         }
     }
 }
@@ -271,8 +275,7 @@ mod tests {
 
     #[test]
     fn weighted_strengths_preserve_caller_defined_payload_semantics() {
-        let profile =
-            weighted_strength_profile(&graph(), |weight| f64::from(*weight)).unwrap();
+        let profile = weighted_strength_profile(&graph(), |weight| f64::from(*weight)).unwrap();
 
         assert_eq!(profile.outgoing, vec![2.0, 8.0, 18.0, 13.0, 0.0]);
         assert_eq!(profile.incoming, vec![10.0, 2.0, 5.0, 11.0, 13.0]);
@@ -290,9 +293,12 @@ mod tests {
     #[test]
     fn weighted_strengths_reject_non_finite_projection() {
         let error = weighted_strength_profile(&graph(), |weight| {
-            if *weight == 11 {
+            if *weight == 11
+            {
                 f64::NAN
-            } else {
+            }
+            else
+            {
                 f64::from(*weight)
             }
         })
