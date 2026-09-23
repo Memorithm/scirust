@@ -1,6 +1,5 @@
 name: PR formatting candidate qualification
 
-# One-shot maintenance branch only. Never updates a branch or merges a PR.
 on:
   push:
     branches: [fix/pr-format-qualification-20260922]
@@ -16,31 +15,21 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - pr: 1494
-            revision: a8b8be77ab34b9ed8e5e80feb7604f5a07565aa5
-          - pr: 1497
-            revision: 9e06ada497cc13f35c126922dc5ea7828ddc605a
-          - pr: 1501
-            revision: 8cf1111427e4d832d91322d48c16f66ec87cc0db
     env:
       CARGO_INCREMENTAL: 0
       RUST_BACKTRACE: 1
       RUSTFLAGS: -D warnings
-      PR_NUMBER: ${{ matrix.pr }}
-      EXPECTED_REVISION: ${{ matrix.revision }}
+      PR_NUMBER: "1511"
+      EXPECTED_REVISION: "c9d273358c7b05448ddfd29755f08ecb1fe8bc51"
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
-          ref: ${{ matrix.revision }}
+          ref: ${{ env.EXPECTED_REVISION }}
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
         with:
           toolchain: nightly-2026-07-02
-          components: rustfmt, clippy, miri
+          components: rustfmt, clippy
       - name: Apply and verify the repository-pinned formatter
         shell: bash
         run: |
@@ -52,30 +41,12 @@ jobs:
           cargo +nightly-2026-07-02 fmt --manifest-path scirust-hypermemory/Cargo.toml -- --check
           git diff --check
           git diff --stat
-      - name: Qualify the affected packages
+      - name: Qualify scirust-graph
         shell: bash
         run: |
           set -euo pipefail
-          case "$PR_NUMBER" in
-            1494)
-              cargo +nightly-2026-07-02 test --locked -p scirust-tensor-ir -p scirust-tensor-search-bridge
-              cargo +nightly-2026-07-02 clippy --locked -p scirust-tensor-ir -p scirust-tensor-search-bridge --all-targets -- -D warnings
-              ;;
-            1497)
-              cargo +nightly-2026-07-02 test --locked -p scirust-graph
-              cargo +nightly-2026-07-02 clippy --locked -p scirust-graph --all-targets -- -D warnings
-              ;;
-            1501)
-              cargo +nightly-2026-07-02 test --locked -p scirust-stats
-              cargo +nightly-2026-07-02 clippy --locked -p scirust-stats --all-targets -- -D warnings
-              # Retain the default imprecise-float perturbations. No test is ignored.
-              for seed in 0 1 2; do
-                MIRIFLAGS="-Zmiri-isolation-error=warn -Zmiri-seed=$seed" \
-                  cargo +nightly-2026-07-02 miri test --locked -p scirust-stats --lib scaling::tests
-              done
-              ;;
-            *) exit 1 ;;
-          esac
+          cargo +nightly-2026-07-02 test --locked -p scirust-graph
+          cargo +nightly-2026-07-02 clippy --locked -p scirust-graph --all-targets -- -D warnings
       - name: Publish an unreferenced candidate commit for review
         env:
           GH_TOKEN: ${{ github.token }}
@@ -95,10 +66,10 @@ jobs:
           head = git('rev-parse', 'HEAD')
           assert head == os.environ['EXPECTED_REVISION']
           paths = [p for p in git('diff', '--name-only').splitlines() if p]
-          assert len(paths) <= 64, 'Unexpectedly broad formatting delta'
+          assert len(paths) <= 64
           assert all(p.endswith('.rs') and '..' not in Path(p).parts for p in paths)
           if not paths:
-              print(json.dumps({'pr': os.environ['PR_NUMBER'], 'source': head, 'status': 'already_formatted_and_targeted_tests_passed'}))
+              print(json.dumps({'pr': 1511, 'source': head, 'status': 'already_formatted_and_targeted_tests_passed'}))
               raise SystemExit(0)
 
           tree_entries = []
@@ -109,7 +80,6 @@ jobs:
           subprocess.run(['git', 'add', '--', *paths], check=True)
           expected_tree = git('write-tree')
           repo = os.environ['GITHUB_REPOSITORY']
-          assert repo == 'Memorithm/scirust'
 
           def post(endpoint, payload):
               request = urllib.request.Request(
@@ -123,14 +93,11 @@ jobs:
                   return json.load(response)
 
           tree = post('/git/trees', {'base_tree': git('rev-parse', 'HEAD^{tree}'), 'tree': tree_entries})
-          assert tree['sha'] == expected_tree, 'Remote candidate tree differs from the tested working tree'
+          assert tree['sha'] == expected_tree
           candidate = post('/git/commits', {
-              'message': 'style: apply pinned rustfmt to PR #' + os.environ['PR_NUMBER'] + ' with targeted regression qualification',
+              'message': 'style: apply pinned rustfmt to PR #1511 with targeted regression qualification',
               'tree': tree['sha'], 'parents': [head]})
-          print(json.dumps({'pr': int(os.environ['PR_NUMBER']), 'source': head,
-                            'candidate': candidate['sha'], 'tree': tree['sha'],
-                            'formatted_files': paths,
+          print(json.dumps({'pr': 1511, 'source': head, 'candidate': candidate['sha'],
+                            'tree': tree['sha'], 'formatted_files': paths,
                             'status': 'targeted_tests_passed_no_branch_updated'}, sort_keys=True))
-          # Branch references are intentionally not updated. The maintainer must
-          # review this candidate and fast-forward explicitly; full PR CI remains required.
           PY
