@@ -20,7 +20,7 @@ jobs:
       RUST_BACKTRACE: 1
       RUSTFLAGS: -D warnings
       PR_NUMBER: "1511"
-      EXPECTED_REVISION: "c9d273358c7b05448ddfd29755f08ecb1fe8bc51"
+      EXPECTED_REVISION: "e11cb40a531ccfbe74283d15a9d944bf32e58351"
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
