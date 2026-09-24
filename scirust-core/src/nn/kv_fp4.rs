@@ -96,7 +96,8 @@ pub fn decode_e4m3_scale(code: u8) -> Result<f32, Fp4KvError> {
 }
 
 pub fn encode_e4m3_scale_sat(value: f32) -> Result<u8, Fp4KvError> {
-    if !value.is_finite() {
+    if !value.is_finite()
+    {
         return Err(Fp4KvError::NonFinite);
     }
     if value.is_sign_negative()
@@ -206,7 +207,9 @@ impl Fp4KvBlock16 {
             let code = if index % 2 == 0
             {
                 byte & 0x0f
-            } else {
+            }
+            else
+            {
                 byte >> 4
             };
             *value = decode_e2m1(code) * scale;
