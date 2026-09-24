@@ -89,3 +89,9 @@ This file is only the bootstrap pointer. The off-main roadmap plus the ML maturi
 ## Mandatory BANC v888 research bootstrap
 
 For BANC v888, sparse recurrent graph, event-driven, spiking, SML CSP, FLAT sparse-routing, or portable NNIS integration work, also read [`docs/V888_CONNECTOME_BOOTSTRAP.md`](docs/V888_CONNECTOME_BOOTSTRAP.md). The programme is V888-only, keeps raw connectome data external, and introduces no NVIDIA dependency. For this programme NNIS is consumed as the portable **Native Neural Inference Stack** runtime (CPU/WGPU); legacy NVIDIA-specific NNIS paths are not the implementation target.
+
+## Mandatory DeepSeek-V4.1 reusable-primitives extension
+
+For portable FP4 KV reference work, cross-layer KV reuse reference contracts, or confidence-scheduled speculative verification, also read `deepseek_v41_reusable_primitives_program_2026_09_24` in the off-main ecosystem roadmap and the post-80 extension in `docs/RESEARCH_ROADMAP.md`.
+
+SciRust may host deterministic reusable reference primitives only. Runtime policy, compressed-KV product semantics, sparse-attention promotion, resource actuation, and model architecture remain owned by their destination repositories.
