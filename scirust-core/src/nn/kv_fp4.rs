@@ -14,11 +14,11 @@
 
 use core::fmt;
 
-pub const FP4_KV_BLOCK_SIZE: usize = 16;
-pub const E2M1_MAX: f32 = 6.0;
-pub const E4M3_MAX: f32 = 448.0;
-pub const E4M3_MIN_POSITIVE: f32 = 1.0 / 512.0;
-pub const FP4_KV_BLOCK_PACKED_BYTES: usize = 9;
+/// Number of scalar values sharing one E4M3 scale.\npub const FP4_KV_BLOCK_SIZE: usize = 16;
+/// Maximum finite magnitude representable by E2M1.\npub const E2M1_MAX: f32 = 6.0;
+/// Maximum positive finite E4M3 scale value.\npub const E4M3_MAX: f32 = 448.0;
+/// Smallest positive E4M3 subnormal scale value.\npub const E4M3_MIN_POSITIVE: f32 = 1.0 / 512.0;
+/// Exact serialized bytes of one block: eight payload bytes plus one scale byte.\npub const FP4_KV_BLOCK_PACKED_BYTES: usize = 9;
 
 const E2M1_POSITIVE: [f32; 8] = [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0];
 
@@ -51,7 +51,7 @@ pub fn decode_e2m1(code: u8) -> f32 {
     sign * E2M1_POSITIVE[(nibble & 0x07) as usize]
 }
 
-pub fn encode_e2m1_sat(value: f32) -> Result<u8, Fp4KvError> {
+/// Encode one finite scalar to E2M1 with saturating round-to-nearest, ties-to-even.\npub fn encode_e2m1_sat(value: f32) -> Result<u8, Fp4KvError> {
     if !value.is_finite()
     {
         return Err(Fp4KvError::NonFinite);
@@ -75,7 +75,7 @@ pub fn encode_e2m1_sat(value: f32) -> Result<u8, Fp4KvError> {
     Ok(best_code | if sign { 0x08 } else { 0 })
 }
 
-pub fn decode_e4m3_scale(code: u8) -> Result<f32, Fp4KvError> {
+/// Decode one positive-sign finite E4M3 byte used as the block scale.\npub fn decode_e4m3_scale(code: u8) -> Result<f32, Fp4KvError> {
     if code & 0x80 != 0
     {
         return Err(Fp4KvError::NegativeScaleEncoding);
@@ -95,7 +95,7 @@ pub fn decode_e4m3_scale(code: u8) -> Result<f32, Fp4KvError> {
     Ok(2.0f32.powi(i32::from(exponent) - 7) * (1.0 + mantissa as f32 / 8.0))
 }
 
-pub fn encode_e4m3_scale_sat(value: f32) -> Result<u8, Fp4KvError> {
+/// Encode a finite non-negative scale to positive E4M3 with saturation and RNE.\npub fn encode_e4m3_scale_sat(value: f32) -> Result<u8, Fp4KvError> {
     if !value.is_finite()
     {
         return Err(Fp4KvError::NonFinite);
@@ -177,7 +177,7 @@ impl Fp4KvBlock16 {
         })
     }
 
-    pub fn from_packed_bytes(bytes: [u8; FP4_KV_BLOCK_PACKED_BYTES]) -> Result<Self, Fp4KvError> {
+    /// Reconstruct a block from the exact 9-byte reference layout after scale validation.\n    pub fn from_packed_bytes(bytes: [u8; FP4_KV_BLOCK_PACKED_BYTES]) -> Result<Self, Fp4KvError> {
         decode_e4m3_scale(bytes[8])?;
         Ok(Self {
             payload: bytes[..8].try_into().expect("fixed eight-byte slice"),
@@ -198,7 +198,7 @@ impl Fp4KvBlock16 {
         self.scale_e4m3
     }
 
-    pub fn decode(self) -> Result<[f32; FP4_KV_BLOCK_SIZE], Fp4KvError> {
+    /// Decode all 16 reconstructed values into `f32`.\n    pub fn decode(self) -> Result<[f32; FP4_KV_BLOCK_SIZE], Fp4KvError> {
         let scale = decode_e4m3_scale(self.scale_e4m3)?;
         let mut output = [0.0f32; FP4_KV_BLOCK_SIZE];
         for (index, value) in output.iter_mut().enumerate()
