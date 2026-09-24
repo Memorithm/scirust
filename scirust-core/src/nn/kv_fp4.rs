@@ -32,7 +32,8 @@ pub enum Fp4KvError {
 
 impl fmt::Display for Fp4KvError {
     fn fmt(&self, output: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
+        match self
+        {
             Self::NonFinite => write!(output, "FP4 KV input must be finite"),
             Self::NegativeScale => write!(output, "FP4 KV scale must be non-negative"),
             Self::NanScaleEncoding => write!(output, "E4M3 NaN scale encoding is invalid"),
@@ -51,7 +52,8 @@ pub fn decode_e2m1(code: u8) -> f32 {
 }
 
 pub fn encode_e2m1_sat(value: f32) -> Result<u8, Fp4KvError> {
-    if !value.is_finite() {
+    if !value.is_finite()
+    {
         return Err(Fp4KvError::NonFinite);
     }
     let sign = value.is_sign_negative();
@@ -59,7 +61,8 @@ pub fn encode_e2m1_sat(value: f32) -> Result<u8, Fp4KvError> {
 
     let mut best_code = 0u8;
     let mut best_distance = f32::INFINITY;
-    for code in 0u8..=7 {
+    for code in 0u8..=7
+    {
         let distance = (magnitude - E2M1_POSITIVE[code as usize]).abs();
         if distance < best_distance
             || (distance == best_distance && code % 2 == 0 && best_code % 2 != 0)
@@ -73,16 +76,19 @@ pub fn encode_e2m1_sat(value: f32) -> Result<u8, Fp4KvError> {
 }
 
 pub fn decode_e4m3_scale(code: u8) -> Result<f32, Fp4KvError> {
-    if code & 0x80 != 0 {
+    if code & 0x80 != 0
+    {
         return Err(Fp4KvError::NegativeScaleEncoding);
     }
     let exponent = (code >> 3) & 0x0f;
     let mantissa = code & 0x07;
-    if exponent == 0x0f && mantissa == 0x07 {
+    if exponent == 0x0f && mantissa == 0x07
+    {
         return Err(Fp4KvError::NanScaleEncoding);
     }
 
-    if exponent == 0 {
+    if exponent == 0
+    {
         return Ok(2.0f32.powi(-6) * (mantissa as f32 / 8.0));
     }
 
@@ -93,14 +99,16 @@ pub fn encode_e4m3_scale_sat(value: f32) -> Result<u8, Fp4KvError> {
     if !value.is_finite() {
         return Err(Fp4KvError::NonFinite);
     }
-    if value.is_sign_negative() {
+    if value.is_sign_negative()
+    {
         return Err(Fp4KvError::NegativeScale);
     }
 
     let target = value.min(E4M3_MAX);
     let mut best_code = 0u8;
     let mut best_distance = f32::INFINITY;
-    for code in 0u8..=0x7e {
+    for code in 0u8..=0x7e
+    {
         let candidate = decode_e4m3_scale(code)?;
         let distance = (target - candidate).abs();
         if distance < best_distance
@@ -122,14 +130,17 @@ pub struct Fp4KvBlock16 {
 impl Fp4KvBlock16 {
     pub fn from_f32(values: [f32; FP4_KV_BLOCK_SIZE]) -> Result<Self, Fp4KvError> {
         let mut amax = 0.0f32;
-        for &value in &values {
-            if !value.is_finite() {
+        for &value in &values
+        {
+            if !value.is_finite()
+            {
                 return Err(Fp4KvError::NonFinite);
             }
             amax = amax.max(value.abs());
         }
 
-        if amax == 0.0 {
+        if amax == 0.0
+        {
             return Ok(Self {
                 payload: [0; 8],
                 scale_e4m3: 0,
@@ -138,18 +149,23 @@ impl Fp4KvBlock16 {
 
         let raw_scale = amax / E2M1_MAX;
         let mut scale_e4m3 = encode_e4m3_scale_sat(raw_scale)?;
-        if scale_e4m3 == 0 {
+        if scale_e4m3 == 0
+        {
             scale_e4m3 = 1;
         }
         let scale = decode_e4m3_scale(scale_e4m3)?;
 
         let mut payload = [0u8; 8];
-        for (index, &value) in values.iter().enumerate() {
+        for (index, &value) in values.iter().enumerate()
+        {
             let code = encode_e2m1_sat(value / scale)?;
             let byte = index / 2;
-            if index % 2 == 0 {
+            if index % 2 == 0
+            {
                 payload[byte] = code;
-            } else {
+            }
+            else
+            {
                 payload[byte] |= code << 4;
             }
         }
@@ -184,9 +200,11 @@ impl Fp4KvBlock16 {
     pub fn decode(self) -> Result<[f32; FP4_KV_BLOCK_SIZE], Fp4KvError> {
         let scale = decode_e4m3_scale(self.scale_e4m3)?;
         let mut output = [0.0f32; FP4_KV_BLOCK_SIZE];
-        for (index, value) in output.iter_mut().enumerate() {
+        for (index, value) in output.iter_mut().enumerate()
+        {
             let byte = self.payload[index / 2];
-            let code = if index % 2 == 0 {
+            let code = if index % 2 == 0
+            {
                 byte & 0x0f
             } else {
                 byte >> 4
@@ -209,7 +227,8 @@ mod tests {
     #[test]
     fn e2m1_decodes_complete_positive_value_set() {
         let expected = [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0];
-        for (code, &value) in expected.iter().enumerate() {
+        for (code, &value) in expected.iter().enumerate()
+        {
             assert_eq!(decode_e2m1(code as u8), value);
             assert_eq!(decode_e2m1(code as u8 | 0x08), -value);
         }
@@ -248,8 +267,7 @@ mod tests {
     #[test]
     fn block_round_trip_is_exact_for_representable_values_at_unit_scale() {
         let input = [
-            0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0,
-            -6.0, 0.0,
+            0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0, 0.0,
         ];
         let block = Fp4KvBlock16::from_f32(input).unwrap();
         assert_eq!(block.scale_code(), 0x38);
