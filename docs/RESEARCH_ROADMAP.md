@@ -1,6 +1,6 @@
 # SciRust — "Research → Functions" Roadmap
 
-> **Status: 80/80 ✅** — all candidate papers (#1–#80) are delivered (tested,
+> **Status: 80/83 delivered** — the original #1–#80 programme is delivered; #81–#83 are a new planned extension (tested only when promoted to ✅,
 > honest oracle/gradient check, 8 green gates), from certifiable to N-D LLM, from
 > optimizers to quantization, from sequence models to full
 > verification and verifiable inference.
@@ -210,3 +210,15 @@ inference proof (#80). All at the same standard: test/oracle + 8 gates before �
 Each item respects the fundamentals: autograd op ⇒ **gradient check**;
 guarantee (bound, privacy, reproducibility) ⇒ **oracle/soundness test**;
 determinism preserved (seeded PCG, fixed order); 8 green gates.
+
+## Post-80 extension — long-context/KV efficiency research (2026-09-24)
+
+External research input: DeepSeek-AI, *DeepSeek-V4.1-Flash: Pushing the Limits of KV Cache Compression*. These are planned reusable reference primitives, not reproduced DeepSeek results.
+
+| # | Research input | Proposed SciRust function | Module | Status | Effort |
+|---|---|---|---|---|---|
+| 81 | FP4 main-KV storage with grouped scaling | portable E2M1 encode/decode with explicit group-scale format, exact byte accounting, finite/range validation, and f32 reconstruction oracle; keep distinct from INT4 | `nn::kv_fp4` or the lowest fitting quantization module | 📋 | M |
+| 82 | Cross-layer KV/index reuse | versioned `KvReusePlan` reference semantics with source-layer/representation/epoch identity and fail-closed Full/Reindex/Reuse validation; no runtime scheduling | `nn::kv_reuse` | 📋 | M |
+| 83 | Confidence-scheduled speculative verification | extend existing speculative/EAGLE references with an acceptance-confidence interface and a scheduler driven by an explicit measured throughput curve; output correctness remains verified against the target model | `nn::nd_decoder` | 📋 | M |
+
+Downstream ownership remains unchanged: FLAT owns attention/routing execution, SLHAv2 compressed-KV semantics, KVLab comparative experiments, NNIS runtime execution, and ElasticXxx adaptive resource policy. No item becomes ✅ without independent oracle tests and the repository's normal green gates.
