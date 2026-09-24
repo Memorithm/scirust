@@ -573,3 +573,23 @@ vg2_evidence_2026_09_22:
     - recorded_zero_is_not_biological_absence_without_provenance
     - selected_positive_subset_is_not_population_representative
     - adult_association_does_not_establish_metabolic_causality
+deepseek_v41_reusable_primitives_program_2026_09_24:
+  status: planned_reference_primitives
+  source:
+    title: "DeepSeek-V4.1-Flash: Pushing the Limits of KV Cache Compression"
+    organization: DeepSeek-AI
+    reviewed_on: 2026-09-24
+  objective: >-
+    Add only reusable deterministic reference primitives that downstream
+    Memorithm runtimes need for independent qualification; do not absorb
+    FLAT, SLHAv2, NNIS, KVLab, ElasticXxx, or SML product semantics.
+  candidate_primitives:
+    - portable_FP4_E2M1_group_scaled_quantize_dequantize_and_exact_byte_accounting
+    - cross_layer_KV_reuse_reference_plan_and_identity_validation
+    - confidence_scheduled_speculative_verification_reference_over_existing_speculative_and_EAGLE_paths
+  invariants:
+    - reference_implementation_before_optimized_backend
+    - exact_format_and_overhead_accounting
+    - no_external_benchmark_result_as_local_evidence
+    - downstream_runtime_promotion_requires_destination_requalification
+
