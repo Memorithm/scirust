@@ -71,7 +71,7 @@ pub fn encode_e2m1_sat(value: f32) -> Result<u8, Fp4KvError> {
     {
         let distance = (magnitude - E2M1_POSITIVE[code as usize]).abs();
         if distance < best_distance
-            || (distance == best_distance && code % 2 == 0 && best_code % 2 != 0)
+            || (distance == best_distance && code.is_multiple_of(2) && !best_code.is_multiple_of(2))
         {
             best_code = code;
             best_distance = distance;
@@ -121,7 +121,7 @@ pub fn encode_e4m3_scale_sat(value: f32) -> Result<u8, Fp4KvError> {
         let candidate = decode_e4m3_scale(code)?;
         let distance = (target - candidate).abs();
         if distance < best_distance
-            || (distance == best_distance && code % 2 == 0 && best_code % 2 != 0)
+            || (distance == best_distance && code.is_multiple_of(2) && !best_code.is_multiple_of(2))
         {
             best_code = code;
             best_distance = distance;
