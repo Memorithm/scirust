@@ -37,6 +37,7 @@ pub mod init;
 pub mod intervals;
 pub mod kan;
 pub mod kv_backend;
+pub mod kv_fp4;
 pub mod latent_kv_backend;
 pub mod latent_kv_cache;
 pub mod latent_kv_kernels;
