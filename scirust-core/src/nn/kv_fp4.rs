@@ -49,6 +49,7 @@ impl fmt::Display for Fp4KvError {
 
 impl std::error::Error for Fp4KvError {}
 
+/// Decode the low nibble of one E2M1 value; high bits are ignored.
 #[must_use]
 pub fn decode_e2m1(code: u8) -> f32 {
     let nibble = code & 0x0f;
@@ -137,6 +138,7 @@ pub struct Fp4KvBlock16 {
 }
 
 impl Fp4KvBlock16 {
+    /// Encode exactly sixteen finite values into the reference block layout.
     pub fn from_f32(values: [f32; FP4_KV_BLOCK_SIZE]) -> Result<Self, Fp4KvError> {
         let mut amax = 0.0f32;
         for &value in &values
@@ -194,6 +196,7 @@ impl Fp4KvBlock16 {
         })
     }
 
+    /// Return the exact low-nibble-first nine-byte reference layout.
     #[must_use]
     pub fn packed_bytes(self) -> [u8; FP4_KV_BLOCK_PACKED_BYTES] {
         let mut bytes = [0u8; FP4_KV_BLOCK_PACKED_BYTES];
@@ -202,6 +205,7 @@ impl Fp4KvBlock16 {
         bytes
     }
 
+    /// Return the positive-sign E4M3 byte used as this block's scale.
     #[must_use]
     pub const fn scale_code(self) -> u8 {
         self.scale_e4m3
@@ -227,6 +231,7 @@ impl Fp4KvBlock16 {
         Ok(output)
     }
 
+    /// Return the exact serialized byte length of this fixed-size block.
     #[must_use]
     pub const fn packed_len(self) -> usize {
         FP4_KV_BLOCK_PACKED_BYTES
