@@ -623,9 +623,16 @@ sciagent_finance_rust_specialization_2026_09_26:
     - no_claim_that_small_checkpoint_can_replace_Laya_without_specialization
 
 sciagent_corpus_admission_v1_2026_09_26:
-  status: implemented_PR_open_exact_head_CI_pending
+  status: candidate_blocked_exact_head_Thor_GPU_contention
   pull_request: https://github.com/Memorithm/scirust/pull/1517
   candidate_revision: 3260ea29a2cc92dc34945dc549d6a9a0511fa64a
+  exact_head_ci:
+    successful_jobs: 34
+    failed_workflow_run: https://github.com/Memorithm/scirust/actions/runs/36234861255
+    failed_step: Wait_for_CUDA_runtime_availability
+    failure_reason: Thor_GPU_occupied_for_3600_seconds_by_memorithm_viggle_lan_service
+    concurrent_workflow_run: https://github.com/Memorithm/scirust/actions/runs/36234861220
+    merge_authorized: false
   contract: scirust_sciagent_train_corpus_manifest_schema_1
   bootstrap: scirust-sciagent/CORPUS_SPECIALIZATION.md
   local_evidence:
