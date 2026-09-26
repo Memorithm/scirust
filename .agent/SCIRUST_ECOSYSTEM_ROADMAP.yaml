@@ -593,3 +593,31 @@ deepseek_v41_reusable_primitives_program_2026_09_24:
     - no_external_benchmark_result_as_local_evidence
     - downstream_runtime_promotion_requires_destination_requalification
 
+
+sciagent_finance_rust_specialization_2026_09_26:
+  status: downstream_initial_diagnostic_complete_training_pending
+  requested_by_user: true
+  downstream_report: https://github.com/Memorithm/Replikans/blob/main/docs/DECISION_MODEL_SPECIALIZATION.md
+  downstream_pr: https://github.com/Memorithm/Replikans/pull/52
+  downstream_merge: 55933d377c5671430d1bf8043450feb5e9fcc5fe
+  scirust_source_revision: 8479ab7a7ed20db2b8fae8a779a31c4c94f4bb0e
+  measured_scope:
+    - actual_small_20M_final_checkpoint_with_embedded_BPE_and_public_CPU_Generator
+    - twelve_synthetic_routing_cases_repeated_three_times
+    - all_SciAgent_continuations_invalid_for_exact_A_B_C_output_contract
+    - no_general_capability_speed_or_ML_maturity_claim
+  ownership:
+    SciRust: reusable_model_tokenizer_training_and_data_primitives
+    Replikans: financial_task_labels_comparison_and_deterministic_authorization
+    RemoteOps: remote_control_plane
+  training_gates:
+    - reviewed_licenses_revisions_and_source_provenance_before_corpus_ingestion
+    - financial_availability_timestamps_chronological_splits_and_nonoverlapping_label_horizons
+    - Rust_project_origin_and_content_deduplication_before_split
+    - unchanged_finance_only_Rust_only_and_mixed_training_controls
+    - measure_forgetting_semantic_quality_typed_outputs_calibration_and_compile_test_results
+    - downstream_paper_qualification_before_any_financial_backend_promotion
+  current_exclusions:
+    - no_financial_dataset_download_or_training_run_yet
+    - no_new_shared_API_or_model_runtime_change
+    - no_claim_that_small_checkpoint_can_replace_Laya_without_specialization
