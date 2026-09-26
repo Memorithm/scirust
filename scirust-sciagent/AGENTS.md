@@ -205,3 +205,11 @@ this table for comparison.
    `(prompt, seed, flags)`. To get variety, change `--seed`, not the prompt.
 5. **Prefer the presets in §3.** Raw greedy loops; always add a repetition
    penalty.
+
+## Finance/Rust specialization bootstrap
+
+For corpus selection, specialization or training-data integration, first read
+`CORPUS_SPECIALIZATION.md`. Use the pre-tokenization manifest checker, preserve
+canonical project/event groups and temporal splits, and keep raw corpora outside
+the checkout. The checker is not yet wired to shard packing or training; do not
+claim that a successful metadata check authorizes or completes training.
