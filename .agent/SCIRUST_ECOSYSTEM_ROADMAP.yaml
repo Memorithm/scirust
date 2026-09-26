@@ -621,3 +621,25 @@ sciagent_finance_rust_specialization_2026_09_26:
     - no_financial_dataset_download_or_training_run_yet
     - no_new_shared_API_or_model_runtime_change
     - no_claim_that_small_checkpoint_can_replace_Laya_without_specialization
+
+sciagent_corpus_admission_v1_2026_09_26:
+  status: implemented_PR_open_exact_head_CI_pending
+  pull_request: https://github.com/Memorithm/scirust/pull/1517
+  candidate_revision: 3260ea29a2cc92dc34945dc549d6a9a0511fa64a
+  contract: scirust_sciagent_train_corpus_manifest_schema_1
+  bootstrap: scirust-sciagent/CORPUS_SPECIALIZATION.md
+  local_evidence:
+    - seven_regression_tests_including_actual_CLI_acceptance_and_tampered_input_rejection
+    - pinned_nightly_format_targeted_Clippy_and_external_corpus_location_check_passed
+  implemented:
+    - exact_content_SHA256_and_duplicate_ID_content_rejection
+    - explicit_source_revision_license_and_rights_review_references
+    - causal_financial_timestamps_chronological_split_and_embargo_purges
+    - canonical_Rust_origin_and_financial_event_group_isolation_across_retained_splits
+    - bounded_read_only_CLI_with_manifest_digest_and_no_partial_accepted_report
+  exclusions:
+    - rights_and_group_identity_are_caller_declarations_not_independent_verification
+    - no_near_duplicate_detection_or_data_quality_claim
+    - not_yet_connected_to_shard_packing_or_training
+    - no_real_financial_corpus_ingestion_training_or_ML_maturity_promotion
+  next: vetted_source_inventory_then_split_preserving_external_shard_packing
