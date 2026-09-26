@@ -1,4 +1,5 @@
 pub mod checkpoint;
+pub mod corpus_manifest;
 pub mod dataset;
 pub mod optimizer;
 pub mod scheduler;
