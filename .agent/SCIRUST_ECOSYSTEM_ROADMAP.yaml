@@ -650,3 +650,22 @@ sciagent_corpus_admission_v1_2026_09_26:
     - not_yet_connected_to_shard_packing_or_training
     - no_real_financial_corpus_ingestion_training_or_ML_maturity_promotion
   next: vetted_source_inventory_then_split_preserving_external_shard_packing
+
+
+ax_task_execution_interop:
+  source_review_date: "2026-09-27"
+  external_reference: google_ax_architecture_only
+  role: shared_scientific_substrate_consumer
+  objective: >-
+    Make selected deterministic SciRust capabilities easy to invoke inside
+    exact Hub task workspaces while keeping task lifecycle, sandbox policy and
+    host enforcement outside SciRust.
+  phases:
+    - AXS1_inventory_task_suitable_process_and_library_contracts
+    - AXS2_publish_minimal_versioned_deterministic_capabilities
+    - AXS3_bind_toolchain_feature_and_backend_identity_to_execution_evidence
+    - AXS4_validate_accelerated_results_against_independent_reference_paths
+  invariants:
+    - SciRust_does_not_own_ecosystem_task_orchestration
+    - task_completion_never_inflates_scientific_claim_scope
+    - deterministic_claims_remain_exact_environment_scoped
