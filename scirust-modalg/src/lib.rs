@@ -307,7 +307,7 @@ pub mod smith;
 
 pub use bigint::BigInt;
 pub use bigrational::BigRational;
-pub use bitplane::{PackedBitPlane, PackedBitPlaneError, PACKED_BITPLANE_V1};
+pub use bitplane::{PACKED_BITPLANE_V1, PackedBitPlane, PackedBitPlaneError};
 pub use codes::ReedSolomon;
 pub use crc::Crc;
 pub use dlog::{bsgs, discrete_log};
