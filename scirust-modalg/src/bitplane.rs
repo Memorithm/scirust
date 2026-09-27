@@ -31,12 +31,10 @@ impl PackedBitPlane {
     ///
     /// Returns an error when the backing word count is not exact or when unused
     /// bits in the final word are non-zero.
-    pub fn from_words(
-        len_bits: usize,
-        words: Vec<u64>,
-    ) -> Result<Self, PackedBitPlaneError> {
+    pub fn from_words(len_bits: usize, words: Vec<u64>) -> Result<Self, PackedBitPlaneError> {
         let expected = word_count(len_bits);
-        if words.len() != expected {
+        if words.len() != expected
+        {
             return Err(PackedBitPlaneError::WordCountMismatch {
                 expected,
                 actual: words.len(),
@@ -50,8 +48,10 @@ impl PackedBitPlane {
     #[must_use]
     pub fn from_fn(len_bits: usize, mut predicate: impl FnMut(usize) -> bool) -> Self {
         let mut plane = Self::zeroed(len_bits);
-        for index in 0..len_bits {
-            if predicate(index) {
+        for index in 0..len_bits
+        {
+            if predicate(index)
+            {
                 plane.set_unchecked(index, true);
             }
         }
@@ -91,7 +91,8 @@ impl PackedBitPlane {
     /// Read one logical bit or return None outside the logical domain.
     #[must_use]
     pub fn get(&self, index: usize) -> Option<bool> {
-        if index >= self.len_bits {
+        if index >= self.len_bits
+        {
             return None;
         }
         let word = index / 64;
@@ -105,7 +106,8 @@ impl PackedBitPlane {
     ///
     /// Returns an error when the index lies outside the logical domain.
     pub fn set(&mut self, index: usize, value: bool) -> Result<(), PackedBitPlaneError> {
-        if index >= self.len_bits {
+        if index >= self.len_bits
+        {
             return Err(PackedBitPlaneError::IndexOutOfBounds {
                 index,
                 len_bits: self.len_bits,
@@ -167,7 +169,8 @@ impl PackedBitPlane {
         rhs: &Self,
         operation: impl Fn(u64, u64) -> u64,
     ) -> Result<Self, PackedBitPlaneError> {
-        if self.len_bits != rhs.len_bits {
+        if self.len_bits != rhs.len_bits
+        {
             return Err(PackedBitPlaneError::LengthMismatch {
                 left: self.len_bits,
                 right: rhs.len_bits,
@@ -187,9 +190,12 @@ impl PackedBitPlane {
         let word = index / 64;
         let bit = index % 64;
         let mask = 1_u64 << bit;
-        if value {
+        if value
+        {
             self.words[word] |= mask;
-        } else {
+        }
+        else
+        {
             self.words[word] &= !mask;
         }
     }
@@ -206,7 +212,8 @@ pub enum PackedBitPlaneError {
 
 impl fmt::Display for PackedBitPlaneError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
+        match self
+        {
             Self::IndexOutOfBounds { index, len_bits } => write!(
                 formatter,
                 "bit index {index} is outside packed bitplane length {len_bits}"
@@ -235,12 +242,14 @@ const fn word_count(len_bits: usize) -> usize {
 
 fn validate_tail(len_bits: usize, words: &[u64]) -> Result<(), PackedBitPlaneError> {
     let remainder = len_bits % 64;
-    if remainder == 0 || words.is_empty() {
+    if remainder == 0 || words.is_empty()
+    {
         return Ok(());
     }
     let valid_mask = (1_u64 << remainder) - 1;
     let value = words[words.len() - 1];
-    if value & !valid_mask != 0 {
+    if value & !valid_mask != 0
+    {
         return Err(PackedBitPlaneError::NonZeroTailBits { value, valid_mask });
     }
     Ok(())
@@ -252,7 +261,8 @@ mod tests {
 
     #[test]
     fn exact_word_count_and_tail_invariant_cover_boundaries() {
-        for (bits, words) in [(0, 0), (1, 1), (63, 1), (64, 1), (65, 2), (128, 2)] {
+        for (bits, words) in [(0, 0), (1, 1), (63, 1), (64, 1), (65, 2), (128, 2)]
+        {
             let plane = PackedBitPlane::zeroed(bits);
             assert_eq!(plane.word_count(), words);
             assert_eq!(plane.len_bits(), bits);
@@ -270,7 +280,8 @@ mod tests {
     #[test]
     fn set_get_clear_and_count_are_exact_across_word_boundaries() {
         let mut plane = PackedBitPlane::zeroed(130);
-        for index in [0, 1, 63, 64, 65, 127, 128, 129] {
+        for index in [0, 1, 63, 64, 65, 127, 128, 129]
+        {
             plane.set(index, true).unwrap();
             assert_eq!(plane.get(index), Some(true));
         }
@@ -295,7 +306,9 @@ mod tests {
         let or = left.bitor(&right).unwrap();
         let xor = left.bitxor(&right).unwrap();
 
-        for index in 0..137 {
+        for index in 0..137
+
+        {
             let a = index % 2 == 0;
             let b = index % 3 == 0;
             assert_eq!(and.get(index), Some(a & b));
