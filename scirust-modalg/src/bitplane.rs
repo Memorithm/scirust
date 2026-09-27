@@ -307,7 +307,6 @@ mod tests {
         let xor = left.bitxor(&right).unwrap();
 
         for index in 0..137
-
         {
             let a = index % 2 == 0;
             let b = index % 3 == 0;
