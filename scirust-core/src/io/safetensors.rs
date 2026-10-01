@@ -63,6 +63,7 @@ pub struct SafetensorsReadLimits {
 }
 
 impl SafetensorsReadLimits {
+    /// Create explicit header and total-file budgets for one import.
     pub const fn new(max_header_bytes: usize, max_total_bytes: u64) -> Self {
         Self {
             max_header_bytes,
@@ -369,6 +370,8 @@ pub fn load_safetensors<P: AsRef<Path>>(path: P) -> io::Result<HashMap<String, T
     load_safetensors_with_limits(path, SafetensorsReadLimits::default())
 }
 
+/// Load 2-D tensors from a file while enforcing allocation limits before the
+/// payload is read.
 pub fn load_safetensors_with_limits<P: AsRef<Path>>(
     path: P,
     limits: SafetensorsReadLimits,
@@ -888,6 +891,8 @@ pub fn load_state_dict<P: AsRef<Path>>(
     load_state_dict_with_limits(path, SafetensorsReadLimits::default())
 }
 
+/// Load a 2-D state dictionary with caller-selected header and total-byte
+/// budgets.
 pub fn load_state_dict_with_limits<P: AsRef<Path>>(
     path: P,
     limits: SafetensorsReadLimits,
@@ -1177,6 +1182,8 @@ pub fn load_state_dict_nd<P: AsRef<Path>>(
     load_state_dict_nd_with_limits(path, SafetensorsReadLimits::default())
 }
 
+/// Load an N-D state dictionary with caller-selected header and total-byte
+/// budgets.
 pub fn load_state_dict_nd_with_limits<P: AsRef<Path>>(
     path: P,
     limits: SafetensorsReadLimits,
