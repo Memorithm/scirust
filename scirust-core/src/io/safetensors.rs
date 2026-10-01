@@ -63,7 +63,6 @@ pub struct SafetensorsReadLimits {
 }
 
 impl SafetensorsReadLimits {
-    /// Create explicit header and total-file budgets for one import.
     pub const fn new(max_header_bytes: usize, max_total_bytes: u64) -> Self {
         Self {
             max_header_bytes,
@@ -217,9 +216,7 @@ fn declared_data_len(header: &str) -> io::Result<u64> {
             ));
         }
         let object_end = skip_balanced(bytes, i, b'{', b'}');
-        if object_end == 0
-            || object_end > bytes.len()
-            || bytes.get(object_end - 1) != Some(&b'}')
+        if object_end == 0 || object_end > bytes.len() || bytes.get(object_end - 1) != Some(&b'}')
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -235,9 +232,8 @@ fn declared_data_len(header: &str) -> io::Result<u64> {
                 "data_offsets invalide",
             ));
         }
-        let end = u64::try_from(offsets[1]).map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidData, "data_offsets overflow")
-        })?;
+        let end = u64::try_from(offsets[1])
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "data_offsets overflow"))?;
         max_end = max_end.max(end);
         i = object_end;
     }
@@ -245,10 +241,7 @@ fn declared_data_len(header: &str) -> io::Result<u64> {
     Ok(max_end)
 }
 
-fn read_safetensors_file(
-    path: &Path,
-    limits: SafetensorsReadLimits,
-) -> io::Result<Vec<u8>> {
+fn read_safetensors_file(path: &Path, limits: SafetensorsReadLimits) -> io::Result<Vec<u8>> {
     if limits.max_total_bytes < 8
     {
         return Err(io::Error::new(
@@ -288,9 +281,9 @@ fn read_safetensors_file(
         ));
     }
 
-    let data_start_u64 = 8u64.checked_add(header_len_u64).ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidData, "taille de header overflow")
-    })?;
+    let data_start_u64 = 8u64
+        .checked_add(header_len_u64)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "taille de header overflow"))?;
     if data_start_u64 > observed_len
     {
         return Err(io::Error::new(
@@ -370,8 +363,6 @@ pub fn load_safetensors<P: AsRef<Path>>(path: P) -> io::Result<HashMap<String, T
     load_safetensors_with_limits(path, SafetensorsReadLimits::default())
 }
 
-/// Load 2-D tensors from a file while enforcing allocation limits before the
-/// payload is read.
 pub fn load_safetensors_with_limits<P: AsRef<Path>>(
     path: P,
     limits: SafetensorsReadLimits,
@@ -891,8 +882,6 @@ pub fn load_state_dict<P: AsRef<Path>>(
     load_state_dict_with_limits(path, SafetensorsReadLimits::default())
 }
 
-/// Load a 2-D state dictionary with caller-selected header and total-byte
-/// budgets.
 pub fn load_state_dict_with_limits<P: AsRef<Path>>(
     path: P,
     limits: SafetensorsReadLimits,
@@ -1182,8 +1171,6 @@ pub fn load_state_dict_nd<P: AsRef<Path>>(
     load_state_dict_nd_with_limits(path, SafetensorsReadLimits::default())
 }
 
-/// Load an N-D state dictionary with caller-selected header and total-byte
-/// budgets.
 pub fn load_state_dict_nd_with_limits<P: AsRef<Path>>(
     path: P,
     limits: SafetensorsReadLimits,
@@ -1219,11 +1206,9 @@ mod tests {
         let file = File::create(&path).unwrap();
         file.set_len(1025).unwrap();
 
-        let error = load_safetensors_with_limits(
-            &path,
-            SafetensorsReadLimits::new(MAX_HEADER_SIZE, 1024),
-        )
-        .unwrap_err();
+        let error =
+            load_safetensors_with_limits(&path, SafetensorsReadLimits::new(MAX_HEADER_SIZE, 1024))
+                .unwrap_err();
         assert!(
             error.to_string().contains("trop grand"),
             "unexpected error: {error}"
@@ -1234,19 +1219,16 @@ mod tests {
     #[test]
     fn file_loader_rejects_declared_payload_size_before_total_allocation() {
         let path = unique_test_path("declared-size");
-        let header =
-            br#"{"w":{"dtype":"F32","shape":[1,1],"data_offsets":[0,1024]}}"#;
+        let header = br#"{"w":{"dtype":"F32","shape":[1,1],"data_offsets":[0,1024]}}"#;
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
         bytes.extend_from_slice(header);
         bytes.extend_from_slice(&[0u8; 4]);
         std::fs::write(&path, bytes).unwrap();
 
-        let error = load_safetensors_with_limits(
-            &path,
-            SafetensorsReadLimits::new(MAX_HEADER_SIZE, 2048),
-        )
-        .unwrap_err();
+        let error =
+            load_safetensors_with_limits(&path, SafetensorsReadLimits::new(MAX_HEADER_SIZE, 2048))
+                .unwrap_err();
         assert!(
             error.to_string().contains("taille safetensors incohérente"),
             "unexpected error: {error}"
@@ -1261,11 +1243,9 @@ mod tests {
         let bytes = serialize(&[("weight".into(), tensor)]);
         std::fs::write(&path, &bytes).unwrap();
 
-        let error = load_safetensors_with_limits(
-            &path,
-            SafetensorsReadLimits::new(8, bytes.len() as u64),
-        )
-        .unwrap_err();
+        let error =
+            load_safetensors_with_limits(&path, SafetensorsReadLimits::new(8, bytes.len() as u64))
+                .unwrap_err();
         assert!(
             error.to_string().contains("header trop grand"),
             "unexpected error: {error}"
