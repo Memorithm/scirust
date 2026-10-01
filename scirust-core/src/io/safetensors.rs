@@ -47,6 +47,36 @@
 
 const MAX_HEADER_SIZE: usize = 16 * 1024 * 1024;
 
+/// Default total-byte budget for file-backed safetensors imports (8 GiB).
+///
+/// Callers handling a deliberately larger artifact must opt in with
+/// [`SafetensorsReadLimits`] instead of inheriting an unbounded read.
+pub const DEFAULT_MAX_SAFETENSORS_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+
+/// Allocation limits applied before a file-backed safetensors import reads its
+/// payload. In-memory deserializers remain bounded by the slice supplied by the
+/// caller.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SafetensorsReadLimits {
+    pub max_header_bytes: usize,
+    pub max_total_bytes: u64,
+}
+
+impl SafetensorsReadLimits {
+    pub const fn new(max_header_bytes: usize, max_total_bytes: u64) -> Self {
+        Self {
+            max_header_bytes,
+            max_total_bytes,
+        }
+    }
+}
+
+impl Default for SafetensorsReadLimits {
+    fn default() -> Self {
+        Self::new(MAX_HEADER_SIZE, DEFAULT_MAX_SAFETENSORS_BYTES)
+    }
+}
+
 use crate::autodiff::reverse::Tensor;
 use crate::tensor::tensor_nd::TensorND;
 use std::collections::HashMap;
@@ -139,11 +169,212 @@ fn unescape_json(s: &str) -> String {
 //  Chargement                                                         //
 // ================================================================== //
 
+fn declared_data_len(header: &str) -> io::Result<u64> {
+    let bytes = header.as_bytes();
+    let mut i = 0;
+    let mut max_end = 0u64;
+
+    while i < bytes.len()
+    {
+        if bytes[i] != b'"'
+        {
+            i += 1;
+            continue;
+        }
+
+        let key_start = i + 1;
+        let key_end = find_unescaped_quote(&bytes[key_start..])
+            .map(|position| key_start + position)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "string non terminée"))?;
+        let key = &header[key_start..key_end];
+        i = key_end + 1;
+
+        while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b':')
+        {
+            i += 1;
+        }
+
+        if key == "__metadata__"
+        {
+            let end = skip_balanced(bytes, i, b'{', b'}');
+            if end == 0 || end > bytes.len() || bytes.get(end - 1) != Some(&b'}')
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "metadata non terminée",
+                ));
+            }
+            i = end;
+            continue;
+        }
+
+        if i >= bytes.len() || bytes[i] != b'{'
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("attendu '{{' après {key}"),
+            ));
+        }
+        let object_end = skip_balanced(bytes, i, b'{', b'}');
+        if object_end == 0
+            || object_end > bytes.len()
+            || bytes.get(object_end - 1) != Some(&b'}')
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "objet tenseur non terminé",
+            ));
+        }
+
+        let offsets = extract_array_field(&header[i..object_end], "data_offsets")?;
+        if offsets.len() != 2 || offsets[0] < 0 || offsets[1] < offsets[0]
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "data_offsets invalide",
+            ));
+        }
+        let end = u64::try_from(offsets[1]).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidData, "data_offsets overflow")
+        })?;
+        max_end = max_end.max(end);
+        i = object_end;
+    }
+
+    Ok(max_end)
+}
+
+fn read_safetensors_file(
+    path: &Path,
+    limits: SafetensorsReadLimits,
+) -> io::Result<Vec<u8>> {
+    if limits.max_total_bytes < 8
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "le budget total safetensors doit autoriser le préfixe de 8 octets",
+        ));
+    }
+
+    let mut file = File::open(path)?;
+    let observed_len = file.metadata()?.len();
+    if observed_len > limits.max_total_bytes
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "fichier safetensors trop grand : {observed_len} bytes (max {})",
+                limits.max_total_bytes
+            ),
+        ));
+    }
+
+    let mut prefix = [0u8; 8];
+    file.read_exact(&mut prefix)?;
+    let header_len_u64 = u64::from_le_bytes(prefix);
+    let header_len = usize::try_from(header_len_u64).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "header_size overflow sur cette plateforme",
+        )
+    })?;
+    let header_limit = limits.max_header_bytes.min(MAX_HEADER_SIZE);
+    if header_len > header_limit
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("header trop grand : {header_len} bytes (max {header_limit})"),
+        ));
+    }
+
+    let data_start_u64 = 8u64.checked_add(header_len_u64).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidData, "taille de header overflow")
+    })?;
+    if data_start_u64 > observed_len
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "header_size invalide",
+        ));
+    }
+
+    let mut header_bytes = Vec::new();
+    header_bytes.try_reserve_exact(header_len).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::OutOfMemory,
+            "allocation du header safetensors refusée",
+        )
+    })?;
+    header_bytes.resize(header_len, 0);
+    file.read_exact(&mut header_bytes)?;
+    let header = std::str::from_utf8(&header_bytes)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+
+    let declared_data_len = declared_data_len(header)?;
+    let expected_len = data_start_u64
+        .checked_add(declared_data_len)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "taille totale overflow"))?;
+    if expected_len > limits.max_total_bytes
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "contenu safetensors déclaré trop grand : {expected_len} bytes (max {})",
+                limits.max_total_bytes
+            ),
+        ));
+    }
+    if expected_len != observed_len
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "taille safetensors incohérente : fichier {observed_len} bytes, contenu déclaré {expected_len} bytes"
+            ),
+        ));
+    }
+
+    let total_len = usize::try_from(expected_len).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "taille safetensors non représentable sur cette plateforme",
+        )
+    })?;
+    let data_start = usize::try_from(data_start_u64).expect("header déjà borné");
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(total_len).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::OutOfMemory,
+            "allocation du fichier safetensors refusée",
+        )
+    })?;
+    bytes.extend_from_slice(&prefix);
+    bytes.extend_from_slice(&header_bytes);
+    bytes.resize(total_len, 0);
+    file.read_exact(&mut bytes[data_start..])?;
+
+    let mut extra = [0u8; 1];
+    if file.read(&mut extra)? != 0
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "le fichier safetensors a grandi pendant la lecture",
+        ));
+    }
+
+    Ok(bytes)
+}
+
 pub fn load_safetensors<P: AsRef<Path>>(path: P) -> io::Result<HashMap<String, Tensor>> {
-    let mut f = File::open(path)?;
-    let mut buf = Vec::new();
-    f.read_to_end(&mut buf)?;
-    deserialize(&buf)
+    load_safetensors_with_limits(path, SafetensorsReadLimits::default())
+}
+
+pub fn load_safetensors_with_limits<P: AsRef<Path>>(
+    path: P,
+    limits: SafetensorsReadLimits,
+) -> io::Result<HashMap<String, Tensor>> {
+    let bytes = read_safetensors_file(path.as_ref(), limits)?;
+    deserialize(&bytes)
 }
 
 pub fn deserialize(bytes: &[u8]) -> io::Result<HashMap<String, Tensor>> {
@@ -654,10 +885,18 @@ pub fn load_state_dict<P: AsRef<Path>>(
     std::collections::HashMap<String, Tensor>,
     std::collections::HashMap<String, String>,
 )> {
-    let mut f = File::open(path.as_ref())?;
-    let mut buf = Vec::new();
-    f.read_to_end(&mut buf)?;
-    deserialize_state_dict(&buf)
+    load_state_dict_with_limits(path, SafetensorsReadLimits::default())
+}
+
+pub fn load_state_dict_with_limits<P: AsRef<Path>>(
+    path: P,
+    limits: SafetensorsReadLimits,
+) -> io::Result<(
+    std::collections::HashMap<String, Tensor>,
+    std::collections::HashMap<String, String>,
+)> {
+    let bytes = read_safetensors_file(path.as_ref(), limits)?;
+    deserialize_state_dict(&bytes)
 }
 
 /// Extract the `__metadata__` section from a safetensors JSON header.
@@ -935,10 +1174,15 @@ pub fn save_state_dict_nd<P: AsRef<Path>>(
 pub fn load_state_dict_nd<P: AsRef<Path>>(
     path: P,
 ) -> io::Result<(HashMap<String, TensorND>, HashMap<String, String>)> {
-    let mut f = File::open(path.as_ref())?;
-    let mut buf = Vec::new();
-    f.read_to_end(&mut buf)?;
-    deserialize_state_dict_nd(&buf)
+    load_state_dict_nd_with_limits(path, SafetensorsReadLimits::default())
+}
+
+pub fn load_state_dict_nd_with_limits<P: AsRef<Path>>(
+    path: P,
+    limits: SafetensorsReadLimits,
+) -> io::Result<(HashMap<String, TensorND>, HashMap<String, String>)> {
+    let bytes = read_safetensors_file(path.as_ref(), limits)?;
+    deserialize_state_dict_nd(&bytes)
 }
 
 // ================================================================== //
@@ -951,6 +1195,76 @@ mod tests {
     use crate::nn::init::{KaimingNormal, Zeros};
     use crate::nn::rng::PcgEngine;
     use crate::nn::{Linear, Module, ReLU, Sequential};
+
+    fn unique_test_path(name: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        std::env::temp_dir().join(format!(
+            "scirust-{name}-{}-{}.safetensors",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
+
+    #[test]
+    fn file_loader_rejects_total_budget_before_payload_read() {
+        let path = unique_test_path("total-budget");
+        let file = File::create(&path).unwrap();
+        file.set_len(1025).unwrap();
+
+        let error = load_safetensors_with_limits(
+            &path,
+            SafetensorsReadLimits::new(MAX_HEADER_SIZE, 1024),
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("trop grand"),
+            "unexpected error: {error}"
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn file_loader_rejects_declared_payload_size_before_total_allocation() {
+        let path = unique_test_path("declared-size");
+        let header =
+            br#"{"w":{"dtype":"F32","shape":[1,1],"data_offsets":[0,1024]}}"#;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(header);
+        bytes.extend_from_slice(&[0u8; 4]);
+        std::fs::write(&path, bytes).unwrap();
+
+        let error = load_safetensors_with_limits(
+            &path,
+            SafetensorsReadLimits::new(MAX_HEADER_SIZE, 2048),
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("taille safetensors incohérente"),
+            "unexpected error: {error}"
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn file_loader_honours_custom_header_budget() {
+        let path = unique_test_path("header-budget");
+        let tensor = Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0], 2, 2);
+        let bytes = serialize(&[("weight".into(), tensor)]);
+        std::fs::write(&path, &bytes).unwrap();
+
+        let error = load_safetensors_with_limits(
+            &path,
+            SafetensorsReadLimits::new(8, bytes.len() as u64),
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("header trop grand"),
+            "unexpected error: {error}"
+        );
+        let _ = std::fs::remove_file(path);
+    }
 
     #[test]
     fn test_safetensors_header_roundtrip() {
