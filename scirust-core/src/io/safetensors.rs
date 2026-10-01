@@ -1266,11 +1266,9 @@ mod tests {
         bytes.extend_from_slice(&[0u8; 4]);
         std::fs::write(&path, bytes).unwrap();
 
-        let error = load_safetensors_with_limits(
-            &path,
-            SafetensorsReadLimits::new(MAX_HEADER_SIZE, 2048),
-        )
-        .unwrap_err();
+        let error =
+            load_safetensors_with_limits(&path, SafetensorsReadLimits::new(MAX_HEADER_SIZE, 2048))
+                .unwrap_err();
         assert!(
             error.to_string().contains("non contigus ou chevauchants"),
             "unexpected error: {error}"
