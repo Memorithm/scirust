@@ -173,7 +173,7 @@ fn unescape_json(s: &str) -> String {
 fn declared_data_len(header: &str) -> io::Result<u64> {
     let bytes = header.as_bytes();
     let mut i = 0;
-    let mut max_end = 0u64;
+    let mut spans = Vec::new();
 
     while i < bytes.len()
     {
@@ -233,13 +233,29 @@ fn declared_data_len(header: &str) -> io::Result<u64> {
                 "data_offsets invalide",
             ));
         }
+        let start = u64::try_from(offsets[0])
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "data_offsets overflow"))?;
         let end = u64::try_from(offsets[1])
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "data_offsets overflow"))?;
-        max_end = max_end.max(end);
+        spans.push((start, end));
         i = object_end;
     }
 
-    Ok(max_end)
+    spans.sort_unstable_by_key(|&(start, end)| (start, end));
+    let mut data_len = 0u64;
+    for (start, end) in spans
+    {
+        if start != data_len
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "data_offsets non contigus ou chevauchants",
+            ));
+        }
+        data_len = end;
+    }
+
+    Ok(data_len)
 }
 
 fn read_safetensors_file(path: &Path, limits: SafetensorsReadLimits) -> io::Result<Vec<u8>> {
@@ -1235,6 +1251,28 @@ mod tests {
                 .unwrap_err();
         assert!(
             error.to_string().contains("taille safetensors incohérente"),
+            "unexpected error: {error}"
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn file_loader_rejects_overlapping_tensor_spans_before_total_allocation() {
+        let path = unique_test_path("overlapping-spans");
+        let header = br#"{"a":{"dtype":"F32","shape":[1,1],"data_offsets":[0,4]},"b":{"dtype":"F32","shape":[1,1],"data_offsets":[0,4]}}"#;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(header);
+        bytes.extend_from_slice(&[0u8; 4]);
+        std::fs::write(&path, bytes).unwrap();
+
+        let error = load_safetensors_with_limits(
+            &path,
+            SafetensorsReadLimits::new(MAX_HEADER_SIZE, 2048),
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("non contigus ou chevauchants"),
             "unexpected error: {error}"
         );
         let _ = std::fs::remove_file(path);
