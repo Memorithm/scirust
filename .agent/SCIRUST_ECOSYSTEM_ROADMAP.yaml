@@ -669,3 +669,30 @@ ax_task_execution_interop:
     - SciRust_does_not_own_ecosystem_task_orchestration
     - task_completion_never_inflates_scientific_claim_scope
     - deterministic_claims_remain_exact_environment_scoped
+
+v888_executable_graph_handoff_2026_10_04:
+  status: candidate_pending_exact_head_ci_and_thor_reproduction
+  tracking_issue: https://github.com/Memorithm/scirust/issues/1520
+  pull_request: https://github.com/Memorithm/scirust/pull/1521
+  candidate_revision: 1d9d63a6cfe28ebe08848a3b59ed1fd6a5449001
+  source_scope:
+    dataset: BANC_v888
+    programme_revision: "2026-09-22.1"
+    metadata_nodes: 188508
+    directed_pairs: 13620865
+    induced_contacts: 42309621
+    raw_records: 198816365
+    graph_sha256: 385111a69cc8a1d748c0bdfd9b0b738c51fe83cde98f45762553435a2d15a2a4
+  contract:
+    public_module: scirust_graph::v888_executable
+    format: V8CSR001
+    graph_binary_committed: false
+    raw_dataset_committed: false
+  boundaries:
+    - contact_multiplicity_is_not_conductance_sign_delay_or_event_rate
+    - SciRust_owns_reusable_graph_and_accounting_contract_not_SML_model_promotion
+    - downstream_SML_quality_resource_and_CSP_0_11_gates_remain_independent
+  merge_gate:
+    - exact_head_required_CI_green
+    - dedicated_Thor_source_reproduction_green
+    - public_validator_matches_frozen_graph_size_hash_and_counts
