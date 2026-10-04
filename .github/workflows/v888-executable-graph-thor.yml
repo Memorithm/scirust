@@ -89,7 +89,8 @@ jobs:
           echo "Using qualified dataset root: $ROOT"
           TESTS="$RUNNER_TEMP/v888-executable-1520-${{ github.run_id }}-${{ github.run_attempt }}"
           OUT="$RUNNER_TEMP/v888-output-1520-${{ github.run_id }}-${{ github.run_attempt }}"
-          mkdir -p "$TESTS" "$OUT"
+          mkdir -p "$TESTS"
+          rm -rf "$OUT"
           test "$(uname -m)" = aarch64
           "$ROOT/.analysis-venv/bin/python" -c 'import shutil,sys; assert shutil.disk_usage(sys.argv[1]).free >= 2*1024**3, "insufficient scratch space"' "$RUNNER_TEMP"
 
