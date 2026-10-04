@@ -112,6 +112,13 @@
         "new": 1,
         "report": 1
       }
+    },
+    {
+      "source": "scirust-tensor-ir/src/algebra_graduation.rs",
+      "min_runnable_examples": 1,
+      "required_symbols": [
+        "evaluate"
+      ]
     }
   ]
 }
