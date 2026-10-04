@@ -5,6 +5,7 @@ on:
     branches: [research/v888-executable-graph-1520]
     paths:
       - 'scirust-graph/**'
+      - 'Cargo.lock'
       - 'scripts/v888_bool01/**'
       - 'docs/V888_EXECUTABLE_GRAPH_QUALIFICATION.md'
       - 'docs/V888_CONNECTOME_BOOTSTRAP.md'
