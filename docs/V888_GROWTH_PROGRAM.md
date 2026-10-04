@@ -115,9 +115,23 @@ protocol is frozen.
 
 ## Current execution
 
-The Thor workflow `V888 Thor dataset and growth phase 0` downloads the external
-adult dataset into persistent host storage and emits only compact manifests and
-analysis outputs as GitHub evidence. Raw BANC files are never uploaded as
-repository or workflow artefacts.
+VG-0, VG-1 and VG-2 have retained Thor evidence. The executable V888 pair graph
+is separately qualified by the SciRust V8CSR001 contract.
+
+VG-3A now establishes the first Rust-owned topology-to-growth input surface:
+exact per-neuron in/out degree, incoming/outgoing contact multiplicity,
+reciprocal-neighbour count and canonical SCC membership/size. The dedicated
+Thor workflow consumes the frozen qualified graph, verifies its byte size and
+SHA-256, and emits a deterministic root-ID ordered CSV with its own SHA-256.
+
+VG-3A deliberately stops before all-pairs reachability, centrality/rich-club
+metrics, modularity, morphology/annotation joins and matched-control inference.
+Those remain VG-3B/VG-3C work and no topology-advantage or developmental-causality
+claim follows from this slice.
+
+The earlier Thor workflow `V888 Thor dataset and growth phase 0` downloads the
+external adult dataset into persistent host storage and emits only compact
+manifests and analysis outputs as GitHub evidence. Raw BANC files and the
+qualified graph binary are never uploaded as repository artefacts.
 
 Tracking: SciRust issue #1500.
