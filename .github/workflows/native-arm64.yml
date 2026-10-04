@@ -91,6 +91,15 @@ jobs:
           tmpdir="$(mktemp -d "$GITHUB_WORKSPACE/.ci-tmp.XXXXXX")"
           chmod 700 "$tmpdir"
           echo "TMPDIR=$tmpdir" >> "$GITHUB_ENV"
+      - name: Isolate Rust toolchain homes
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup_home="$RUNNER_TEMP/rustup-native-arm64-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cargo_home="$RUNNER_TEMP/cargo-native-arm64-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -p "$rustup_home" "$cargo_home"
+          echo "RUSTUP_HOME=$rustup_home" >> "$GITHUB_ENV"
+          echo "CARGO_HOME=$cargo_home" >> "$GITHUB_ENV"
       - name: Install pinned nightly toolchain
         uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
         with:
