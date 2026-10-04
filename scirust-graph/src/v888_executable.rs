@@ -600,7 +600,7 @@ fn read_u64(
     Ok(u64::from_le_bytes(take(bytes, cursor)?))
 }
 
-fn hex_digest(bytes: &[u8; 32]) -> String {
+fn hex_digest(bytes: &[u8]) -> String {
     let mut output = String::with_capacity(64);
     const HEX: &[u8; 16] = b"0123456789abcdef";
     for &byte in bytes {
