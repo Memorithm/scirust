@@ -40,11 +40,16 @@ jobs:
           path: v888-1520-${{ github.run_id }}-${{ github.run_attempt }}
           persist-credentials: false
 
-      - name: Isolate Cargo registry
+      - name: Isolate Rust toolchain homes
         run: |
           set -euo pipefail
           echo "CARGO_HOME=$RUNNER_TEMP/cargo-v888-1520" >> "$GITHUB_ENV"
-          mkdir -p "$RUNNER_TEMP/cargo-v888-1520"
+          echo "RUSTUP_HOME=$RUNNER_TEMP/rustup-v888-1520" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/cargo-v888-1520" "$RUNNER_TEMP/rustup-v888-1520"
+
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: 1.89.0
 
       - name: Qualify public Rust graph contract
         run: |
