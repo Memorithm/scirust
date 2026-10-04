@@ -25,6 +25,7 @@ jobs:
     timeout-minutes: 45
     env:
       CARGO_INCREMENTAL: '0'
+      CARGO_HOME: ${{ runner.temp }}/cargo-v888-1520
       RUSTFLAGS: '-D warnings'
       PYTHONDONTWRITEBYTECODE: '1'
       OMP_NUM_THREADS: '1'
@@ -75,13 +76,13 @@ jobs:
           echo '385111a69cc8a1d748c0bdfd9b0b738c51fe83cde98f45762553435a2d15a2a4  '"$OUT/graph.csr" | sha256sum --check
           cargo +1.89.0 run --quiet -p scirust-graph --example v888_validate --locked -- "$OUT/graph.csr" | tee "$TESTS/public-validator.log"
 
+          mkdir -p "$TESTS/evidence"
           cp "$TESTS/runtime.txt" "$OUT/evidence/"
           cp "$TESTS/rust-tests.log" "$OUT/evidence/"
           cp "$TESTS/process-tests.log" "$OUT/evidence/"
           cp "$TESTS/public-validator.log" "$OUT/evidence/"
+          cp -a "$OUT/evidence/." "$TESTS/evidence/"
           printf '%s\n' "$OUT" > "$TESTS/output-path.txt"
-          echo "V888_1520_EVIDENCE=$OUT/evidence" >> "$GITHUB_ENV"
-          echo "V888_1520_TESTS=$TESTS" >> "$GITHUB_ENV"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
