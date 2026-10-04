@@ -752,6 +752,10 @@ jobs:
           tool: cargo-llvm-cov
       - name: Cache cargo
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          cache-targets: false
+      - name: Reset coverage instrumentation state
+        run: rm -rf target/llvm-cov-target
       - name: Generate coverage
         run: cargo +nightly-2026-07-02 llvm-cov --workspace --locked --lcov --output-path lcov.info
       - name: Upload coverage
