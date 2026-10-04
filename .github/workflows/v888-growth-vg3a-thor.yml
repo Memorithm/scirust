@@ -6,6 +6,7 @@ on:
     paths:
       - "scirust-graph/**"
       - "docs/research/V888_GROWTH_VG3A.md"
+      - "docs/V888_GROWTH_PROGRAM.md"
       - ".github/workflows/v888-growth-vg3a-thor.yml"
   workflow_dispatch:
 
