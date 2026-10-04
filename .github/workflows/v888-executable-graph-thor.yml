@@ -88,10 +88,10 @@ jobs:
           fi
           echo "Using qualified dataset root: $ROOT"
           TESTS="$RUNNER_TEMP/v888-executable-1520-${{ github.run_id }}-${{ github.run_attempt }}"
-          OUT="$ROOT/analysis/executable-1520-${{ github.run_id }}-${{ github.run_attempt }}"
-          mkdir -p "$TESTS"
+          OUT="$RUNNER_TEMP/v888-output-1520-${{ github.run_id }}-${{ github.run_attempt }}"
+          mkdir -p "$TESTS" "$OUT"
           test "$(uname -m)" = aarch64
-          "$ROOT/.analysis-venv/bin/python" -c 'import shutil,sys; assert shutil.disk_usage(sys.argv[1]).free >= 2*1024**3, "insufficient scratch space"' "$ROOT"
+          "$ROOT/.analysis-venv/bin/python" -c 'import shutil,sys; assert shutil.disk_usage(sys.argv[1]).free >= 2*1024**3, "insufficient scratch space"' "$RUNNER_TEMP"
 
           {
             hostname
@@ -105,8 +105,11 @@ jobs:
           rustc +1.89.0 --edition=2021 -O scripts/v888_bool01/pair_graph.rs -o "$TESTS/pair-graph"
           "$ROOT/.analysis-venv/bin/python" scripts/v888_bool01/test_qualification.py "$TESTS/pair-graph" -v 2>&1 | tee "$TESTS/process-tests.log"
 
-          exec 9>"$ROOT/.full-synapse-audit.lock"
-          flock -n 9
+          exec 9>"/tmp/scirust-v888-full-synapse-audit.lock"
+          flock -w 1800 9 || {
+            echo "::error::timed out waiting for the shared V888 source-audit lock"
+            exit 1
+          }
           ulimit -v 8388608
           "$ROOT/.analysis-venv/bin/python" scripts/v888_bool01/qualify.py             --data-root "$ROOT"             --output "$OUT"             --worker "$TESTS/pair-graph"
 
