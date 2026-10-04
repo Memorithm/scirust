@@ -1,6 +1,4 @@
-use scirust_graph::v888_executable::{
-    BancV888ExecutableGraph, BANC_V888_BOOL01_QUALIFICATION,
-};
+use scirust_graph::v888_executable::{BANC_V888_BOOL01_QUALIFICATION, BancV888ExecutableGraph};
 use scirust_graph::v888_growth::v888_growth_topology_profile;
 use std::env;
 use std::fs;
@@ -9,20 +7,24 @@ use std::path::PathBuf;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = env::args_os().skip(1);
-    let graph_path = PathBuf::from(args.next().ok_or(
-        "usage: v888_growth_vg3a <qualified-graph.csr> <output.csv>",
-    )?);
-    let output_path = PathBuf::from(args.next().ok_or(
-        "usage: v888_growth_vg3a <qualified-graph.csr> <output.csv>",
-    )?);
-    if args.next().is_some() {
+    let graph_path = PathBuf::from(
+        args.next()
+            .ok_or("usage: v888_growth_vg3a <qualified-graph.csr> <output.csv>")?,
+    );
+    let output_path = PathBuf::from(
+        args.next()
+            .ok_or("usage: v888_growth_vg3a <qualified-graph.csr> <output.csv>")?,
+    );
+    if args.next().is_some()
+    {
         return Err("unexpected extra argument".into());
     }
 
     let bytes = fs::read(&graph_path)?;
     let graph = BancV888ExecutableGraph::from_v8csr001(&bytes)?;
     let observed_sha = graph.sha256_hex();
-    if observed_sha != BANC_V888_BOOL01_QUALIFICATION.graph_sha256 {
+    if observed_sha != BANC_V888_BOOL01_QUALIFICATION.graph_sha256
+    {
         return Err(format!(
             "qualified graph SHA-256 mismatch: expected {}, got {}",
             BANC_V888_BOOL01_QUALIFICATION.graph_sha256, observed_sha
@@ -37,7 +39,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         writer,
         "node_id,in_degree,out_degree,incoming_contacts,outgoing_contacts,reciprocal_neighbors,scc_label,scc_size"
     )?;
-    for row in &profile.rows {
+    for row in &profile.rows
+    {
         writeln!(
             writer,
             "{},{},{},{},{},{},{},{}",
