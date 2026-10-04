@@ -158,6 +158,37 @@ Priority order after this slice:
    through a bridge crate; keep candidate mutation, Pareto objectives and
    experiment state outside canonical IR.
 
+
+## IR-E5 implementation follow-up
+
+The algebra graduation gate is now machine-enforced by
+`scirust_tensor_ir::AlgebraGraduationEvidence`. It does **not** add Boolean,
+F2, tropical or Zhegalkin operations to canonical `Operation`. Instead it
+requires a versioned evidence envelope before a candidate can become eligible
+for a separate canonical-operation review.
+
+The fail-closed envelope binds the exact candidate source revision and requires:
+
+- frozen operator-semantics identity;
+- explicit shape/type-rule identity;
+- deterministic reference-interpreter identity;
+- negative/control evidence identity;
+- verified differential/oracle evidence, or a non-empty reviewed
+  non-applicability rationale;
+- explicit evidence that the proposal remains separate from FLAT's stable
+  softmax path.
+
+Passing the gate yields only
+`EligibleForCanonicalOperationReview`; it is not an operation admission,
+performance claim, FLAT promotion, or scientific verdict. The API is covered by
+unit tests and an executable Rustdoc example, and its example coverage is
+pinned in the repository API-example policy.
+
+The previously planned IR-E6 separation is already implemented on current
+`master` by `scirust-tensor-search-bridge`: canonical representation-plan
+bytes remain the candidate semantic payload, verification precedes measurement,
+and search/environment/Pareto state stays outside canonical Tensor IR.
+
 ## Rejected directions
 
 - embedding ElasticXxx's runtime loop directly in Tensor IR;
