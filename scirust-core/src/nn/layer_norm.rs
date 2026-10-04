@@ -1,9 +1,9 @@
-// scirust-core/src/nn/layer_norm.rs
-//
-// LayerNorm — normalisation par ligne/token (Pre-LN convention).
-//
-// Calcule mean et variance par ligne, puis normalise : (x - mean) / sqrt(var + eps)
-// puis scale par gamma et shift par beta.
+//! Row-wise/token-wise layer normalization for pre-LN model blocks.
+//!
+//! Each row is normalized as `(x - mean) / sqrt(var + eps)`, then scaled by
+//! the learnable `gamma` tensor and shifted by `beta`. The module owns
+//! `gamma` and `beta` as shape `[1, d_model]` tensors and registers fresh
+//! tape inputs for them on each forward pass.
 
 use crate::autodiff::reverse::{Tape, Tensor, Var};
 use crate::nn::init::Initializer;
@@ -11,16 +11,48 @@ use crate::nn::module::Module;
 use crate::nn::rng::PcgEngine;
 use std::collections::HashMap;
 
+/// Learnable row-wise layer normalization module.
+///
+/// `gamma` and `beta` are stored as one-row tensors whose column count is the
+/// model width. A cloned module copies parameter values but deliberately clears
+/// tape-index bookkeeping, so the clone must execute its own forward pass before
+/// parameter indices are available.
 pub struct LayerNorm {
+    /// State-dictionary prefix used for `gamma` and `beta`.
     pub name: String,
+    /// Learnable multiplicative scale with shape `[1, d_model]`.
     pub gamma: Tensor,
+    /// Learnable additive shift with shape `[1, d_model]`.
     pub beta: Tensor,
+    /// Positive stabilizer added to the per-row variance before the square root.
     pub eps: f32,
     last_g_idx: Option<usize>,
     last_b_idx: Option<usize>,
 }
 
 impl LayerNorm {
+    /// Create a layer-normalization module for rows of width `d_model`.
+    ///
+    /// The provided initializer is applied independently to both `gamma` and
+    /// `beta`; callers that require the conventional `gamma = 1, beta = 0`
+    /// initialization should set those tensors explicitly or use an initializer
+    /// strategy that provides the intended values. This constructor does not
+    /// validate `eps` beyond storing it for the underlying tape operation.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use scirust_core::nn::init::Zeros;
+    /// use scirust_core::nn::layer_norm::LayerNorm;
+    /// use scirust_core::nn::rng::PcgEngine;
+    ///
+    /// let mut rng = PcgEngine::new(7);
+    /// let layer = LayerNorm::new(4, 1.0e-5, &Zeros, &mut rng);
+    /// assert_eq!(layer.gamma.shape(), (1, 4));
+    /// assert_eq!(layer.beta.shape(), (1, 4));
+    /// assert_eq!(layer.eps, 1.0e-5);
+    /// ```
+    #[must_use]
     pub fn new(d_model: usize, eps: f32, init: &dyn Initializer, rng: &mut PcgEngine) -> Self {
         let mut gamma = Tensor::zeros(1, d_model);
         let mut beta = Tensor::zeros(1, d_model);
@@ -36,6 +68,25 @@ impl LayerNorm {
         }
     }
 
+    /// Replace the state-dictionary prefix and return the updated module.
+    ///
+    /// Renaming does not change parameter values. Subsequent
+    /// `Module::state_dict` calls use `{name}/gamma` and `{name}/beta`.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use scirust_core::nn::init::Zeros;
+    /// use scirust_core::nn::layer_norm::LayerNorm;
+    /// use scirust_core::nn::module::Module;
+    /// use scirust_core::nn::rng::PcgEngine;
+    ///
+    /// let mut rng = PcgEngine::new(11);
+    /// let layer = LayerNorm::new(2, 1.0e-5, &Zeros, &mut rng).with_name("pre_ln");
+    /// let state = layer.state_dict();
+    /// assert!(state.contains_key("pre_ln/gamma"));
+    /// assert!(state.contains_key("pre_ln/beta"));
+    /// ```
     #[must_use]
     pub fn with_name(mut self, name: &str) -> Self {
         self.name = name.into();
