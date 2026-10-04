@@ -19,8 +19,7 @@ use crate::banc_v888::{BancV888Error, BancV888NodeId};
 use crate::directed::{DirectedEdge, DirectedGraph, DirectedGraphError, DirectedGraphOptions};
 
 /// Versioned public interface identity for the executable BANC v888 graph.
-pub const BANC_V888_EXECUTABLE_GRAPH_CONTRACT: &str =
-    "scirust.banc-v888.executable-graph/v1";
+pub const BANC_V888_EXECUTABLE_GRAPH_CONTRACT: &str = "scirust.banc-v888.executable-graph/v1";
 
 /// Exact binary magic for the retained canonical CSR representation.
 pub const BANC_V888_CSR_MAGIC: [u8; 8] = *b"V8CSR001";
@@ -74,8 +73,7 @@ pub const BANC_V888_BOOL01_QUALIFICATION: BancV888ExecutableGraphQualification =
         raw_synapses_sha256: "0dfb5cf89ba156d076beab2da38d87eaa63dcbe45d76f86b108570fb5b961dd0",
         graph_sha256: "385111a69cc8a1d748c0bdfd9b0b738c51fe83cde98f45762553435a2d15a2a4",
         node_map_sha256: "eaa481b3aef42f63fb9e2e8f9c27d1405c073c54d11cbcd656ca9432904f425a",
-        graph_source_filter_identity:
-            "3cfbed6392a097865147ac08fae65f36a986b2ba6d386b1f5d61b9cfbefd1dd9",
+        graph_source_filter_identity: "3cfbed6392a097865147ac08fae65f36a986b2ba6d386b1f5d61b9cfbefd1dd9",
         logical_graph_path: "$HOME/datasets/banc_v888/analysis/bool01-35717145115-1/graph.csr",
         graph_bytes: 166_466_540,
         metadata_nodes: 188_508,
@@ -161,25 +159,29 @@ impl BancV888ExecutableGraph {
     /// ```
     pub fn from_v8csr001(bytes: &[u8]) -> Result<Self, BancV888ExecutableGraphError> {
         let mut cursor = 0_usize;
-        if take::<8>(bytes, &mut cursor)? != BANC_V888_CSR_MAGIC {
+        if take::<8>(bytes, &mut cursor)? != BANC_V888_CSR_MAGIC
+        {
             return Err(BancV888ExecutableGraphError::WrongMagic);
         }
 
         let node_count_u64 = read_u64(bytes, &mut cursor)?;
         let edge_count_u64 = read_u64(bytes, &mut cursor)?;
-        if node_count_u64 == 0 || node_count_u64 > BANC_V888_MAX_NODES {
+        if node_count_u64 == 0 || node_count_u64 > BANC_V888_MAX_NODES
+        {
             return Err(BancV888ExecutableGraphError::NodeCountOutOfBounds(
                 node_count_u64,
             ));
         }
-        if edge_count_u64 > BANC_V888_MAX_DIRECTED_PAIRS {
+        if edge_count_u64 > BANC_V888_MAX_DIRECTED_PAIRS
+        {
             return Err(BancV888ExecutableGraphError::DirectedPairCountOutOfBounds(
                 edge_count_u64,
             ));
         }
 
         let expected_len = canonical_len(node_count_u64, edge_count_u64)?;
-        if bytes.len() as u64 != expected_len {
+        if bytes.len() as u64 != expected_len
+        {
             return Err(BancV888ExecutableGraphError::ByteLengthMismatch {
                 expected: expected_len,
                 actual: bytes.len() as u64,
@@ -192,20 +194,24 @@ impl BancV888ExecutableGraph {
             .map_err(|_| BancV888ExecutableGraphError::HostIndexOverflow)?;
 
         let mut node_ids = Vec::with_capacity(node_count);
-        for _ in 0..node_count {
+        for _ in 0..node_count
+        {
             let value = read_u64(bytes, &mut cursor)?;
-            let node = BancV888NodeId::new(value)
-                .map_err(BancV888ExecutableGraphError::NodeIdentity)?;
-            if node_ids.last().is_some_and(|previous| *previous >= node) {
+            let node =
+                BancV888NodeId::new(value).map_err(BancV888ExecutableGraphError::NodeIdentity)?;
+            if node_ids.last().is_some_and(|previous| *previous >= node)
+            {
                 return Err(BancV888ExecutableGraphError::NodeIdsNotStrictlyIncreasing);
             }
             node_ids.push(node);
         }
 
         let mut offsets = Vec::with_capacity(node_count + 1);
-        for _ in 0..=node_count {
+        for _ in 0..=node_count
+        {
             let offset = read_u64(bytes, &mut cursor)?;
-            if offset > edge_count_u64 {
+            if offset > edge_count_u64
+            {
                 return Err(BancV888ExecutableGraphError::RowOffsetOutOfBounds {
                     offset,
                     edge_count: edge_count_u64,
@@ -224,26 +230,32 @@ impl BancV888ExecutableGraph {
         }
 
         let mut targets = Vec::with_capacity(edge_count);
-        for _ in 0..edge_count {
+        for _ in 0..edge_count
+        {
             targets.push(read_u32(bytes, &mut cursor)?);
         }
 
-        for source in 0..node_count {
+        for source in 0..node_count
+        {
             let row = &targets[offsets[source]..offsets[source + 1]];
             let mut previous = None;
-            for &target in row {
+            for &target in row
+            {
                 let target = target as usize;
-                if target >= node_count {
+                if target >= node_count
+                {
                     return Err(BancV888ExecutableGraphError::TargetOutOfBounds {
                         source,
                         target,
                         node_count,
                     });
                 }
-                if target == source {
+                if target == source
+                {
                     return Err(BancV888ExecutableGraphError::SelfLoop { node: source });
                 }
-                if previous.is_some_and(|value| value >= target) {
+                if previous.is_some_and(|value| value >= target)
+                {
                     return Err(BancV888ExecutableGraphError::TargetsNotStrictlyIncreasing {
                         source,
                     });
@@ -254,25 +266,28 @@ impl BancV888ExecutableGraph {
 
         let mut weights = Vec::with_capacity(edge_count);
         let mut contact_count = 0_u64;
-        for edge_index in 0..edge_count {
+        for edge_index in 0..edge_count
+        {
             let weight = read_u64(bytes, &mut cursor)?;
-            if weight == 0 {
-                return Err(BancV888ExecutableGraphError::ZeroContactMultiplicity {
-                    edge_index,
-                });
+            if weight == 0
+            {
+                return Err(BancV888ExecutableGraphError::ZeroContactMultiplicity { edge_index });
             }
             contact_count = contact_count
                 .checked_add(weight)
                 .ok_or(BancV888ExecutableGraphError::ContactCountOverflow)?;
             weights.push(weight);
         }
-        if cursor != bytes.len() {
+        if cursor != bytes.len()
+        {
             return Err(BancV888ExecutableGraphError::TrailingBytes);
         }
 
         let mut edges = Vec::with_capacity(edge_count);
-        for source in 0..node_count {
-            for edge_index in offsets[source]..offsets[source + 1] {
+        for source in 0..node_count
+        {
+            for edge_index in offsets[source]..offsets[source + 1]
+            {
                 edges.push(DirectedEdge::new(
                     source,
                     targets[edge_index] as usize,
@@ -280,12 +295,8 @@ impl BancV888ExecutableGraph {
                 ));
             }
         }
-        let graph = DirectedGraph::from_edges(
-            node_count,
-            edges,
-            DirectedGraphOptions::default(),
-        )
-        .map_err(BancV888ExecutableGraphError::DirectedGraph)?;
+        let graph = DirectedGraph::from_edges(node_count, edges, DirectedGraphOptions::default())
+            .map_err(BancV888ExecutableGraphError::DirectedGraph)?;
 
         Ok(Self {
             node_ids,
@@ -342,14 +353,16 @@ impl BancV888ExecutableGraph {
         bytes.extend_from_slice(&BANC_V888_CSR_MAGIC);
         bytes.extend_from_slice(&(self.node_count() as u64).to_le_bytes());
         bytes.extend_from_slice(&(edge_count as u64).to_le_bytes());
-        for node in &self.node_ids {
+        for node in &self.node_ids
+        {
             bytes.extend_from_slice(&node.get().to_le_bytes());
         }
 
         let mut offset = 0_u64;
         bytes.extend_from_slice(&offset.to_le_bytes());
         let mut edge_cursor = 0_usize;
-        for node in 0..self.node_count() {
+        for node in 0..self.node_count()
+        {
             while edge_cursor < self.graph.edges().len()
                 && self.graph.edges()[edge_cursor].source == node
             {
@@ -358,10 +371,12 @@ impl BancV888ExecutableGraph {
             offset = edge_cursor as u64;
             bytes.extend_from_slice(&offset.to_le_bytes());
         }
-        for edge in self.graph.edges() {
+        for edge in self.graph.edges()
+        {
             bytes.extend_from_slice(&(edge.target as u32).to_le_bytes());
         }
-        for edge in self.graph.edges() {
+        for edge in self.graph.edges()
+        {
             bytes.extend_from_slice(&edge.value.to_le_bytes());
         }
         bytes
@@ -392,10 +407,12 @@ impl BancV888ExecutableGraph {
         let selected = selection_mask(self.node_count(), selected_nodes)?;
         let mut result = BancV888BoundaryAccounting::default();
 
-        for edge in self.graph.edges() {
+        for edge in self.graph.edges()
+        {
             let source_inside = selected[edge.source];
             let target_inside = selected[edge.target];
-            let (pairs, contacts) = match (source_inside, target_inside) {
+            let (pairs, contacts) = match (source_inside, target_inside)
+            {
                 (false, false) => (&mut result.outside_pairs, &mut result.outside_contacts),
                 (false, true) => (&mut result.incoming_pairs, &mut result.incoming_contacts),
                 (true, false) => (&mut result.outgoing_pairs, &mut result.outgoing_contacts),
@@ -432,8 +449,10 @@ impl BancV888ExecutableGraph {
             events,
             ..BancV888ExecutionAccounting::default()
         };
-        for edge in self.graph.edges() {
-            if selected[edge.source] {
+        for edge in self.graph.edges()
+        {
+            if selected[edge.source]
+            {
                 result.directed_pairs_touched = result
                     .directed_pairs_touched
                     .checked_add(1)
@@ -456,51 +475,84 @@ pub enum BancV888ExecutableGraphError {
     NodeCountOutOfBounds(u64),
     DirectedPairCountOutOfBounds(u64),
     CanonicalLengthOverflow,
-    ByteLengthMismatch { expected: u64, actual: u64 },
+    ByteLengthMismatch {
+        expected: u64,
+        actual: u64,
+    },
     HostIndexOverflow,
     NodeIdentity(BancV888Error),
     NodeIdsNotStrictlyIncreasing,
-    RowOffsetOutOfBounds { offset: u64, edge_count: u64 },
+    RowOffsetOutOfBounds {
+        offset: u64,
+        edge_count: u64,
+    },
     InvalidRowOffsets,
     TargetOutOfBounds {
         source: usize,
         target: usize,
         node_count: usize,
     },
-    SelfLoop { node: usize },
-    TargetsNotStrictlyIncreasing { source: usize },
-    ZeroContactMultiplicity { edge_index: usize },
+    SelfLoop {
+        node: usize,
+    },
+    TargetsNotStrictlyIncreasing {
+        source: usize,
+    },
+    ZeroContactMultiplicity {
+        edge_index: usize,
+    },
     ContactCountOverflow,
     TrailingBytes,
     DirectedGraph(DirectedGraphError),
-    NodeSelectionOutOfBounds { node: usize, node_count: usize },
+    NodeSelectionOutOfBounds {
+        node: usize,
+        node_count: usize,
+    },
     DuplicateNodeSelection(usize),
     AccountingOverflow,
 }
 
 impl fmt::Display for BancV888ExecutableGraphError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
+        match self
+        {
             Self::Truncated => formatter.write_str("truncated V8CSR001 graph"),
             Self::WrongMagic => formatter.write_str("invalid V8CSR001 magic"),
-            Self::NodeCountOutOfBounds(value) => {
+            Self::NodeCountOutOfBounds(value) =>
+            {
                 write!(formatter, "node count {value} is outside executable bounds")
-            }
-            Self::DirectedPairCountOutOfBounds(value) => {
-                write!(formatter, "directed-pair count {value} is outside executable bounds")
-            }
+            },
+            Self::DirectedPairCountOutOfBounds(value) =>
+            {
+                write!(
+                    formatter,
+                    "directed-pair count {value} is outside executable bounds"
+                )
+            },
             Self::CanonicalLengthOverflow => formatter.write_str("canonical byte length overflow"),
-            Self::ByteLengthMismatch { expected, actual } => {
-                write!(formatter, "canonical byte length mismatch: expected {expected}, got {actual}")
-            }
-            Self::HostIndexOverflow => formatter.write_str("graph dimensions do not fit host indices"),
+            Self::ByteLengthMismatch { expected, actual } =>
+            {
+                write!(
+                    formatter,
+                    "canonical byte length mismatch: expected {expected}, got {actual}"
+                )
+            },
+            Self::HostIndexOverflow =>
+            {
+                formatter.write_str("graph dimensions do not fit host indices")
+            },
             Self::NodeIdentity(error) => write!(formatter, "invalid BANC node identity: {error}"),
-            Self::NodeIdsNotStrictlyIncreasing => {
+            Self::NodeIdsNotStrictlyIncreasing =>
+            {
                 formatter.write_str("BANC node IDs are not strictly increasing")
-            }
-            Self::RowOffsetOutOfBounds { offset, edge_count } => {
-                write!(formatter, "row offset {offset} exceeds directed-pair count {edge_count}")
-            }
+            },
+            Self::RowOffsetOutOfBounds { offset, edge_count } =>
+            {
+                write!(
+                    formatter,
+                    "row offset {offset} exceeds directed-pair count {edge_count}"
+                )
+            },
             Self::InvalidRowOffsets => formatter.write_str("invalid V8CSR001 row offsets"),
             Self::TargetOutOfBounds {
                 source,
@@ -511,21 +563,34 @@ impl fmt::Display for BancV888ExecutableGraphError {
                 "target {target} from source {source} is outside {node_count} nodes"
             ),
             Self::SelfLoop { node } => write!(formatter, "self loop at node {node} is forbidden"),
-            Self::TargetsNotStrictlyIncreasing { source } => {
-                write!(formatter, "targets for source {source} are not strictly increasing")
-            }
-            Self::ZeroContactMultiplicity { edge_index } => {
+            Self::TargetsNotStrictlyIncreasing { source } =>
+            {
+                write!(
+                    formatter,
+                    "targets for source {source} are not strictly increasing"
+                )
+            },
+            Self::ZeroContactMultiplicity { edge_index } =>
+            {
                 write!(formatter, "edge {edge_index} has zero contact multiplicity")
-            }
+            },
             Self::ContactCountOverflow => formatter.write_str("contact count overflow"),
             Self::TrailingBytes => formatter.write_str("unexpected trailing V8CSR001 bytes"),
-            Self::DirectedGraph(error) => write!(formatter, "directed graph validation failed: {error}"),
-            Self::NodeSelectionOutOfBounds { node, node_count } => {
-                write!(formatter, "selected node {node} is outside {node_count} nodes")
-            }
-            Self::DuplicateNodeSelection(node) => {
+            Self::DirectedGraph(error) =>
+            {
+                write!(formatter, "directed graph validation failed: {error}")
+            },
+            Self::NodeSelectionOutOfBounds { node, node_count } =>
+            {
+                write!(
+                    formatter,
+                    "selected node {node} is outside {node_count} nodes"
+                )
+            },
+            Self::DuplicateNodeSelection(node) =>
+            {
                 write!(formatter, "selected node {node} occurs more than once")
-            }
+            },
             Self::AccountingOverflow => formatter.write_str("exact graph accounting overflow"),
         }
     }
@@ -539,14 +604,17 @@ fn selection_mask(
 ) -> Result<Vec<bool>, BancV888ExecutableGraphError> {
     let mut selected = vec![false; node_count];
     let mut seen = HashSet::with_capacity(selected_nodes.len());
-    for &node in selected_nodes {
-        if node >= node_count {
+    for &node in selected_nodes
+    {
+        if node >= node_count
+        {
             return Err(BancV888ExecutableGraphError::NodeSelectionOutOfBounds {
                 node,
                 node_count,
             });
         }
-        if !seen.insert(node) {
+        if !seen.insert(node)
+        {
             return Err(BancV888ExecutableGraphError::DuplicateNodeSelection(node));
         }
         selected[node] = true;
@@ -554,10 +622,7 @@ fn selection_mask(
     Ok(selected)
 }
 
-fn canonical_len(
-    node_count: u64,
-    edge_count: u64,
-) -> Result<u64, BancV888ExecutableGraphError> {
+fn canonical_len(node_count: u64, edge_count: u64) -> Result<u64, BancV888ExecutableGraphError> {
     let node_bytes = 16_u64
         .checked_mul(node_count)
         .ok_or(BancV888ExecutableGraphError::CanonicalLengthOverflow)?;
@@ -586,30 +651,24 @@ fn take<const N: usize>(
         .map_err(|_| BancV888ExecutableGraphError::Truncated)
 }
 
-fn read_u32(
-    bytes: &[u8],
-    cursor: &mut usize,
-) -> Result<u32, BancV888ExecutableGraphError> {
+fn read_u32(bytes: &[u8], cursor: &mut usize) -> Result<u32, BancV888ExecutableGraphError> {
     Ok(u32::from_le_bytes(take(bytes, cursor)?))
 }
 
-fn read_u64(
-    bytes: &[u8],
-    cursor: &mut usize,
-) -> Result<u64, BancV888ExecutableGraphError> {
+fn read_u64(bytes: &[u8], cursor: &mut usize) -> Result<u64, BancV888ExecutableGraphError> {
     Ok(u64::from_le_bytes(take(bytes, cursor)?))
 }
 
 fn hex_digest(bytes: &[u8]) -> String {
     let mut output = String::with_capacity(64);
     const HEX: &[u8; 16] = b"0123456789abcdef";
-    for &byte in bytes {
+    for &byte in bytes
+    {
         output.push(HEX[(byte >> 4) as usize] as char);
         output.push(HEX[(byte & 0x0f) as usize] as char);
     }
     output
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -619,16 +678,20 @@ mod tests {
         let mut bytes = BANC_V888_CSR_MAGIC.to_vec();
         bytes.extend_from_slice(&3_u64.to_le_bytes());
         bytes.extend_from_slice(&3_u64.to_le_bytes());
-        for id in [10_u64, 20, 30] {
+        for id in [10_u64, 20, 30]
+        {
             bytes.extend_from_slice(&id.to_le_bytes());
         }
-        for offset in [0_u64, 2, 3, 3] {
+        for offset in [0_u64, 2, 3, 3]
+        {
             bytes.extend_from_slice(&offset.to_le_bytes());
         }
-        for target in [1_u32, 2, 2] {
+        for target in [1_u32, 2, 2]
+        {
             bytes.extend_from_slice(&target.to_le_bytes());
         }
-        for weight in [2_u64, 3, 5] {
+        for weight in [2_u64, 3, 5]
+        {
             bytes.extend_from_slice(&weight.to_le_bytes());
         }
         bytes
@@ -750,6 +813,4 @@ mod tests {
         assert_ne!(q.directed_pairs, q.induced_contacts);
         assert_ne!(q.induced_contacts, q.raw_records);
     }
-
-
 }
