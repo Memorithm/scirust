@@ -64,12 +64,33 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ROOT="$HOME/datasets/banc_v888"
+          candidates=()
+          if [[ -n "${V888_DATA_ROOT:-}" ]]; then
+            candidates+=("$V888_DATA_ROOT")
+          fi
+          candidates+=(
+            "$HOME/datasets/banc_v888"
+            "/mnt/nvme/github-runners/home/datasets/banc_v888"
+            "/mnt/nvme-r38.4/github-runners/home/datasets/banc_v888"
+            "/ota_keep/mnt-nvme-r38.4/github-runners/home/datasets/banc_v888"
+          )
+          ROOT=""
+          for candidate in "${candidates[@]}"; do
+            if [[ -x "$candidate/.analysis-venv/bin/python" ]]; then
+              ROOT="$candidate"
+              break
+            fi
+          done
+          if [[ -z "$ROOT" ]]; then
+            printf 'No qualified BANC v888 dataset root found. Checked:\n' >&2
+            printf '  %s\n' "${candidates[@]}" >&2
+            exit 1
+          fi
+          echo "Using qualified dataset root: $ROOT"
           TESTS="$RUNNER_TEMP/v888-executable-1520-${{ github.run_id }}-${{ github.run_attempt }}"
           OUT="$ROOT/analysis/executable-1520-${{ github.run_id }}-${{ github.run_attempt }}"
           mkdir -p "$TESTS"
           test "$(uname -m)" = aarch64
-          test -x "$ROOT/.analysis-venv/bin/python"
           "$ROOT/.analysis-venv/bin/python" -c 'import shutil,sys; assert shutil.disk_usage(sys.argv[1]).free >= 2*1024**3, "insufficient scratch space"' "$ROOT"
 
           {
