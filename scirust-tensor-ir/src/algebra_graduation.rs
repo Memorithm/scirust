@@ -11,8 +11,7 @@ pub const ALGEBRA_GRADUATION_SCHEMA_V1: &str = "scirust.tensor-ir.algebra-gradua
 
 /// Research algebra families currently covered by the graduation policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AlgebraFamily
-{
+pub enum AlgebraFamily {
     /// Boolean algebra with explicitly frozen truth semantics.
     Boolean,
     /// Arithmetic over the field with two elements.
@@ -25,17 +24,14 @@ pub enum AlgebraFamily
 
 /// Explicit status of differential/oracle evidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DifferentialOracleEvidence<'a>
-{
+pub enum DifferentialOracleEvidence<'a> {
     /// A differential or independent oracle was required and verified.
-    Verified
-    {
+    Verified {
         /// Stable evidence identifier.
         evidence_id: &'a str,
     },
     /// A differential oracle is not applicable, with an explicit reviewed reason.
-    NotApplicable
-    {
+    NotApplicable {
         /// Stable rationale identifier; an empty value is rejected.
         rationale_id: &'a str,
     },
@@ -43,8 +39,7 @@ pub enum DifferentialOracleEvidence<'a>
 
 /// Complete evidence required before an algebra may be reviewed for canonical IR.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AlgebraGraduationEvidence<'a>
-{
+pub struct AlgebraGraduationEvidence<'a> {
     /// Must equal ALGEBRA_GRADUATION_SCHEMA_V1.
     pub schema: &'a str,
     /// Candidate algebra family.
@@ -70,14 +65,12 @@ pub struct AlgebraGraduationEvidence<'a>
 /// This is intentionally weaker than acceptance into crate::Operation: a
 /// successful gate only permits a separate canonical-IR review.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AlgebraGraduationVerdict
-{
+pub enum AlgebraGraduationVerdict {
     /// All mandatory evidence fields are present and syntactically valid.
     EligibleForCanonicalOperationReview,
 }
 
-impl AlgebraGraduationEvidence<'_>
-{
+impl AlgebraGraduationEvidence<'_> {
     /// Validate the machine-enforced algebra graduation criteria.
     ///
     /// The gate requires frozen semantics, shape/type rules, a deterministic
@@ -118,8 +111,7 @@ impl AlgebraGraduationEvidence<'_>
     /// );
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ~~~
-    pub fn evaluate(&self) -> Result<AlgebraGraduationVerdict, AlgebraGraduationError>
-    {
+    pub fn evaluate(&self) -> Result<AlgebraGraduationVerdict, AlgebraGraduationError> {
         if self.schema != ALGEBRA_GRADUATION_SCHEMA_V1
         {
             return Err(AlgebraGraduationError::WrongSchema);
@@ -155,8 +147,7 @@ impl AlgebraGraduationEvidence<'_>
 
 /// Validation errors from the algebra graduation gate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AlgebraGraduationError
-{
+pub enum AlgebraGraduationError {
     /// Evidence was encoded under an unsupported schema.
     WrongSchema,
     /// The source revision is not exactly 40 lowercase hexadecimal characters.
@@ -165,19 +156,13 @@ pub enum AlgebraGraduationError
     MissingEvidence(&'static str),
 }
 
-impl fmt::Display for AlgebraGraduationError
-{
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result
-    {
+impl fmt::Display for AlgebraGraduationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self
         {
             Self::WrongSchema => formatter.write_str("unsupported algebra-graduation schema"),
-            Self::InvalidSourceRevision =>
-            {
-                formatter.write_str(
-                    "algebra source revision must be 40 lowercase hexadecimal characters",
-                )
-            },
+            Self::InvalidSourceRevision => formatter
+                .write_str("algebra source revision must be 40 lowercase hexadecimal characters"),
             Self::MissingEvidence(field) =>
             {
                 write!(formatter, "missing algebra-graduation evidence: {field}")
@@ -189,8 +174,7 @@ impl fmt::Display for AlgebraGraduationError
 #[cfg(feature = "std")]
 impl std::error::Error for AlgebraGraduationError {}
 
-fn require_id(value: &str, field: &'static str) -> Result<(), AlgebraGraduationError>
-{
+fn require_id(value: &str, field: &'static str) -> Result<(), AlgebraGraduationError> {
     if value.trim().is_empty()
     {
         return Err(AlgebraGraduationError::MissingEvidence(field));
@@ -198,8 +182,7 @@ fn require_id(value: &str, field: &'static str) -> Result<(), AlgebraGraduationE
     Ok(())
 }
 
-fn is_git_sha(value: &str) -> bool
-{
+fn is_git_sha(value: &str) -> bool {
     value.len() == 40
         && value
             .bytes()
@@ -207,12 +190,10 @@ fn is_git_sha(value: &str) -> bool
 }
 
 #[cfg(test)]
-mod tests
-{
+mod tests {
     use super::*;
 
-    fn complete<'a>() -> AlgebraGraduationEvidence<'a>
-    {
+    fn complete() -> AlgebraGraduationEvidence<'static> {
         AlgebraGraduationEvidence {
             schema: ALGEBRA_GRADUATION_SCHEMA_V1,
             family: AlgebraFamily::Zhegalkin,
@@ -229,8 +210,7 @@ mod tests
     }
 
     #[test]
-    fn complete_evidence_is_only_eligible_for_review()
-    {
+    fn complete_evidence_is_only_eligible_for_review() {
         assert_eq!(
             complete().evaluate(),
             Ok(AlgebraGraduationVerdict::EligibleForCanonicalOperationReview)
@@ -238,8 +218,7 @@ mod tests
     }
 
     #[test]
-    fn missing_required_evidence_fails_closed()
-    {
+    fn missing_required_evidence_fails_closed() {
         let mut evidence = complete();
         evidence.reference_interpreter_id = "";
         assert_eq!(
@@ -251,12 +230,10 @@ mod tests
     }
 
     #[test]
-    fn explicit_oracle_non_applicability_requires_a_reason()
-    {
+    fn explicit_oracle_non_applicability_requires_a_reason() {
         let mut evidence = complete();
-        evidence.differential_oracle = DifferentialOracleEvidence::NotApplicable {
-            rationale_id: "",
-        };
+        evidence.differential_oracle =
+            DifferentialOracleEvidence::NotApplicable { rationale_id: "" };
         assert_eq!(
             evidence.evaluate(),
             Err(AlgebraGraduationError::MissingEvidence(
@@ -271,8 +248,7 @@ mod tests
     }
 
     #[test]
-    fn malformed_source_revision_is_rejected()
-    {
+    fn malformed_source_revision_is_rejected() {
         let mut evidence = complete();
         evidence.source_revision = "NOT-A-GIT-SHA";
         assert_eq!(
