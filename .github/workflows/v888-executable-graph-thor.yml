@@ -25,7 +25,6 @@ jobs:
     timeout-minutes: 45
     env:
       CARGO_INCREMENTAL: '0'
-      CARGO_HOME: ${{ runner.temp }}/cargo-v888-1520
       RUSTFLAGS: '-D warnings'
       PYTHONDONTWRITEBYTECODE: '1'
       OMP_NUM_THREADS: '1'
@@ -35,6 +34,12 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           persist-credentials: false
+
+      - name: Isolate Cargo registry
+        run: |
+          set -euo pipefail
+          echo "CARGO_HOME=$RUNNER_TEMP/cargo-v888-1520" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/cargo-v888-1520"
 
       - name: Qualify public Rust graph contract
         run: |
@@ -88,10 +93,6 @@ jobs:
         if: always()
         with:
           name: v888-executable-graph-${{ github.sha }}
-          path: |
-            ${{ env.V888_1520_EVIDENCE }}/
-            ${{ env.V888_1520_TESTS }}/*.log
-            ${{ env.V888_1520_TESTS }}/runtime.txt
-            ${{ env.V888_1520_TESTS }}/output-path.txt
+          path: ${{ runner.temp }}/v888-executable-1520-${{ github.run_id }}-${{ github.run_attempt }}/
           if-no-files-found: warn
           retention-days: 30
