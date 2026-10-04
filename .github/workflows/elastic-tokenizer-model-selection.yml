@@ -133,9 +133,11 @@ jobs:
           set -euo pipefail
           tmpdir="$(mktemp -d "$RUNNER_TEMP/elastic-selection.XXXXXX")"
           chmod 700 "$tmpdir"
-          mkdir -p "$tmpdir/tmp"
-          chmod 700 "$tmpdir/tmp"
+          mkdir -p "$tmpdir/tmp" "$tmpdir/cargo-home" "$tmpdir/rustup-home" "$tmpdir/target"
+          chmod 700 "$tmpdir/tmp" "$tmpdir/cargo-home" "$tmpdir/rustup-home" "$tmpdir/target"
           echo "TMPDIR=$tmpdir/tmp" >> "$GITHUB_ENV"
+          echo "CARGO_HOME=$tmpdir/cargo-home" >> "$GITHUB_ENV"
+          echo "RUSTUP_HOME=$tmpdir/rustup-home" >> "$GITHUB_ENV"
           echo "CARGO_TARGET_DIR=$tmpdir/target" >> "$GITHUB_ENV"
           echo "ELASTIC_SELECTION_TMP=$tmpdir" >> "$GITHUB_ENV"
       - name: Install exact MSRV
