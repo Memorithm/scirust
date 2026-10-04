@@ -109,19 +109,20 @@ pub fn v888_growth_topology_profile(
     let mut outgoing_contacts = vec![0_u64; node_count];
 
     let mut observed_contacts = 0_u64;
-    for edge in directed.edges() {
-        out_degree[edge.source] = out_degree[edge.source]
-            .checked_add(1)
-            .ok_or(V888GrowthTopologyError::CounterOverflow {
+    for edge in directed.edges()
+    {
+        out_degree[edge.source] = out_degree[edge.source].checked_add(1).ok_or(
+            V888GrowthTopologyError::CounterOverflow {
                 field: "out_degree",
                 node: edge.source,
-            })?;
-        in_degree[edge.target] = in_degree[edge.target]
-            .checked_add(1)
-            .ok_or(V888GrowthTopologyError::CounterOverflow {
+            },
+        )?;
+        in_degree[edge.target] = in_degree[edge.target].checked_add(1).ok_or(
+            V888GrowthTopologyError::CounterOverflow {
                 field: "in_degree",
                 node: edge.target,
-            })?;
+            },
+        )?;
         outgoing_contacts[edge.source] = outgoing_contacts[edge.source]
             .checked_add(edge.value)
             .ok_or(V888GrowthTopologyError::CounterOverflow {
@@ -139,7 +140,8 @@ pub fn v888_growth_topology_profile(
             .ok_or(V888GrowthTopologyError::TotalContactOverflow)?;
     }
 
-    if observed_contacts != graph.contact_count() {
+    if observed_contacts != graph.contact_count()
+    {
         return Err(V888GrowthTopologyError::ContactTotalMismatch {
             retained: graph.contact_count(),
             recomputed: observed_contacts,
@@ -148,8 +150,13 @@ pub fn v888_growth_topology_profile(
 
     let mut reciprocal_neighbors = vec![0_usize; node_count];
     let mut reciprocal_pairs = 0_usize;
-    for edge in directed.edges().iter().filter(|edge| edge.source < edge.target) {
-        if directed.has_edge(edge.target, edge.source)? {
+    for edge in directed
+        .edges()
+        .iter()
+        .filter(|edge| edge.source < edge.target)
+    {
+        if directed.has_edge(edge.target, edge.source)?
+        {
             reciprocal_neighbors[edge.source] = reciprocal_neighbors[edge.source]
                 .checked_add(1)
                 .ok_or(V888GrowthTopologyError::CounterOverflow {
@@ -175,7 +182,8 @@ pub fn v888_growth_topology_profile(
         .max()
         .map_or(0_usize, |maximum| maximum + 1);
     let mut scc_sizes = vec![0_usize; scc_count];
-    for &label in &scc_labels {
+    for &label in &scc_labels
+    {
         scc_sizes[label] = scc_sizes[label]
             .checked_add(1)
             .ok_or(V888GrowthTopologyError::SccSizeOverflow { label })?;
@@ -247,16 +255,19 @@ impl From<DirectedGraphError> for V888GrowthTopologyError {
 
 impl fmt::Display for V888GrowthTopologyError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
+        match self
+        {
             Self::DirectedGraph(error) => write!(formatter, "{error}"),
-            Self::CounterOverflow { field, node } => {
+            Self::CounterOverflow { field, node } =>
+            {
                 write!(formatter, "{field} overflowed for canonical node {node}")
-            }
+            },
             Self::TotalContactOverflow => formatter.write_str("total contact count overflowed"),
             Self::ReciprocalPairOverflow => formatter.write_str("reciprocal-pair count overflowed"),
-            Self::SccSizeOverflow { label } => {
+            Self::SccSizeOverflow { label } =>
+            {
                 write!(formatter, "SCC size overflowed for canonical label {label}")
-            }
+            },
             Self::ContactTotalMismatch {
                 retained,
                 recomputed,
@@ -279,16 +290,20 @@ mod tests {
         let mut bytes = BANC_V888_CSR_MAGIC.to_vec();
         bytes.extend_from_slice(&4_u64.to_le_bytes());
         bytes.extend_from_slice(&5_u64.to_le_bytes());
-        for id in [10_u64, 20, 30, 40] {
+        for id in [10_u64, 20, 30, 40]
+        {
             bytes.extend_from_slice(&id.to_le_bytes());
         }
-        for offset in [0_u64, 1, 3, 4, 5] {
+        for offset in [0_u64, 1, 3, 4, 5]
+        {
             bytes.extend_from_slice(&offset.to_le_bytes());
         }
-        for target in [1_u32, 0, 2, 3, 2] {
+        for target in [1_u32, 0, 2, 3, 2]
+        {
             bytes.extend_from_slice(&target.to_le_bytes());
         }
-        for contacts in [2_u64, 3, 5, 7, 11] {
+        for contacts in [2_u64, 3, 5, 7, 11]
+        {
             bytes.extend_from_slice(&contacts.to_le_bytes());
         }
         BancV888ExecutableGraph::from_v8csr001(&bytes).unwrap()
