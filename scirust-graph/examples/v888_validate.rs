@@ -3,9 +3,7 @@ use std::error::Error;
 use std::fs;
 use std::path::Path;
 
-use scirust_graph::v888_executable::{
-    BANC_V888_BOOL01_QUALIFICATION, BancV888ExecutableGraph,
-};
+use scirust_graph::v888_executable::{BANC_V888_BOOL01_QUALIFICATION, BancV888ExecutableGraph};
 
 fn main() -> Result<(), Box<dyn Error>> {
     let path = env::args_os()
@@ -15,7 +13,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let metadata = fs::metadata(path)?;
 
     let expected = BANC_V888_BOOL01_QUALIFICATION;
-    if metadata.len() != expected.graph_bytes {
+    if metadata.len() != expected.graph_bytes
+    {
         return Err(format!(
             "graph byte length mismatch: expected {}, got {}",
             expected.graph_bytes,
@@ -26,7 +25,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let bytes = fs::read(path)?;
     let graph = BancV888ExecutableGraph::from_v8csr001(&bytes)?;
-    if graph.node_count() as u64 != expected.metadata_nodes {
+    if graph.node_count() as u64 != expected.metadata_nodes
+    {
         return Err(format!(
             "node count mismatch: expected {}, got {}",
             expected.metadata_nodes,
@@ -34,7 +34,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         )
         .into());
     }
-    if graph.directed_pair_count() as u64 != expected.directed_pairs {
+    if graph.directed_pair_count() as u64 != expected.directed_pairs
+    {
         return Err(format!(
             "directed-pair count mismatch: expected {}, got {}",
             expected.directed_pairs,
@@ -42,7 +43,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         )
         .into());
     }
-    if graph.contact_count() != expected.induced_contacts {
+    if graph.contact_count() != expected.induced_contacts
+    {
         return Err(format!(
             "contact count mismatch: expected {}, got {}",
             expected.induced_contacts,
@@ -52,14 +54,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let digest = graph.sha256_hex();
-    if digest != expected.graph_sha256 {
+    if digest != expected.graph_sha256
+    {
         return Err(format!(
             "graph SHA-256 mismatch: expected {}, got {}",
             expected.graph_sha256, digest
         )
         .into());
     }
-    if graph.to_v8csr001() != bytes {
+    if graph.to_v8csr001() != bytes
+    {
         return Err("canonical V8CSR001 replay changed bytes".into());
     }
 
