@@ -1,0 +1,135 @@
+name: V888 executable graph qualification
+
+on:
+  push:
+    branches: [research/v888-executable-graph-1520]
+    paths:
+      - 'scirust-graph/**'
+      - 'Cargo.lock'
+      - 'scripts/v888_bool01/**'
+      - 'docs/V888_EXECUTABLE_GRAPH_QUALIFICATION.md'
+      - 'docs/V888_CONNECTOME_BOOTSTRAP.md'
+      - '.github/workflows/v888-executable-graph-thor.yml'
+  workflow_dispatch:
+
+# Exact-head final reproduction gate for SciRust #1520, including shared-runner CI fixes.
+permissions:
+  contents: read
+
+concurrency:
+  group: v888-executable-graph-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  qualify:
+    if: github.repository == 'Memorithm/scirust'
+    runs-on: [self-hosted, Linux, ARM64, scirust-arm64, jetson-thor, internal]
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}/v888-1520-${{ github.run_id }}-${{ github.run_attempt }}
+    env:
+      CARGO_INCREMENTAL: '0'
+      RUSTFLAGS: '-D warnings'
+      PYTHONDONTWRITEBYTECODE: '1'
+      OMP_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+      ARROW_NUM_THREADS: '1'
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ github.sha }}
+          path: v888-1520-${{ github.run_id }}-${{ github.run_attempt }}
+          persist-credentials: false
+
+      - name: Isolate Rust toolchain homes
+        run: |
+          set -euo pipefail
+          echo "CARGO_HOME=$RUNNER_TEMP/cargo-v888-1520" >> "$GITHUB_ENV"
+          echo "RUSTUP_HOME=$RUNNER_TEMP/rustup-v888-1520" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/cargo-v888-1520" "$RUNNER_TEMP/rustup-v888-1520"
+
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: 1.89.0
+
+      - name: Qualify public Rust graph contract
+        run: |
+          set -euo pipefail
+          cargo +1.89.0 test -p scirust-graph --locked
+          RUSTDOCFLAGS='-D warnings' cargo +1.89.0 test -p scirust-graph --doc --locked
+          cargo +1.89.0 build -p scirust-graph --example v888_validate --locked
+
+      - name: Reproduce frozen source graph and validate public handoff
+        shell: bash
+        run: |
+          set -euo pipefail
+          candidates=()
+          if [[ -n "${V888_DATA_ROOT:-}" ]]; then
+            candidates+=("$V888_DATA_ROOT")
+          fi
+          candidates+=(
+            "$HOME/datasets/banc_v888"
+            "/mnt/nvme/github-runners/home/datasets/banc_v888"
+            "/mnt/nvme-r38.4/github-runners/home/datasets/banc_v888"
+            "/ota_keep/mnt-nvme-r38.4/github-runners/home/datasets/banc_v888"
+          )
+          ROOT=""
+          for candidate in "${candidates[@]}"; do
+            if [[ -x "$candidate/.analysis-venv/bin/python" ]]; then
+              ROOT="$candidate"
+              break
+            fi
+          done
+          if [[ -z "$ROOT" ]]; then
+            printf 'No qualified BANC v888 dataset root found. Checked:\n' >&2
+            printf '  %s\n' "${candidates[@]}" >&2
+            exit 1
+          fi
+          echo "Using qualified dataset root: $ROOT"
+          TESTS="$RUNNER_TEMP/v888-executable-1520-${{ github.run_id }}-${{ github.run_attempt }}"
+          OUT="$RUNNER_TEMP/v888-output-1520-${{ github.run_id }}-${{ github.run_attempt }}"
+          mkdir -p "$TESTS"
+          rm -rf "$OUT"
+          test "$(uname -m)" = aarch64
+          "$ROOT/.analysis-venv/bin/python" -c 'import shutil,sys; assert shutil.disk_usage(sys.argv[1]).free >= 2*1024**3, "insufficient scratch space"' "$RUNNER_TEMP"
+
+          {
+            hostname
+            uname -m
+            printf 'runner=%s\ncommit=%s\n' "$RUNNER_NAME" "$GITHUB_SHA"
+            rustc +1.89.0 --version
+          } | tee "$TESTS/runtime.txt"
+
+          rustc +1.89.0 --edition=2021 --test scripts/v888_bool01/pair_graph.rs -o "$TESTS/rust-tests"
+          "$TESTS/rust-tests" | tee "$TESTS/rust-tests.log"
+          rustc +1.89.0 --edition=2021 -O scripts/v888_bool01/pair_graph.rs -o "$TESTS/pair-graph"
+          "$ROOT/.analysis-venv/bin/python" scripts/v888_bool01/test_qualification.py "$TESTS/pair-graph" -v 2>&1 | tee "$TESTS/process-tests.log"
+
+          exec 9>"/tmp/scirust-v888-full-synapse-audit.lock"
+          flock -w 1800 9 || {
+            echo "::error::timed out waiting for the shared V888 source-audit lock"
+            exit 1
+          }
+          ulimit -v 8388608
+          "$ROOT/.analysis-venv/bin/python" scripts/v888_bool01/qualify.py             --data-root "$ROOT"             --output "$OUT"             --worker "$TESTS/pair-graph"
+
+          test "$(stat -c '%s' "$OUT/graph.csr")" = '166466540'
+          echo '385111a69cc8a1d748c0bdfd9b0b738c51fe83cde98f45762553435a2d15a2a4  '"$OUT/graph.csr" | sha256sum --check
+          cargo +1.89.0 run --quiet -p scirust-graph --example v888_validate --locked -- "$OUT/graph.csr" | tee "$TESTS/public-validator.log"
+
+          mkdir -p "$TESTS/evidence"
+          cp "$TESTS/runtime.txt" "$OUT/evidence/"
+          cp "$TESTS/rust-tests.log" "$OUT/evidence/"
+          cp "$TESTS/process-tests.log" "$OUT/evidence/"
+          cp "$TESTS/public-validator.log" "$OUT/evidence/"
+          cp -a "$OUT/evidence/." "$TESTS/evidence/"
+          printf '%s\n' "$OUT" > "$TESTS/output-path.txt"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: v888-executable-graph-${{ github.sha }}
+          path: ${{ runner.temp }}/v888-executable-1520-${{ github.run_id }}-${{ github.run_attempt }}/
+          if-no-files-found: warn
+          retention-days: 30
