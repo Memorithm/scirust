@@ -41,6 +41,10 @@
 use std::f64::consts::PI;
 
 /// Euler–Mascheroni constant γ.
+///
+/// The literal is retained for the repository's Rust 1.89 MSRV; newer Clippy
+/// versions recognize it as an approximate standard-library constant.
+#[allow(clippy::approx_constant)]
 pub const EULER_MASCHERONI: f64 = 0.577_215_664_901_532_9;
 
 // Maximum iterations for the series / continued-fraction expansions. Reaching
