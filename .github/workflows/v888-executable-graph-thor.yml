@@ -1,0 +1,96 @@
+name: V888 executable graph qualification
+
+on:
+  push:
+    branches: [research/v888-executable-graph-1520]
+    paths:
+      - 'scirust-graph/**'
+      - 'scripts/v888_bool01/**'
+      - 'docs/V888_EXECUTABLE_GRAPH_QUALIFICATION.md'
+      - 'docs/V888_CONNECTOME_BOOTSTRAP.md'
+      - '.github/workflows/v888-executable-graph-thor.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v888-executable-graph-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  qualify:
+    if: github.repository == 'Memorithm/scirust'
+    runs-on: [self-hosted, Linux, ARM64, scirust-arm64, jetson-thor, internal]
+    timeout-minutes: 45
+    env:
+      CARGO_INCREMENTAL: '0'
+      RUSTFLAGS: '-D warnings'
+      PYTHONDONTWRITEBYTECODE: '1'
+      OMP_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+      ARROW_NUM_THREADS: '1'
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+
+      - name: Qualify public Rust graph contract
+        run: |
+          set -euo pipefail
+          cargo +1.89.0 test -p scirust-graph --locked
+          RUSTDOCFLAGS='-D warnings' cargo +1.89.0 test -p scirust-graph --doc --locked
+          cargo +1.89.0 build -p scirust-graph --example v888_validate --locked
+
+      - name: Reproduce frozen source graph and validate public handoff
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$HOME/datasets/banc_v888"
+          TESTS="$RUNNER_TEMP/v888-executable-1520-${{ github.run_id }}-${{ github.run_attempt }}"
+          OUT="$ROOT/analysis/executable-1520-${{ github.run_id }}-${{ github.run_attempt }}"
+          mkdir -p "$TESTS"
+          test "$(uname -m)" = aarch64
+          test -x "$ROOT/.analysis-venv/bin/python"
+          "$ROOT/.analysis-venv/bin/python" -c 'import shutil,sys; assert shutil.disk_usage(sys.argv[1]).free >= 2*1024**3, "insufficient scratch space"' "$ROOT"
+
+          {
+            hostname
+            uname -m
+            printf 'runner=%s\ncommit=%s\n' "$RUNNER_NAME" "$GITHUB_SHA"
+            rustc +1.89.0 --version
+          } | tee "$TESTS/runtime.txt"
+
+          rustc +1.89.0 --edition=2021 --test scripts/v888_bool01/pair_graph.rs -o "$TESTS/rust-tests"
+          "$TESTS/rust-tests" | tee "$TESTS/rust-tests.log"
+          rustc +1.89.0 --edition=2021 -O scripts/v888_bool01/pair_graph.rs -o "$TESTS/pair-graph"
+          "$ROOT/.analysis-venv/bin/python" scripts/v888_bool01/test_qualification.py "$TESTS/pair-graph" -v 2>&1 | tee "$TESTS/process-tests.log"
+
+          exec 9>"$ROOT/.full-synapse-audit.lock"
+          flock -n 9
+          ulimit -v 8388608
+          "$ROOT/.analysis-venv/bin/python" scripts/v888_bool01/qualify.py             --data-root "$ROOT"             --output "$OUT"             --worker "$TESTS/pair-graph"
+
+          test "$(stat -c '%s' "$OUT/graph.csr")" = '166466540'
+          echo '385111a69cc8a1d748c0bdfd9b0b738c51fe83cde98f45762553435a2d15a2a4  '"$OUT/graph.csr" | sha256sum --check
+          cargo +1.89.0 run --quiet -p scirust-graph --example v888_validate --locked -- "$OUT/graph.csr" | tee "$TESTS/public-validator.log"
+
+          cp "$TESTS/runtime.txt" "$OUT/evidence/"
+          cp "$TESTS/rust-tests.log" "$OUT/evidence/"
+          cp "$TESTS/process-tests.log" "$OUT/evidence/"
+          cp "$TESTS/public-validator.log" "$OUT/evidence/"
+          printf '%s\n' "$OUT" > "$TESTS/output-path.txt"
+          echo "V888_1520_EVIDENCE=$OUT/evidence" >> "$GITHUB_ENV"
+          echo "V888_1520_TESTS=$TESTS" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: v888-executable-graph-${{ github.sha }}
+          path: |
+            ${{ env.V888_1520_EVIDENCE }}/
+            ${{ env.V888_1520_TESTS }}/*.log
+            ${{ env.V888_1520_TESTS }}/runtime.txt
+            ${{ env.V888_1520_TESTS }}/output-path.txt
+          if-no-files-found: warn
+          retention-days: 30
