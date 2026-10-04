@@ -14,6 +14,14 @@ Sources:
 - https://codex.flywire.ai/?dataset=banc
 - https://codex.flywire.ai/faq
 
+## Executable graph consumer gate
+
+The retained V888-BOOL-0.1 source qualification is exposed to downstream Rust consumers through `scirust_graph::v888_executable`. The canonical external graph remains `V8CSR001`; SciRust does not vendor the graph or raw BANC data.
+
+The public contract binds the exact 2026-09-22.1 source/software evidence, validates canonical graph bytes, keeps directed-pair and contact counts distinct, retains subset cut-edge accounting, and exposes exact active-node / pair / contact / caller-event work counters. It deliberately carries no inferred sign, conductance, threshold, physiological delay or event semantics.
+
+Qualification and downstream boundaries are documented in [`V888_EXECUTABLE_GRAPH_QUALIFICATION.md`](V888_EXECUTABLE_GRAPH_QUALIFICATION.md). SciRust issue #1520 is the executable graph prerequisite for the SML CSP / V888-BOOL-4.0 handoff; completing it does not establish topology advantage or satisfy SML's independent promotion gates.
+
 ## Mission
 
 Make SciRust the reusable pure-Rust substrate for sparse recurrent, graph-dynamical and event-driven model research. The V888 programme is a forcing function for capabilities that are broadly useful beyond connectomics: directed weighted sparse graphs, typed edges, deterministic graph statistics, sparse matrix kernels, delayed events, spiking-state dynamics, surrogate gradients, and portable accelerator execution.
