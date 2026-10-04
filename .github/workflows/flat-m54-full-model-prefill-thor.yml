@@ -176,6 +176,37 @@ jobs:
           compute_processes() {
             nvidia-smi --query-compute-apps=pid,process_name --format=csv,noheader 2>/dev/null
           }
+          approved_managed_gpu_only() {
+            local active="$1"
+            [[ -n "${active//[[:space:]]/}" ]] || return 1
+            while IFS=',' read -r raw_pid process_name; do
+              pid="$(printf '%s' "$raw_pid" | tr -d '[:space:]')"
+              [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+              process_name="$(printf '%s' "$process_name" | xargs)"
+              cmdline="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
+              proc_user="$(ps -p "$pid" -o user= 2>/dev/null | xargs || true)"
+              cgroup="$(cat "/proc/$pid/cgroup" 2>/dev/null || true)"
+              approved=false
+
+              if [[ "$proc_user" == "remoteops" ]] \
+                && [[ "$cgroup" == "0::/system.slice/memorithm-viggle-lan.service" ]] \
+                && [[ "$cmdline" == *"/srv/models/qwen-image-2.1-viggle-turbo/lan-server.py"* ]]; then
+                approved=true
+              elif [[ "$proc_user" == "memorithm-clm" ]] \
+                && [[ "$cgroup" == "0::/system.slice/memorithm-clm.service" ]] \
+                && [[ "$cmdline" == *"/srv/models/clm-v0.1-8b/"* ]] \
+                && [[ "$cmdline" == *"clm-serve"* ]]; then
+                approved=true
+              elif [[ "$proc_user" == "memorithm-clm" ]] \
+                && [[ "$cgroup" == "0::/system.slice/memorithm-clm-encoder.service" ]] \
+                && [[ "$process_name" == "VLLM::EngineCore" ]]; then
+                approved=true
+              fi
+
+              [[ "$approved" == true ]] || return 1
+            done <<< "$active"
+            return 0
+          }
 
           deadline=$((SECONDS + 18000))
           settled=0
@@ -186,6 +217,15 @@ jobs:
             training="$(pgrep -a -x cuda_pretrain || true)"
             active="$(compute_processes)"
             if [[ -n "${training//[[:space:]]/}" || -n "${active//[[:space:]]/}" ]]; then
+              if [[ -z "${training//[[:space:]]/}" ]] && approved_managed_gpu_only "$active"; then
+                echo "::notice::M54 physical timing deferred: only approved managed Thor GPU services are active."
+                {
+                  echo "qualification_status=deferred_managed_gpu_services"
+                  echo "source_revision=$(git rev-parse HEAD)"
+                  echo "performance_claim=none"
+                } >> "$GITHUB_STEP_SUMMARY"
+                exit 0
+              fi
               echo "Thor busy; restarting M54 idle window."
               [[ -z "${training//[[:space:]]/}" ]] || printf '%s\n' "$training"
               [[ -z "${active//[[:space:]]/}" ]] || printf '%s\n' "$active"
