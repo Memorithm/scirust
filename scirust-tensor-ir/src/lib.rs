@@ -31,8 +31,8 @@ mod vmap;
 /// exposes explicit tangent inputs, so it can be executed repeatedly for
 /// different tangent vectors without rebuilding the primal transform.
 pub use algebra_graduation::{
-    ALGEBRA_GRADUATION_SCHEMA_V1, AlgebraFamily, AlgebraGraduationError,
-    AlgebraGraduationEvidence, AlgebraGraduationVerdict, DifferentialOracleEvidence,
+    ALGEBRA_GRADUATION_SCHEMA_V1, AlgebraFamily, AlgebraGraduationError, AlgebraGraduationEvidence,
+    AlgebraGraduationVerdict, DifferentialOracleEvidence,
 };
 pub use autodiff::jvp as linearize;
 pub use autodiff::{AutodiffError, GradGraph, JvpGraph, VjpGraph, grad, jvp, value_and_grad, vjp};
