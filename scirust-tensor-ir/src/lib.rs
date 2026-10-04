@@ -9,6 +9,7 @@
 
 extern crate alloc;
 
+mod algebra_graduation;
 mod autodiff;
 mod canonical_identity;
 mod cost;
@@ -25,6 +26,13 @@ mod shard;
 mod transition;
 mod verify;
 mod vmap;
+
+pub use algebra_graduation::{
+    ALGEBRA_GRADUATION_CONTRACT_V1, AlgebraCandidate, AlgebraEvidenceClaim, AlgebraEvidenceState,
+    AlgebraGraduationError, AlgebraGraduationRecord, AlgebraGraduationReport,
+    AlgebraGraduationRequirement, DifferentialEvidence, GraduatedAlgebra,
+    evaluate_algebra_graduation,
+};
 
 /// Build a reusable first-order linearization graph. The returned [`JvpGraph`]
 /// exposes explicit tangent inputs, so it can be executed repeatedly for
