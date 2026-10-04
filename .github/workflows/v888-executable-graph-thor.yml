@@ -23,6 +23,9 @@ jobs:
     if: github.repository == 'Memorithm/scirust'
     runs-on: [self-hosted, Linux, ARM64, scirust-arm64, jetson-thor, internal]
     timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}/v888-1520-${{ github.run_id }}-${{ github.run_attempt }}
     env:
       CARGO_INCREMENTAL: '0'
       RUSTFLAGS: '-D warnings'
@@ -33,6 +36,8 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
+          ref: ${{ github.sha }}
+          path: v888-1520-${{ github.run_id }}-${{ github.run_attempt }}
           persist-credentials: false
 
       - name: Isolate Cargo registry
