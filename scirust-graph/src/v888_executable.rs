@@ -346,8 +346,14 @@ impl BancV888ExecutableGraph {
 
         let mut offset = 0_u64;
         bytes.extend_from_slice(&offset.to_le_bytes());
+        let mut edge_cursor = 0_usize;
         for node in 0..self.node_count() {
-            offset += self.graph.out_degree(node).unwrap_or(0) as u64;
+            while edge_cursor < self.graph.edges().len()
+                && self.graph.edges()[edge_cursor].source == node
+            {
+                edge_cursor += 1;
+            }
+            offset = edge_cursor as u64;
             bytes.extend_from_slice(&offset.to_le_bytes());
         }
         for edge in self.graph.edges() {
@@ -638,11 +644,13 @@ fn sha256(input: &[u8]) -> [u8; 32] {
     for chunk in padded.chunks_exact(64) {
         let mut words = [0_u32; 64];
         for (index, word) in words[..16].iter_mut().enumerate() {
-            *word = u32::from_be_bytes(
-                chunk[index * 4..index * 4 + 4]
-                    .try_into()
-                    .expect("exact SHA-256 word"),
-            );
+            let start = index * 4;
+            *word = u32::from_be_bytes([
+                chunk[start],
+                chunk[start + 1],
+                chunk[start + 2],
+                chunk[start + 3],
+            ]);
         }
         for index in 16..64 {
             let s0 = words[index - 15].rotate_right(7)
@@ -725,7 +733,7 @@ mod tests {
         assert_eq!(graph.contact_count(), 10);
         assert_eq!(
             graph.sha256_hex(),
-            "5a89e1eb9c9ee722a7990acbb5190043b7740957376929a9bf19c1f83f32e327"
+            "1943623ed4cf01692158e37c5ab96f2103ae1cbb6dd86568a40c4c40dc9c17ea"
         );
     }
 
