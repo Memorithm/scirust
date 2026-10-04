@@ -12,6 +12,7 @@ on:
       - '.github/workflows/v888-executable-graph-thor.yml'
   workflow_dispatch:
 
+# Exact-head reproduction gate for SciRust #1520.
 permissions:
   contents: read
 
