@@ -91,6 +91,15 @@ jobs:
           tmpdir="$(mktemp -d "$GITHUB_WORKSPACE/.ci-tmp.XXXXXX")"
           chmod 700 "$tmpdir"
           echo "TMPDIR=$tmpdir" >> "$GITHUB_ENV"
+      - name: Isolate Rust toolchain homes
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup_home="$RUNNER_TEMP/rustup-native-arm64-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cargo_home="$RUNNER_TEMP/cargo-native-arm64-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -p "$rustup_home" "$cargo_home"
+          echo "RUSTUP_HOME=$rustup_home" >> "$GITHUB_ENV"
+          echo "CARGO_HOME=$cargo_home" >> "$GITHUB_ENV"
       - name: Install pinned nightly toolchain
         uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
         with:
@@ -139,29 +148,50 @@ jobs:
             exit 0
           fi
 
-          managed_training=true
+          managed_gpu_occupancy=true
           printf '%s\n' "$compute_apps"
           while IFS=',' read -r raw_pid process_name; do
             pid="$(printf '%s' "$raw_pid" | tr -d '[:space:]')"
-            [[ "$pid" =~ ^[0-9]+$ ]] || { managed_training=false; continue; }
+            [[ "$pid" =~ ^[0-9]+$ ]] || { managed_gpu_occupancy=false; continue; }
+            process_name="${process_name# }"
             cmdline="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
             proc_user="$(ps -p "$pid" -o user= 2>/dev/null | xargs || true)"
             ppid="$(ps -p "$pid" -o ppid= 2>/dev/null | tr -d '[:space:]')"
             cgroup="$(cat "/proc/$pid/cgroup" 2>/dev/null || true)"
-            echo "pid=$pid user=$proc_user ppid=$ppid cmdline=$cmdline cgroup=$cgroup"
-            if [[ "${process_name# }" != "/root/scirust/target/release/examples/cuda_pretrain" ]] \
-              || [[ "$cmdline" != *"/root/scirust/target/release/examples/cuda_pretrain"* ]] \
-              || [[ "$proc_user" != "root" ]] \
-              || [[ "$ppid" != "1" ]] \
-              || [[ "$cgroup" != 0::/user.slice/user-0.slice/session-*.scope ]]; then
-              managed_training=false
+            echo "pid=$pid user=$proc_user ppid=$ppid name=$process_name cmdline=$cmdline cgroup=$cgroup"
+
+            known_managed=false
+            if [[ "$process_name" == "/root/scirust/target/release/examples/cuda_pretrain" ]] \
+              && [[ "$cmdline" == *"/root/scirust/target/release/examples/cuda_pretrain"* ]] \
+              && [[ "$proc_user" == "root" ]] \
+              && [[ "$ppid" == "1" ]] \
+              && [[ "$cgroup" == 0::/user.slice/user-0.slice/session-*.scope ]]; then
+              known_managed=true
+            elif [[ "$proc_user" == "remoteops" ]] \
+              && [[ "$ppid" == "1" ]] \
+              && [[ "$cgroup" == "0::/system.slice/memorithm-viggle-lan.service" ]] \
+              && [[ "$cmdline" == *"/srv/models/qwen-image-2.1-viggle-turbo/lan-server.py"* ]]; then
+              known_managed=true
+            elif [[ "$proc_user" == "memorithm-clm" ]] \
+              && [[ "$cgroup" == "0::/system.slice/memorithm-clm.service" ]] \
+              && [[ "$cmdline" == *"/srv/models/clm-v0.1-8b/"* ]] \
+              && [[ "$cmdline" == *"clm-serve"* ]]; then
+              known_managed=true
+            elif [[ "$proc_user" == "memorithm-clm" ]] \
+              && [[ "$cgroup" == "0::/system.slice/memorithm-clm-encoder.service" ]] \
+              && [[ "$process_name" == "VLLM::EngineCore" ]]; then
+              known_managed=true
+            fi
+
+            if [[ "$known_managed" != true ]]; then
+              managed_gpu_occupancy=false
             fi
           done <<< "$compute_apps"
 
-          if [[ "$managed_training" == true ]]; then
+          if [[ "$managed_gpu_occupancy" == true ]]; then
             echo "available=false" >> "$GITHUB_OUTPUT"
-            echo "reason=managed-production-training" >> "$GITHUB_OUTPUT"
-            echo "::notice::Native ARM64 CUDA execution deferred because the detached SciAgent production training owns the GPU. The training process is left untouched."
+            echo "reason=managed-shared-gpu-services" >> "$GITHUB_OUTPUT"
+            echo "::notice::Native ARM64 CUDA execution deferred because only approved managed GPU services are active. Existing services are left untouched."
             exit 0
           fi
 
