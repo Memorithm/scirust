@@ -119,6 +119,14 @@
       "required_symbols": [
         "evaluate"
       ]
+    },
+    {
+      "source": "scirust-core/src/nn/layer_norm.rs",
+      "min_runnable_examples": 1,
+      "required_symbols": [
+        "new",
+        "with_name"
+      ]
     }
   ]
 }
