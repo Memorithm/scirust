@@ -6,13 +6,21 @@ Status: research bootstrap, not a performance or model-quality claim.
 
 This track uses only the FlyWire BANC v888 connectome. FAFB v783 and other connectomes are excluded from the experimental source set for this programme.
 
-The authoritative public metadata is the Codex BANC v888 dataset page and FAQ. At bootstrap time Codex identifies BANC v888 as Female Adult Fly Brain and Nerve Cord, snapshot v888 dated 2026-05-20, with 158,262 neurons and 3,037,361 aggregated connections. These connection counts are not to be relabelled as raw synapse counts.
+The authoritative public dataset description remains the Codex BANC v888 page and FAQ, but display totals are not SciRust graph evidence. For executable work, use the audited, source-bound scopes retained by the 2026-09-22 qualification: 188,508 metadata nodes, 13,620,865 directed pairs in the metadata-induced v3 graph, 42,309,621 contacts on those pairs, and 198,816,365 records in the retained raw-v3 table. These are distinct quantities and must not be substituted for one another. A consumer must bind the exact selected artifact identities and checksums rather than copy a website display count.
 
 External data must remain outside the SciRust source tree. SciRust may contain schemas, import adapters, deterministic fixtures derived from tiny synthetic graphs, source identifiers, checksums and reproducibility manifests. It must not vendor the BANC dataset or assume redistribution rights. Before any external artifact is published, the exact license/citation metadata shipped by the selected Codex download must be captured in the evidence bundle.
 
 Sources:
 - https://codex.flywire.ai/?dataset=banc
 - https://codex.flywire.ai/faq
+
+## Executable graph consumer gate
+
+The retained V888-BOOL-0.1 source qualification is exposed to downstream Rust consumers through `scirust_graph::v888_executable`. The canonical external graph remains `V8CSR001`; SciRust does not vendor the graph or raw BANC data.
+
+The public contract binds the exact 2026-09-22.1 source/software evidence, validates canonical graph bytes, keeps directed-pair and contact counts distinct, retains subset cut-edge accounting, and exposes exact active-node / pair / contact / caller-event work counters. It deliberately carries no inferred sign, conductance, threshold, physiological delay or event semantics.
+
+Qualification and downstream boundaries are documented in [`V888_EXECUTABLE_GRAPH_QUALIFICATION.md`](V888_EXECUTABLE_GRAPH_QUALIFICATION.md). SciRust issue #1520 is the executable graph prerequisite for the SML CSP / V888-BOOL-4.0 handoff; completing it does not establish topology advantage or satisfy SML's independent promotion gates.
 
 ## Mission
 
