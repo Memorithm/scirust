@@ -1,9 +1,10 @@
-//! Exact topology descriptors and matched controls for the V888-GROWTH programme.
+//! Exact topology descriptors, matched controls and VG-3C metrics for V888-GROWTH.
 //!
 //! This module converts the already-qualified executable BANC v888 graph into
 //! per-node structural facts suitable for later joins with morphology or
-//! annotation tables, and exposes deterministic unit-adjacency matched controls
-//! for VG-3B. It does not infer developmental causality, biological importance,
+//! annotation tables, exposes deterministic unit-adjacency matched controls for
+//! VG-3B, and re-exports reachability / centrality / rich-club helpers for
+//! VG-3C. It does not infer developmental causality, biological importance,
 //! model quality, topology advantage, or growth mechanisms.
 
 use core::fmt;
@@ -18,6 +19,15 @@ pub use crate::v888_growth_controls::{
     V888GrowthUnitEdge, V888GrowthUnitEdges, v888_growth_control_mix, v888_growth_control_stats,
     v888_growth_edge_count_control, v888_growth_matched_controls, v888_growth_rewire_control,
     v888_growth_select_subset, v888_growth_unit_reference,
+};
+pub use crate::v888_growth_metrics::{
+    V888GrowthBetweenness, V888GrowthDistanceProfile, V888GrowthHarmonicCloseness,
+    V888GrowthMetricBundle, V888GrowthMetricDelta, V888GrowthMetricsError,
+    V888GrowthReachabilityProfile, V888GrowthRichClubCurve, V888GrowthRichClubDegree,
+    V888GrowthRichClubPoint, v888_growth_bfs_distances, v888_growth_compare_control_bundle,
+    v888_growth_compare_metric_arms, v888_growth_directed_betweenness, v888_growth_f64_to_nano,
+    v888_growth_harmonic_closeness, v888_growth_metric_bundle, v888_growth_reachability_from_edges,
+    v888_growth_reachability_profile, v888_growth_rich_club_curve, v888_growth_unit_digraph,
 };
 
 /// One exact per-neuron topology row for V888-GROWTH VG-3.
@@ -66,8 +76,9 @@ pub struct V888GrowthTopologyProfile {
 /// The implementation is deterministic for canonical graph bytes. It computes
 /// degree and contact-multiplicity sums in one edge pass, counts each reciprocal
 /// node pair once, and uses the graph's canonical SCC labelling. The function
-/// deliberately does not compute all-pairs reachability, centrality, or modularity;
-/// matched controls live in the VG-3B helpers re-exported from this module.
+/// deliberately does not compute modularity or morphology joins; matched
+/// controls live in the VG-3B helpers and reachability/centrality/rich-club
+/// descriptors live in the VG-3C helpers re-exported from this module.
 ///
 /// # Errors
 ///
