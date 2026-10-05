@@ -38,7 +38,7 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
-use std::f64::consts::PI;
+use std::f64::consts::{FRAC_2_SQRT_PI, PI};
 
 /// Euler–Mascheroni constant γ.
 ///
@@ -47,15 +47,38 @@ use std::f64::consts::PI;
 #[allow(clippy::approx_constant)]
 pub const EULER_MASCHERONI: f64 = 0.577_215_664_901_532_9;
 
-// Maximum iterations for the series / continued-fraction expansions. Reaching
-// this bound means the argument is outside the well-converging domain; the
-// functions return their best estimate rather than looping unboundedly.
+// Base iteration bound for the series / continued-fraction expansions. The
+// fixed-budget expansions (Bessel log series, binomial deviance) return their
+// best estimate on reaching it rather than looping unboundedly; the
+// incomplete gamma/beta expansions instead use `scaled_iteration_budget` and
+// return `NaN` on genuine non-convergence.
 const MAX_ITERS: usize = 300;
 // Relative convergence tolerance for the iterative expansions.
 const EPS: f64 = 1e-15;
 // Smallest positive value used to avoid division by zero in the modified
 // Lentz continued-fraction algorithm.
 const TINY: f64 = 1e-300;
+// Hard ceiling on any argument-scaled iteration budget, so pathological input
+// can never loop unboundedly.
+const MAX_SCALED_ITERS: usize = 50_000_000;
+
+// Iteration budget for an expansion whose term count grows with a shape
+// parameter: `MAX_ITERS + ⌈20·√scale⌉`, capped at `MAX_SCALED_ITERS`.
+//
+// The incomplete-gamma series and continued fraction, and the incomplete-beta
+// continued fraction, all need a number of terms that grows with the shape
+// parameter(s) near the transition point `x ≈ a` (resp. `x ≈ a/(a+b)`).
+// Measured worst cases for the continued fractions grow roughly like
+// `scale^{1/3}` (≈ 900 terms at `scale = 1e6`, ≈ 19 000 at `1e10`), so the
+// `20·√scale` margin is generous. The previous fixed 300-term cap on the
+// continued fractions was exceeded at the worst-case `x` from `scale ≈ 1e5`;
+// the silently truncated results were off by ~7e-4 (gamma, `a = 1e6`) and
+// ~9e-3 (beta, `a = b = 1e7`).
+fn scaled_iteration_budget(scale: f64) -> usize {
+    ((20.0 * scale.sqrt()).ceil() as usize)
+        .saturating_add(MAX_ITERS)
+        .min(MAX_SCALED_ITERS)
+}
 
 // ============================================================ //
 //  Gamma family                                                //
@@ -80,11 +103,17 @@ const LANCZOS_COEFFS: [f64; 9] = [
 ///
 /// Uses the Lanczos approximation, with Euler's reflection formula for the
 /// left half-plane so negative non-integer arguments are handled. Poles at the
-/// non-positive integers return `f64::INFINITY`.
+/// non-positive integers return `f64::INFINITY`. `ln_gamma(+∞) = +∞`;
+/// `x = −∞` has no limit (|Γ| oscillates between the poles), so it returns
+/// `NaN`, as does `NaN` input.
 pub fn ln_gamma(x: f64) -> f64 {
-    if x.is_nan()
+    if x.is_nan() || x == f64::NEG_INFINITY
     {
         return f64::NAN;
+    }
+    if x == f64::INFINITY
+    {
+        return f64::INFINITY;
     }
     // Poles at 0, -1, -2, …
     if x <= 0.0 && x == x.floor()
@@ -111,12 +140,17 @@ pub fn ln_gamma(x: f64) -> f64 {
 /// The gamma function `Γ(x)`.
 ///
 /// Real-valued for all non-pole arguments (negative non-integers included, via
-/// reflection). Returns `±∞` at the poles (non-positive integers) with the sign
-/// of the one-sided limit, and `NaN` for `NaN` input.
+/// reflection). Returns `+∞` at the poles (non-positive integers) and at
+/// `x = +∞`; returns `NaN` for `NaN` input and for `x = −∞`, where Γ has no
+/// limit.
 pub fn gamma(x: f64) -> f64 {
-    if x.is_nan()
+    if x.is_nan() || x == f64::NEG_INFINITY
     {
         return f64::NAN;
+    }
+    if x == f64::INFINITY
+    {
+        return f64::INFINITY;
     }
     if x <= 0.0 && x == x.floor()
     {
@@ -185,14 +219,26 @@ pub fn ln_beta(a: f64, b: f64) -> f64 {
 //  Error function                                              //
 // ============================================================ //
 
+// Below this |x|, `erf(x) = 2x/√π` to within a relative x²/3 < 4e-17.
+const ERF_TAYLOR_THRESHOLD: f64 = 1e-8;
+
 /// The error function `erf(x) = (2/√π) ∫₀ˣ e^{−t²} dt`.
 ///
 /// Built on the regularized lower incomplete gamma `P(1/2, x²)`, tying erf to
-/// the gamma family so both share one validated implementation. Odd in `x`.
+/// the gamma family so both share one validated implementation. Odd in `x`;
+/// `erf(±∞) = ±1`.
+///
+/// For `|x| < 1e-8` the leading Maclaurin term `2x/√π` is returned directly
+/// (the next term is a relative `x²/3 < 4e-17`); this keeps tiny arguments
+/// accurate where `x²` would underflow and `P(1/2, x²)` would collapse to 0.
 pub fn erf(x: f64) -> f64 {
     if x == 0.0
     {
-        return 0.0;
+        return x;
+    }
+    if x.abs() < ERF_TAYLOR_THRESHOLD
+    {
+        return FRAC_2_SQRT_PI * x;
     }
     let p = regularized_gamma_p(0.5, x * x);
     if x >= 0.0 { p } else { -p }
@@ -200,7 +246,7 @@ pub fn erf(x: f64) -> f64 {
 
 /// The complementary error function `erfc(x) = 1 − erf(x)`, accurate in the
 /// far tail (where `1 − erf(x)` would lose all significance) via the upper
-/// incomplete gamma `Q(1/2, x²)`.
+/// incomplete gamma `Q(1/2, x²)`. `erfc(+∞) = 0`, `erfc(−∞) = 2`.
 pub fn erfc(x: f64) -> f64 {
     if x == 0.0
     {
@@ -283,14 +329,22 @@ pub fn erfinv(y: f64) -> f64 {
 /// `x = χ²/2`, the χ²(k) CDF used throughout SPC and reliability. Series for
 /// `x < a + 1`, continued fraction (via `Q`) otherwise, for accuracy across the
 /// whole range.
+///
+/// `P(a, +∞) = 1`. Returns `NaN` for `a ≤ 0`, non-finite `a`, `x < 0`, `NaN`
+/// input, or if an expansion fails to converge within its iteration budget
+/// (which scales with `√a`), rather than a silently truncated value.
 pub fn regularized_gamma_p(a: f64, x: f64) -> f64 {
-    if a <= 0.0 || x < 0.0 || a.is_nan() || x.is_nan()
+    if a <= 0.0 || x < 0.0 || !a.is_finite() || x.is_nan()
     {
         return f64::NAN;
     }
     if x == 0.0
     {
         return 0.0;
+    }
+    if x == f64::INFINITY
+    {
+        return 1.0;
     }
     if x < a + 1.0
     {
@@ -305,14 +359,20 @@ pub fn regularized_gamma_p(a: f64, x: f64) -> f64 {
 /// Regularized upper incomplete gamma `Q(a, x) = 1 − P(a, x) = Γ(a, x)/Γ(a)`.
 ///
 /// Accurate in the far tail (survival function), where `1 − P` would cancel.
+/// `Q(a, +∞) = 0`; the domain and non-convergence rules match
+/// [`regularized_gamma_p`].
 pub fn regularized_gamma_q(a: f64, x: f64) -> f64 {
-    if a <= 0.0 || x < 0.0 || a.is_nan() || x.is_nan()
+    if a <= 0.0 || x < 0.0 || !a.is_finite() || x.is_nan()
     {
         return f64::NAN;
     }
     if x == 0.0
     {
         return 1.0;
+    }
+    if x == f64::INFINITY
+    {
+        return 0.0;
     }
     if x < a + 1.0
     {
@@ -329,16 +389,15 @@ pub fn regularized_gamma_q(a: f64, x: f64) -> f64 {
 // grows like O(√a) (this is precisely the regime Temme's 1987 uniform
 // asymptotic expansion targets). Rather than silently truncate at a fixed
 // `MAX_ITERS` and return a wrong result for large `a`, the cap scales with
-// `√a` (empirically ~8·√a terms suffice; 20·√a leaves comfortable margin),
-// bounded to avoid an unbounded loop on pathological input, and a genuine
-// non-convergence returns `NaN` instead of a truncated series value.
+// `√a` (empirically ~8·√a terms suffice; 20·√a leaves comfortable margin, see
+// `scaled_iteration_budget`), bounded to avoid an unbounded loop on
+// pathological input, and a genuine non-convergence returns `NaN` instead of
+// a truncated series value.
 fn gamma_series_p(a: f64, x: f64) -> f64 {
     let mut ap = a;
     let mut sum = 1.0 / a;
     let mut del = sum;
-    let iters = ((20.0 * a.sqrt()).ceil() as usize)
-        .saturating_add(MAX_ITERS)
-        .min(50_000_000);
+    let iters = scaled_iteration_budget(a);
     let mut converged = false;
     for _ in 0..iters
     {
@@ -359,12 +418,15 @@ fn gamma_series_p(a: f64, x: f64) -> f64 {
 }
 
 // Continued-fraction expansion for Q(a, x) (modified Lentz), for x >= a + 1.
+// Like the series, its term count grows with `a` near the `x ≈ a` boundary, so
+// the budget scales with `√a` and non-convergence returns `NaN`.
 fn gamma_cf_q(a: f64, x: f64) -> f64 {
     let mut b = x + 1.0 - a;
     let mut c = 1.0 / TINY;
     let mut d = 1.0 / b;
     let mut h = d;
-    for i in 1..MAX_ITERS
+    let mut converged = false;
+    for i in 1..scaled_iteration_budget(a)
     {
         let an = -(i as f64) * (i as f64 - a);
         b += 2.0;
@@ -383,8 +445,13 @@ fn gamma_cf_q(a: f64, x: f64) -> f64 {
         h *= del;
         if (del - 1.0).abs() < EPS
         {
+            converged = true;
             break;
         }
+    }
+    if !converged
+    {
+        return f64::NAN;
     }
     (-x + a * x.ln() - ln_gamma(a)).exp() * h
 }
@@ -399,8 +466,14 @@ fn gamma_cf_q(a: f64, x: f64) -> f64 {
 /// The CDF of a Beta(a, b) distribution, and the tail integral behind the
 /// Student-t and F distributions. Lentz continued fraction with the standard
 /// `x < (a+1)/(a+b+2)` symmetry swap for fast convergence on both sides.
+///
+/// The continued-fraction budget scales with `√(a+b)`; `NaN` is returned for
+/// non-positive or non-finite `a`/`b`, `NaN` `x`, or a genuine
+/// non-convergence (never a silently truncated value). For very large shape
+/// parameters the absolute accuracy is limited by the `ln Γ` cancellation in
+/// the prefactor (≈ `ε·(a+b)·ln(a+b)`), not by the continued fraction.
 pub fn regularized_incomplete_beta(a: f64, b: f64, x: f64) -> f64 {
-    if a <= 0.0 || b <= 0.0 || a.is_nan() || b.is_nan() || x.is_nan()
+    if a <= 0.0 || b <= 0.0 || !a.is_finite() || !b.is_finite() || x.is_nan()
     {
         return f64::NAN;
     }
@@ -424,7 +497,9 @@ pub fn regularized_incomplete_beta(a: f64, b: f64, x: f64) -> f64 {
     }
 }
 
-// Lentz continued fraction for the incomplete beta.
+// Lentz continued fraction for the incomplete beta. The term count near
+// `x ≈ a/(a+b)` grows with the shape parameters, so the budget scales with
+// `√(a+b)` and non-convergence returns `NaN`.
 fn beta_cf(a: f64, b: f64, x: f64) -> f64 {
     let qab = a + b;
     let qap = a + 1.0;
@@ -437,7 +512,8 @@ fn beta_cf(a: f64, b: f64, x: f64) -> f64 {
     }
     d = 1.0 / d;
     let mut h = d;
-    for m in 1..MAX_ITERS
+    let mut converged = false;
+    for m in 1..scaled_iteration_budget(a + b)
     {
         let m = m as f64;
         let m2 = 2.0 * m;
@@ -472,10 +548,11 @@ fn beta_cf(a: f64, b: f64, x: f64) -> f64 {
         h *= del;
         if (del - 1.0).abs() < EPS
         {
+            converged = true;
             break;
         }
     }
-    h
+    if converged { h } else { f64::NAN }
 }
 
 // ============================================================ //
@@ -1129,6 +1206,135 @@ mod tests {
             1.0 - regularized_incomplete_beta(b, a, 1.0 - x),
             1e-13
         ));
+    }
+
+    // ---- Extreme arguments ----
+
+    #[test]
+    fn gamma_family_at_infinity() {
+        assert_eq!(ln_gamma(f64::INFINITY), f64::INFINITY);
+        assert_eq!(gamma(f64::INFINITY), f64::INFINITY);
+        // Γ has no limit at −∞ (it oscillates between poles).
+        assert!(ln_gamma(f64::NEG_INFINITY).is_nan());
+        assert!(gamma(f64::NEG_INFINITY).is_nan());
+        // Overflow to +∞ for large finite x is unchanged.
+        assert_eq!(gamma(200.0), f64::INFINITY);
+        assert!(ln_gamma(1e300).is_finite());
+    }
+
+    #[test]
+    fn erf_and_erfc_at_infinite_and_huge_arguments() {
+        // Previously NaN: x² overflowed and the continued-fraction prefactor
+        // evaluated ∞ − ∞.
+        assert_eq!(erf(f64::INFINITY), 1.0);
+        assert_eq!(erf(f64::NEG_INFINITY), -1.0);
+        assert_eq!(erfc(f64::INFINITY), 0.0);
+        assert_eq!(erfc(f64::NEG_INFINITY), 2.0);
+        assert_eq!(erf(1e200), 1.0);
+        assert_eq!(erf(-1e200), -1.0);
+        assert_eq!(erfc(1e200), 0.0);
+        assert_eq!(erfc(-1e200), 2.0);
+        assert!(erf(f64::NAN).is_nan());
+        assert!(erfc(f64::NAN).is_nan());
+    }
+
+    #[test]
+    fn erf_is_accurate_for_tiny_arguments() {
+        // Previously erf(x) = 0 once x² underflowed (|x| ≲ 1e-154).
+        let c = 2.0 / std::f64::consts::PI.sqrt();
+        for &x in &[1e-9, 1e-30, 1e-160, 1e-200, 1e-300, f64::MIN_POSITIVE]
+        {
+            assert!(rel_close_unit(erf(x), c * x, 1e-15), "x={x} erf={}", erf(x));
+            assert!(rel_close_unit(erf(-x), -c * x, 1e-15), "x={x}");
+            assert!(rel_close_unit(erfc(x), 1.0 - c * x, 1e-15), "x={x}");
+        }
+        // Both sides of the Taylor threshold agree with 2x/√π·(1 − x²/3).
+        for &x in &[0.99e-8, 1.01e-8, 1e-6]
+        {
+            let want = c * x * (1.0 - x * x / 3.0);
+            assert!(rel_close_unit(erf(x), want, 1e-14), "x={x}");
+        }
+        // Signed zero is preserved (erf is odd).
+        assert!(erf(-0.0).is_sign_negative());
+        // erfinv inherits the fix: its Halley refinement evaluates erf.
+        let y = 1e-300;
+        let want = y * std::f64::consts::PI.sqrt() / 2.0;
+        assert!(
+            rel_close_unit(erfinv(y), want, 1e-14),
+            "erfinv={}",
+            erfinv(y)
+        );
+    }
+
+    #[test]
+    fn regularized_gamma_at_infinite_x_and_invalid_a() {
+        for &a in &[0.5, 2.0, 1e6]
+        {
+            assert_eq!(regularized_gamma_p(a, f64::INFINITY), 1.0);
+            assert_eq!(regularized_gamma_q(a, f64::INFINITY), 0.0);
+        }
+        // Huge finite x is the far tail: P → 1, Q → 0 without NaN.
+        assert_eq!(regularized_gamma_p(2.0, 1e300), 1.0);
+        assert_eq!(regularized_gamma_q(2.0, 1e300), 0.0);
+        // Non-finite shape is rejected up front (it used to spin through the
+        // full iteration cap before returning NaN).
+        assert!(regularized_gamma_p(f64::INFINITY, 1.0).is_nan());
+        assert!(regularized_gamma_q(f64::INFINITY, 1.0).is_nan());
+        assert!(regularized_gamma_p(f64::NAN, 1.0).is_nan());
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn regularized_gamma_continued_fraction_accurate_for_large_a() {
+        // Regression: the Q continued fraction (x >= a + 1) was capped at a
+        // fixed 300 terms, so for a ≳ 1e6 just past the boundary it returned a
+        // silently truncated value (P(1e6, 1e6 + 11) = 0.50518 instead of
+        // 0.50452; P(1e7, …) = 0.5763 instead of 0.50416). References from
+        // mpmath (dps = 50) via x^a e^{−x}/Γ(a+1) · ₁F₁(1; a+1; x).
+        let cases = [
+            (1e6, 1_000_011.0, 0.504_521_232_847_896_9),
+            (1e7, 10_000_032.622_776_601, 0.504_157_551_893_068),
+            (1e8, 100_000_101.0, 0.504_042_544_565_933_8),
+        ];
+        for (a, x, want) in cases
+        {
+            let p = regularized_gamma_p(a, x);
+            let q = regularized_gamma_q(a, x);
+            // Accuracy at this scale is bounded by the ln Γ prefactor
+            // cancellation (~ε·a·ln a), not by the continued fraction.
+            assert!(close(p, want, 1e-6), "a={a} p={p} want={want}");
+            assert!(close(q, 1.0 - want, 1e-6), "a={a} q={q}");
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn incomplete_beta_continued_fraction_accurate_for_large_shapes() {
+        // Regression: the Lentz continued fraction was capped at a fixed 300
+        // terms, so I_{1/2}(1e7, 1e7) came out 0.50946 instead of exactly 1/2.
+        // References from mpmath (dps = 50) via the ₂F₁ representation.
+        assert!(close(regularized_incomplete_beta(1e7, 1e7, 0.5), 0.5, 1e-6));
+        assert!(close(regularized_incomplete_beta(1e6, 1e6, 0.5), 0.5, 1e-6));
+        let cases = [
+            (1e6, 1e6, 0.501, 0.997_661_150_593_068_5),
+            (1e7, 1e7, 0.499_905_131_670_194_96, 0.198_071_955_402_665_1),
+            (1e6, 2e6, 0.333_833_333_333_333_3, 0.966_879_893_168_567_8),
+        ];
+        for (a, b, x, want) in cases
+        {
+            let got = regularized_incomplete_beta(a, b, x);
+            assert!(
+                close(got, want, 1e-6),
+                "a={a} b={b} x={x} got={got} want={want}"
+            );
+        }
+        // Non-finite shapes are rejected.
+        assert!(regularized_incomplete_beta(f64::INFINITY, 1.0, 0.5).is_nan());
+        assert!(regularized_incomplete_beta(1.0, f64::INFINITY, 0.5).is_nan());
+    }
+
+    fn rel_close_unit(a: f64, b: f64, tol: f64) -> bool {
+        (a - b).abs() <= tol * b.abs()
     }
 
     #[test]
