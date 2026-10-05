@@ -118,16 +118,21 @@ protocol is frozen.
 VG-0, VG-1 and VG-2 have retained Thor evidence. The executable V888 pair graph
 is separately qualified by the SciRust V8CSR001 contract.
 
-VG-3A now establishes the first Rust-owned topology-to-growth input surface:
-exact per-neuron in/out degree, incoming/outgoing contact multiplicity,
-reciprocal-neighbour count and canonical SCC membership/size. The dedicated
-Thor workflow consumes the frozen qualified graph, verifies its byte size and
-SHA-256, and emits a deterministic root-ID ordered CSV with its own SHA-256.
+VG-3A established the first Rust-owned topology-to-growth input surface: exact
+per-neuron in/out degree, incoming/outgoing contact multiplicity,
+reciprocal-neighbour count and canonical SCC membership/size.
 
-VG-3A deliberately stops before all-pairs reachability, centrality/rich-club
-metrics, modularity, morphology/annotation joins and matched-control inference.
-Those remain VG-3B/VG-3C work and no topology-advantage or developmental-causality
-claim follows from this slice.
+VG-3B now adds the required matched-control ladder as reusable Rust helpers:
+edge-count, degree, reciprocity and anatomical-block unit-adjacency controls
+over deterministic induced subsets of the same frozen V8CSR001 graph. The
+dedicated Thor workflow verifies the graph hash, runs the control exporter on a
+bounded subset, and records a compact summary. Block labels remain caller-supplied
+annotations, not inferred communities.
+
+VG-3B deliberately stops before all-pairs reachability, centrality/rich-club
+metrics, inferred modularity, morphology/annotation residual joins and any
+topology-advantage claim. Those remain VG-3C / later VG-3 work. No
+developmental-causality claim follows from this slice.
 
 The earlier Thor workflow `V888 Thor dataset and growth phase 0` downloads the
 external adult dataset into persistent host storage and emits only compact
