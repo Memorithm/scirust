@@ -6,6 +6,7 @@ pub mod directed;
 pub mod directed_metrics;
 pub mod v888_executable;
 pub mod v888_growth;
+pub mod v888_growth_controls;
 
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};

@@ -1,15 +1,24 @@
-//! Exact topology descriptors for the V888-GROWTH programme.
+//! Exact topology descriptors and matched controls for the V888-GROWTH programme.
 //!
 //! This module converts the already-qualified executable BANC v888 graph into
 //! per-node structural facts suitable for later joins with morphology or
-//! annotation tables. It does not infer developmental causality, biological
-//! importance, model quality, or growth mechanisms.
+//! annotation tables, and exposes deterministic unit-adjacency matched controls
+//! for VG-3B. It does not infer developmental causality, biological importance,
+//! model quality, topology advantage, or growth mechanisms.
 
 use core::fmt;
 
 use crate::banc_v888::BancV888NodeId;
 use crate::directed::DirectedGraphError;
 use crate::v888_executable::BancV888ExecutableGraph;
+
+pub use crate::v888_growth_controls::{
+    V888GrowthControlArm, V888GrowthControlArmResult, V888GrowthControlBundle,
+    V888GrowthControlError, V888GrowthControlMatch, V888GrowthControlStats, V888GrowthSubsetPolicy,
+    V888GrowthUnitEdge, V888GrowthUnitEdges, v888_growth_control_mix, v888_growth_control_stats,
+    v888_growth_edge_count_control, v888_growth_matched_controls, v888_growth_rewire_control,
+    v888_growth_select_subset, v888_growth_unit_reference,
+};
 
 /// One exact per-neuron topology row for V888-GROWTH VG-3.
 ///
@@ -57,8 +66,8 @@ pub struct V888GrowthTopologyProfile {
 /// The implementation is deterministic for canonical graph bytes. It computes
 /// degree and contact-multiplicity sums in one edge pass, counts each reciprocal
 /// node pair once, and uses the graph's canonical SCC labelling. The function
-/// deliberately does not compute all-pairs reachability, centrality, modularity,
-/// or matched controls; those remain separate VG-3 stages.
+/// deliberately does not compute all-pairs reachability, centrality, or modularity;
+/// matched controls live in the VG-3B helpers re-exported from this module.
 ///
 /// # Errors
 ///
