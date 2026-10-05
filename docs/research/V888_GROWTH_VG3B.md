@@ -83,6 +83,10 @@ Pilot defaults intentionally stay within BOOL-0.2a scale (for example 512-node
 weak-BFS subsets) so control generation remains reviewable before any full-graph
 rewiring campaign.
 
+The Thor workflow recipe is retained as
+`docs/research/V888_GROWTH_VG3B_THOR_WORKFLOW.yml` until a credential with the
+GitHub `workflow` scope can install it at `.github/workflows/v888-growth-vg3b-thor.yml`.
+
 ## What VG-3B does not claim
 
 VG-3B does not yet implement or qualify:
