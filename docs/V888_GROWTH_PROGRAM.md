@@ -129,10 +129,16 @@ dedicated Thor workflow verifies the graph hash, runs the control exporter on a
 bounded subset, and records a compact summary. Block labels remain caller-supplied
 annotations, not inferred communities.
 
-VG-3B deliberately stops before all-pairs reachability, centrality/rich-club
-metrics, inferred modularity, morphology/annotation residual joins and any
-topology-advantage claim. Those remain VG-3C / later VG-3 work. No
-developmental-causality claim follows from this slice.
+VG-3C now adds Rust-owned deterministic reachability, directed harmonic
+closeness, directed Brandes betweenness and rich-club descriptors on the same
+unit-adjacency reference and VG-3B control arms, with an exact integer delta
+table for arm comparison. The pilot exporter stays at VG-3B subset scale
+(≤512) because exact betweenness is cubic.
+
+VG-3C deliberately stops before inferred modularity, morphology/hemilineage
+residual joins, mixing/ensemble qualification and any topology-advantage claim.
+Those remain VG-3D / later VG-3 work. No developmental-causality claim follows
+from this slice.
 
 The earlier Thor workflow `V888 Thor dataset and growth phase 0` downloads the
 external adult dataset into persistent host storage and emits only compact
