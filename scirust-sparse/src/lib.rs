@@ -3,8 +3,12 @@
 //! This crate provides three sparse matrix layouts for `f64` data —
 //! coordinate ([`CooMatrix`]), compressed sparse row ([`CsrMatrix`]) and
 //! compressed sparse column ([`CscMatrix`]) — with lossless conversions
-//! between them, a sparse matrix–vector product ([`CsrMatrix::spmv`]), and a
-//! small family of solvers:
+//! between them, sparse matrix–vector products in both layouts
+//! ([`CsrMatrix::spmv`], [`CscMatrix::spmv`]) and their transposed forms
+//! ([`CsrMatrix::spmv_transpose`], [`CscMatrix::spmv_transpose`]), CSR
+//! algebra ([`CsrMatrix::scale`], [`CsrMatrix::add_scaled`],
+//! [`CsrMatrix::matmul`]), diagonal extraction, and a small family of
+//! solvers:
 //!
 //! * [`solve_tridiagonal`] — the Thomas algorithm for tridiagonal systems.
 //! * [`SparseLu`] — a Gilbert–Peierls left-looking sparse LU factorization
@@ -530,6 +534,195 @@ impl CsrMatrix {
             data,
         }
     }
+
+    /// Transposed sparse matrix–vector product `y = Aᵀ · x`, computed without
+    /// materializing the transpose.
+    ///
+    /// Returns [`SparseError::DimensionMismatch`] if `x.len() != rows`.
+    pub fn spmv_transpose(&self, x: &[f64]) -> Result<Vec<f64>, SparseError> {
+        if x.len() != self.rows
+        {
+            return Err(SparseError::DimensionMismatch {
+                expected: self.rows,
+                found: x.len(),
+            });
+        }
+        let mut y = vec![0.0f64; self.cols];
+        for (r, w) in self.indptr.windows(2).enumerate()
+        {
+            let xr = x[r];
+            for k in w[0]..w[1]
+            {
+                y[self.indices[k]] += self.data[k] * xr;
+            }
+        }
+        Ok(y)
+    }
+
+    /// Main diagonal `[a_00, a_11, …]` of length `min(rows, cols)`; absent
+    /// entries read as `0.0`.
+    pub fn diagonal(&self) -> Vec<f64> {
+        (0..self.rows.min(self.cols))
+            .map(|i| self.get(i, i))
+            .collect()
+    }
+
+    /// Return `alpha · A` with the same sparsity structure.
+    ///
+    /// Every stored entry is kept (including any that become `0.0` when
+    /// `alpha == 0.0`), so the structure is preserved exactly.
+    pub fn scale(&self, alpha: f64) -> CsrMatrix {
+        CsrMatrix {
+            rows: self.rows,
+            cols: self.cols,
+            indptr: self.indptr.clone(),
+            indices: self.indices.clone(),
+            data: self.data.iter().map(|&v| alpha * v).collect(),
+        }
+    }
+
+    /// Return `A + alpha · B` for two matrices of identical shape.
+    ///
+    /// The result's structure is the union of both operands' structures, with
+    /// column indices sorted in every row. Entries that cancel numerically
+    /// stay stored as explicit zeros, matching the duplicate-summing behaviour
+    /// of [`CooMatrix::to_csr`]. Returns [`SparseError::DimensionMismatch`]
+    /// (rows checked first, then columns) when the shapes differ.
+    pub fn add_scaled(&self, other: &CsrMatrix, alpha: f64) -> Result<CsrMatrix, SparseError> {
+        if other.rows != self.rows
+        {
+            return Err(SparseError::DimensionMismatch {
+                expected: self.rows,
+                found: other.rows,
+            });
+        }
+        if other.cols != self.cols
+        {
+            return Err(SparseError::DimensionMismatch {
+                expected: self.cols,
+                found: other.cols,
+            });
+        }
+        let mut indptr = Vec::with_capacity(self.rows + 1);
+        indptr.push(0usize);
+        let mut indices = Vec::with_capacity(self.nnz() + other.nnz());
+        let mut data = Vec::with_capacity(self.nnz() + other.nnz());
+        for r in 0..self.rows
+        {
+            // Two-pointer merge of the sorted column lists of row `r`.
+            let (mut i, i_end) = (self.indptr[r], self.indptr[r + 1]);
+            let (mut j, j_end) = (other.indptr[r], other.indptr[r + 1]);
+            while i < i_end || j < j_end
+            {
+                let ci = if i < i_end
+                {
+                    self.indices[i]
+                }
+                else
+                {
+                    usize::MAX
+                };
+                let cj = if j < j_end
+                {
+                    other.indices[j]
+                }
+                else
+                {
+                    usize::MAX
+                };
+                if ci < cj
+                {
+                    indices.push(ci);
+                    data.push(self.data[i]);
+                    i += 1;
+                }
+                else if cj < ci
+                {
+                    indices.push(cj);
+                    data.push(alpha * other.data[j]);
+                    j += 1;
+                }
+                else
+                {
+                    indices.push(ci);
+                    data.push(self.data[i] + alpha * other.data[j]);
+                    i += 1;
+                    j += 1;
+                }
+            }
+            indptr.push(indices.len());
+        }
+        Ok(CsrMatrix {
+            rows: self.rows,
+            cols: self.cols,
+            indptr,
+            indices,
+            data,
+        })
+    }
+
+    /// Sparse matrix–matrix product `C = A · B` (Gustavson's row-by-row
+    /// algorithm).
+    ///
+    /// `C` has shape `self.rows × other.cols`, with column indices sorted in
+    /// every row. Products that cancel numerically stay stored as explicit
+    /// zeros. The accumulation order is fixed by the operands' storage order,
+    /// so the result is bitwise deterministic. Returns
+    /// [`SparseError::DimensionMismatch`] if `self.cols != other.rows`.
+    pub fn matmul(&self, other: &CsrMatrix) -> Result<CsrMatrix, SparseError> {
+        if self.cols != other.rows
+        {
+            return Err(SparseError::DimensionMismatch {
+                expected: self.cols,
+                found: other.rows,
+            });
+        }
+        let n_out = other.cols;
+        // Dense accumulator plus a marker recording which row last touched
+        // each output column (usize::MAX = untouched).
+        let mut acc = vec![0.0f64; n_out];
+        let mut marker = vec![usize::MAX; n_out];
+        let mut touched: Vec<usize> = Vec::new();
+
+        let mut indptr = Vec::with_capacity(self.rows + 1);
+        indptr.push(0usize);
+        let mut indices = Vec::new();
+        let mut data = Vec::new();
+        for r in 0..self.rows
+        {
+            touched.clear();
+            for k in self.indptr[r]..self.indptr[r + 1]
+            {
+                let mid = self.indices[k];
+                let a = self.data[k];
+                for m in other.indptr[mid]..other.indptr[mid + 1]
+                {
+                    let c = other.indices[m];
+                    if marker[c] != r
+                    {
+                        marker[c] = r;
+                        acc[c] = 0.0;
+                        touched.push(c);
+                    }
+                    acc[c] += a * other.data[m];
+                }
+            }
+            touched.sort_unstable();
+            for &c in &touched
+            {
+                indices.push(c);
+                data.push(acc[c]);
+            }
+            indptr.push(indices.len());
+        }
+        Ok(CsrMatrix {
+            rows: self.rows,
+            cols: n_out,
+            indptr,
+            indices,
+            data,
+        })
+    }
 }
 
 /// A sparse matrix in compressed sparse column (CSC) format.
@@ -649,6 +842,73 @@ impl CscMatrix {
             indices,
             data,
         }
+    }
+
+    /// Build a CSC matrix from a dense row-major matrix, dropping structural
+    /// zeros.
+    ///
+    /// Returns [`SparseError::InconsistentRowLength`] if the rows are not all of
+    /// equal length.
+    pub fn from_dense(dense: &[Vec<f64>]) -> Result<CscMatrix, SparseError> {
+        Ok(CsrMatrix::from_dense(dense)?.to_csc())
+    }
+
+    /// Sparse matrix–vector product `y = A · x`, scattering one column at a
+    /// time.
+    ///
+    /// Returns [`SparseError::DimensionMismatch`] if `x.len() != cols`.
+    pub fn spmv(&self, x: &[f64]) -> Result<Vec<f64>, SparseError> {
+        if x.len() != self.cols
+        {
+            return Err(SparseError::DimensionMismatch {
+                expected: self.cols,
+                found: x.len(),
+            });
+        }
+        let mut y = vec![0.0f64; self.rows];
+        for (c, w) in self.indptr.windows(2).enumerate()
+        {
+            let xc = x[c];
+            for k in w[0]..w[1]
+            {
+                y[self.indices[k]] += self.data[k] * xc;
+            }
+        }
+        Ok(y)
+    }
+
+    /// Transposed sparse matrix–vector product `y = Aᵀ · x`, computed as one
+    /// dot product per stored column.
+    ///
+    /// Returns [`SparseError::DimensionMismatch`] if `x.len() != rows`.
+    pub fn spmv_transpose(&self, x: &[f64]) -> Result<Vec<f64>, SparseError> {
+        if x.len() != self.rows
+        {
+            return Err(SparseError::DimensionMismatch {
+                expected: self.rows,
+                found: x.len(),
+            });
+        }
+        let y: Vec<f64> = self
+            .indptr
+            .windows(2)
+            .map(|w| {
+                self.indices[w[0]..w[1]]
+                    .iter()
+                    .zip(&self.data[w[0]..w[1]])
+                    .map(|(&r, &v)| v * x[r])
+                    .sum()
+            })
+            .collect();
+        Ok(y)
+    }
+
+    /// Main diagonal `[a_00, a_11, …]` of length `min(rows, cols)`; absent
+    /// entries read as `0.0`.
+    pub fn diagonal(&self) -> Vec<f64> {
+        (0..self.rows.min(self.cols))
+            .map(|i| self.get(i, i))
+            .collect()
     }
 }
 
@@ -1492,5 +1752,239 @@ mod tests {
         {
             assert!(!format!("{e}").is_empty());
         }
+    }
+
+    // ---- operator surface: CSC SpMV, transposed SpMV, diag, scale, add, matmul ----
+
+    /// Deterministic dense matrix with roughly `density` of entries nonzero.
+    fn random_dense(rows: usize, cols: usize, density: f64, seed: u64) -> Vec<Vec<f64>> {
+        let mut st = seed;
+        (0..rows)
+            .map(|_| {
+                (0..cols)
+                    .map(|_| {
+                        if next_unit(&mut st) < density
+                        {
+                            next_sym(&mut st)
+                        }
+                        else
+                        {
+                            0.0
+                        }
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn dense_transpose(a: &[Vec<f64>], cols: usize) -> Vec<Vec<f64>> {
+        (0..cols)
+            .map(|c| a.iter().map(|row| row[c]).collect())
+            .collect()
+    }
+
+    fn assert_close_vec(got: &[f64], want: &[f64], tol: f64) {
+        assert_eq!(got.len(), want.len());
+        for (g, w) in got.iter().zip(want)
+        {
+            assert!((g - w).abs() <= tol, "got {g}, want {w}");
+        }
+    }
+
+    fn assert_close_dense(got: &[Vec<f64>], want: &[Vec<f64>], tol: f64) {
+        assert_eq!(got.len(), want.len());
+        for (g, w) in got.iter().zip(want)
+        {
+            assert_close_vec(g, w, tol);
+        }
+    }
+
+    #[test]
+    fn csc_spmv_matches_csr_and_dense_oracle() {
+        for (seed, (rows, cols)) in [(3usize, 5usize), (7, 2), (6, 6), (1, 9)]
+            .iter()
+            .enumerate()
+        {
+            let dense = random_dense(*rows, *cols, 0.4, 100 + seed as u64);
+            let csr = CsrMatrix::from_dense(&dense).unwrap();
+            let csc = CscMatrix::from_dense(&dense).unwrap();
+            let mut st = 7 + seed as u64;
+            let x: Vec<f64> = (0..*cols).map(|_| next_sym(&mut st)).collect();
+            let want = dense_matvec(&dense, &x);
+            assert_close_vec(&csc.spmv(&x).unwrap(), &want, 1e-12);
+            assert_close_vec(&csr.spmv(&x).unwrap(), &want, 1e-12);
+        }
+    }
+
+    #[test]
+    fn transposed_spmv_matches_explicit_transpose() {
+        let (rows, cols) = (5usize, 8usize);
+        let dense = random_dense(rows, cols, 0.35, 42);
+        let csr = CsrMatrix::from_dense(&dense).unwrap();
+        let csc = csr.to_csc();
+        let mut st = 11;
+        let x: Vec<f64> = (0..rows).map(|_| next_sym(&mut st)).collect();
+        let want = dense_matvec(&dense_transpose(&dense, cols), &x);
+        assert_close_vec(&csr.spmv_transpose(&x).unwrap(), &want, 1e-12);
+        assert_close_vec(&csc.spmv_transpose(&x).unwrap(), &want, 1e-12);
+        assert_close_vec(&csr.transpose().spmv(&x).unwrap(), &want, 1e-12);
+    }
+
+    #[test]
+    fn spmv_variants_reject_wrong_lengths() {
+        let csr = CsrMatrix::from_dense(&[vec![1.0, 0.0, 2.0], vec![0.0, 3.0, 0.0]]).unwrap();
+        let csc = csr.to_csc();
+        let mismatch = |expected, found| SparseError::DimensionMismatch { expected, found };
+        assert_eq!(csc.spmv(&[1.0, 2.0]), Err(mismatch(3, 2)));
+        assert_eq!(csr.spmv_transpose(&[1.0, 2.0, 3.0]), Err(mismatch(2, 3)));
+        assert_eq!(csc.spmv_transpose(&[1.0]), Err(mismatch(2, 1)));
+    }
+
+    #[test]
+    fn diagonal_handles_rectangular_and_missing_entries() {
+        let dense = vec![
+            vec![4.0, 1.0, 0.0, 2.0],
+            vec![0.0, 0.0, 5.0, 0.0],
+            vec![0.0, 0.0, -3.0, 1.0],
+        ];
+        let csr = CsrMatrix::from_dense(&dense).unwrap();
+        assert_eq!(csr.diagonal(), vec![4.0, 0.0, -3.0]);
+        assert_eq!(csr.to_csc().diagonal(), vec![4.0, 0.0, -3.0]);
+        assert_eq!(csr.transpose().diagonal(), vec![4.0, 0.0, -3.0]);
+        assert!(CsrMatrix::from_dense(&[]).unwrap().diagonal().is_empty());
+    }
+
+    #[test]
+    fn scale_preserves_structure() {
+        let csr = CsrMatrix::from_dense(&[vec![1.0, 0.0], vec![-2.0, 3.0]]).unwrap();
+        let s = csr.scale(-0.5);
+        assert_eq!(s.indptr(), csr.indptr());
+        assert_eq!(s.indices(), csr.indices());
+        assert_eq!(s.to_dense(), vec![vec![-0.5, 0.0], vec![1.0, -1.5]]);
+        let z = csr.scale(0.0);
+        assert_eq!(z.nnz(), csr.nnz());
+        assert!(z.data().iter().all(|&v| v == 0.0));
+    }
+
+    #[test]
+    fn add_scaled_matches_dense_oracle_and_unions_structure() {
+        let (rows, cols) = (6usize, 7usize);
+        let a = random_dense(rows, cols, 0.3, 5);
+        let b = random_dense(rows, cols, 0.3, 6);
+        let alpha = -1.75;
+        let got = CsrMatrix::from_dense(&a)
+            .unwrap()
+            .add_scaled(&CsrMatrix::from_dense(&b).unwrap(), alpha)
+            .unwrap();
+        let want: Vec<Vec<f64>> = a
+            .iter()
+            .zip(&b)
+            .map(|(ra, rb)| ra.iter().zip(rb).map(|(x, y)| x + alpha * y).collect())
+            .collect();
+        assert_close_dense(&got.to_dense(), &want, 1e-12);
+        for w in got.indptr().windows(2)
+        {
+            assert!(got.indices()[w[0]..w[1]].windows(2).all(|p| p[0] < p[1]));
+        }
+        let union = (0..rows)
+            .flat_map(|r| (0..cols).map(move |c| (r, c)))
+            .filter(|&(r, c)| a[r][c] != 0.0 || b[r][c] != 0.0)
+            .count();
+        assert_eq!(got.nnz(), union);
+    }
+
+    #[test]
+    fn add_scaled_keeps_cancelled_entries_and_checks_shape() {
+        let a = CsrMatrix::from_dense(&[vec![1.0, 2.0]]).unwrap();
+        let diff = a.add_scaled(&a, -1.0).unwrap();
+        assert_eq!(diff.nnz(), 2);
+        assert_eq!(diff.to_dense(), vec![vec![0.0, 0.0]]);
+        let taller = CsrMatrix::from_dense(&[vec![1.0, 2.0], vec![0.0, 1.0]]).unwrap();
+        let wider = CsrMatrix::from_dense(&[vec![1.0, 2.0, 3.0]]).unwrap();
+        assert_eq!(
+            a.add_scaled(&taller, 1.0).unwrap_err(),
+            SparseError::DimensionMismatch {
+                expected: 1,
+                found: 2
+            }
+        );
+        assert_eq!(
+            a.add_scaled(&wider, 1.0).unwrap_err(),
+            SparseError::DimensionMismatch {
+                expected: 2,
+                found: 3
+            }
+        );
+    }
+
+    #[test]
+    fn matmul_matches_dense_oracle() {
+        for (seed, (m, k, n)) in [(4usize, 5usize, 3usize), (6, 6, 6), (1, 7, 2), (5, 1, 4)]
+            .iter()
+            .enumerate()
+        {
+            let a = random_dense(*m, *k, 0.35, 200 + seed as u64);
+            let b = random_dense(*k, *n, 0.35, 300 + seed as u64);
+            let got = CsrMatrix::from_dense(&a)
+                .unwrap()
+                .matmul(&CsrMatrix::from_dense(&b).unwrap())
+                .unwrap();
+            assert_eq!((got.rows(), got.cols()), (*m, *n));
+            let want: Vec<Vec<f64>> = (0..*m)
+                .map(|i| {
+                    (0..*n)
+                        .map(|j| (0..*k).map(|t| a[i][t] * b[t][j]).sum())
+                        .collect()
+                })
+                .collect();
+            assert_close_dense(&got.to_dense(), &want, 1e-12);
+            for w in got.indptr().windows(2)
+            {
+                assert!(got.indices()[w[0]..w[1]].windows(2).all(|p| p[0] < p[1]));
+            }
+        }
+    }
+
+    #[test]
+    fn matmul_identity_transpose_and_shape_errors() {
+        let dense = random_dense(4, 4, 0.5, 77);
+        let a = CsrMatrix::from_dense(&dense).unwrap();
+        let mut eye = CooMatrix::new(4, 4);
+        for i in 0..4
+        {
+            eye.push(i, i, 1.0).unwrap();
+        }
+        let eye = eye.to_csr();
+        assert_eq!(a.matmul(&eye).unwrap().to_dense(), dense);
+        assert_eq!(eye.matmul(&a).unwrap().to_dense(), dense);
+        // (A·B)ᵀ = Bᵀ·Aᵀ
+        let b = CsrMatrix::from_dense(&random_dense(4, 3, 0.5, 78)).unwrap();
+        let lhs = a.matmul(&b).unwrap().transpose().to_dense();
+        let rhs = b.transpose().matmul(&a.transpose()).unwrap().to_dense();
+        assert_close_dense(&lhs, &rhs, 1e-12);
+        assert_eq!(
+            b.matmul(&a).unwrap_err(),
+            SparseError::DimensionMismatch {
+                expected: 3,
+                found: 4
+            }
+        );
+        // Empty inner dimension yields an all-zero, structurally empty product.
+        let left = CsrMatrix::from_dense(&[vec![], vec![]]).unwrap();
+        let right = CooMatrix::new(0, 3).to_csr();
+        let prod = left.matmul(&right).unwrap();
+        assert_eq!((prod.rows(), prod.cols(), prod.nnz()), (2, 3, 0));
+    }
+
+    #[test]
+    fn matmul_is_bitwise_deterministic() {
+        let a = CsrMatrix::from_dense(&random_dense(8, 9, 0.4, 900)).unwrap();
+        let b = CsrMatrix::from_dense(&random_dense(9, 7, 0.4, 901)).unwrap();
+        let first = a.matmul(&b).unwrap();
+        let second = a.matmul(&b).unwrap();
+        assert_eq!(first.indptr(), second.indptr());
+        assert_eq!(first.indices(), second.indices());
+        let bits = |m: &CsrMatrix| m.data().iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+        assert_eq!(bits(&first), bits(&second));
     }
 }
