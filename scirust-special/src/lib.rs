@@ -219,8 +219,17 @@ pub fn ln_beta(a: f64, b: f64) -> f64 {
 //  Error function                                              //
 // ============================================================ //
 
-// Below this |x|, `erf(x) = 2x/√π` to within a relative x²/3 < 4e-17.
-const ERF_TAYLOR_THRESHOLD: f64 = 1e-8;
+// Below this |x|, the two-term Maclaurin polynomial `2x/√π·(1 − x²/3)` is
+// exact to within the next relative term x⁴/10 < 1e-17 (below half an ulp).
+// Above it, `P(1/2, x²)` goes through `exp`/`ln`, whose few-ulp error is
+// amplified by `|ln x²|` to a relative ~1e-14, so the polynomial is preferred.
+const ERF_TAYLOR_THRESHOLD: f64 = 1e-4;
+
+// `erf(x)` for `|x| < ERF_TAYLOR_THRESHOLD` from pure arithmetic (no libm), so
+// it neither underflows with `x²` nor depends on transcendental rounding.
+fn erf_maclaurin(x: f64) -> f64 {
+    FRAC_2_SQRT_PI * x * (1.0 - x * x / 3.0)
+}
 
 /// The error function `erf(x) = (2/√π) ∫₀ˣ e^{−t²} dt`.
 ///
@@ -228,9 +237,10 @@ const ERF_TAYLOR_THRESHOLD: f64 = 1e-8;
 /// the gamma family so both share one validated implementation. Odd in `x`;
 /// `erf(±∞) = ±1`.
 ///
-/// For `|x| < 1e-8` the leading Maclaurin term `2x/√π` is returned directly
-/// (the next term is a relative `x²/3 < 4e-17`); this keeps tiny arguments
-/// accurate where `x²` would underflow and `P(1/2, x²)` would collapse to 0.
+/// For `|x| < 1e-4` the Maclaurin polynomial `2x/√π·(1 − x²/3)` is returned
+/// directly (the next term is a relative `x⁴/10 < 1e-17`); this keeps tiny
+/// arguments accurate where `x²` would underflow and `P(1/2, x²)` would
+/// collapse to 0, and avoids transcendental rounding near the origin.
 pub fn erf(x: f64) -> f64 {
     if x == 0.0
     {
@@ -238,7 +248,7 @@ pub fn erf(x: f64) -> f64 {
     }
     if x.abs() < ERF_TAYLOR_THRESHOLD
     {
-        return FRAC_2_SQRT_PI * x;
+        return erf_maclaurin(x);
     }
     let p = regularized_gamma_p(0.5, x * x);
     if x >= 0.0 { p } else { -p }
@@ -246,11 +256,17 @@ pub fn erf(x: f64) -> f64 {
 
 /// The complementary error function `erfc(x) = 1 − erf(x)`, accurate in the
 /// far tail (where `1 − erf(x)` would lose all significance) via the upper
-/// incomplete gamma `Q(1/2, x²)`. `erfc(+∞) = 0`, `erfc(−∞) = 2`.
+/// incomplete gamma `Q(1/2, x²)`. `erfc(+∞) = 0`, `erfc(−∞) = 2`. For
+/// `|x| < 1e-4`, `erfc(x) = 1 − erf(x)` with the same Maclaurin polynomial as
+/// [`erf`] (no cancellation, since `erfc ≈ 1` there).
 pub fn erfc(x: f64) -> f64 {
     if x == 0.0
     {
         return 1.0;
+    }
+    if x.abs() < ERF_TAYLOR_THRESHOLD
+    {
+        return 1.0 - erf_maclaurin(x);
     }
     let q = regularized_gamma_q(0.5, x * x);
     if x >= 0.0 { q } else { 2.0 - q }
@@ -1248,11 +1264,19 @@ mod tests {
             assert!(rel_close_unit(erf(-x), -c * x, 1e-15), "x={x}");
             assert!(rel_close_unit(erfc(x), 1.0 - c * x, 1e-15), "x={x}");
         }
-        // Both sides of the Taylor threshold agree with 2x/√π·(1 − x²/3).
-        for &x in &[0.99e-8, 1.01e-8, 1e-6]
+        // Both sides of the Taylor threshold (1e-4) agree with the Maclaurin
+        // series; the cubic term is now significant, so include it.
+        for &x in &[0.99e-8, 1.01e-8, 1e-6, 0.99e-4]
         {
             let want = c * x * (1.0 - x * x / 3.0);
             assert!(rel_close_unit(erf(x), want, 1e-14), "x={x}");
+            assert!(rel_close_unit(erfc(x), 1.0 - want, 1e-15), "x={x}");
+        }
+        for &x in &[1.01e-4, 1e-3]
+        {
+            let want = c * x * (1.0 - x * x / 3.0 + x * x * x * x / 10.0);
+            assert!(rel_close_unit(erf(x), want, 1e-13), "x={x}");
+            assert!(rel_close_unit(erfc(x), 1.0 - want, 1e-15), "x={x}");
         }
         // Signed zero is preserved (erf is odd).
         assert!(erf(-0.0).is_sign_negative());
