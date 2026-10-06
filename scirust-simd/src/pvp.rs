@@ -26,6 +26,95 @@ pub const PVP_LAYOUT_SCHEMA_VERSION: u32 = 1;
 /// Physical word width of the portable CPU reference representation.
 pub const PVP_WORD_BITS: usize = u64::BITS as usize;
 
+/// Stable CPU execution candidates for the PVP XOR butterfly.
+///
+/// PVP-1 keeps the representation fixed and changes only how one contiguous
+/// destination gate-word row is XORed with its source row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PvpBackendV1 {
+    /// Portable scalar-u64 reference.
+    Scalar,
+    /// x86_64 AVX2, four u64 gate words per vector.
+    Avx2,
+    /// x86_64 AVX-512F, eight u64 gate words per vector.
+    Avx512,
+    /// aarch64 NEON, two u64 gate words per vector.
+    Neon,
+}
+
+impl PvpBackendV1 {
+    /// Stable backend label used in evidence records.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self
+        {
+            Self::Scalar => "scalar-u64",
+            Self::Avx2 => "x86_64-avx2-u64x4",
+            Self::Avx512 => "x86_64-avx512-u64x8",
+            Self::Neon => "aarch64-neon-u64x2",
+        }
+    }
+
+    /// Fixed vector width in bits for the candidate.
+    #[must_use]
+    pub const fn register_bits(self) -> usize {
+        match self
+        {
+            Self::Scalar => 64,
+            Self::Avx2 => 256,
+            Self::Avx512 => 512,
+            Self::Neon => 128,
+        }
+    }
+
+    /// Whether this backend is executable on the current process/CPU.
+    #[must_use]
+    pub fn available(self) -> bool {
+        match self
+        {
+            Self::Scalar => true,
+            #[cfg(target_arch = "x86_64")]
+            Self::Avx2 => std::arch::is_x86_feature_detected!("avx2"),
+            #[cfg(not(target_arch = "x86_64"))]
+            Self::Avx2 => false,
+            #[cfg(target_arch = "x86_64")]
+            Self::Avx512 => std::arch::is_x86_feature_detected!("avx512f"),
+            #[cfg(not(target_arch = "x86_64"))]
+            Self::Avx512 => false,
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon => std::arch::is_aarch64_feature_detected!("neon"),
+            #[cfg(not(target_arch = "aarch64"))]
+            Self::Neon => false,
+        }
+    }
+}
+
+/// Detect the widest stable PVP CPU backend available on this process.
+#[must_use]
+pub fn detect_best_pvp_backend_v1() -> PvpBackendV1 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if PvpBackendV1::Avx512.available()
+        {
+            return PvpBackendV1::Avx512;
+        }
+        if PvpBackendV1::Avx2.available()
+        {
+            return PvpBackendV1::Avx2;
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        if PvpBackendV1::Neon.available()
+        {
+            return PvpBackendV1::Neon;
+        }
+    }
+
+    PvpBackendV1::Scalar
+}
+
 /// Errors raised by checked PVP layout/storage operations.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PvpError {
@@ -66,6 +155,11 @@ pub enum PvpError {
         /// Logical row/gate whose packed tail contained nonzero padding.
         major_index: usize,
     },
+    /// A requested architecture candidate is unavailable on this process/CPU.
+    BackendUnavailable {
+        /// Rejected candidate.
+        backend: PvpBackendV1,
+    },
 }
 
 impl fmt::Display for PvpError {
@@ -98,6 +192,10 @@ impl fmt::Display for PvpError {
                 f,
                 "PVP canonical padding is nonzero at major index {major_index}"
             ),
+            Self::BackendUnavailable { backend } =>
+            {
+                write!(f, "PVP backend {} is unavailable", backend.label())
+            },
         }
     }
 }
@@ -409,6 +507,8 @@ impl PvpBitplanesV1 {
 /// Exact accounting returned by the scalar Pascal/subset-zeta transform.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PvpTransformStatsV1 {
+    /// CPU realization used for this transform.
+    pub backend: PvpBackendV1,
     /// Address count.
     pub addresses: usize,
     /// Gate count.
@@ -437,6 +537,73 @@ pub struct PvpTransformStatsV1 {
 pub fn pascal_subset_zeta_scalar_in_place(
     bitplanes: &mut PvpBitplanesV1,
 ) -> Result<PvpTransformStatsV1, PvpError> {
+    pascal_subset_zeta_with_backend_in_place(bitplanes, PvpBackendV1::Scalar)
+}
+
+/// Apply the PVP subset-zeta transform with the best stable CPU candidate
+/// available on the current process.
+pub fn pascal_subset_zeta_auto_in_place(
+    bitplanes: &mut PvpBitplanesV1,
+) -> Result<PvpTransformStatsV1, PvpError> {
+    pascal_subset_zeta_with_backend_in_place(bitplanes, detect_best_pvp_backend_v1())
+}
+
+/// Apply the exact same PVP transform with an explicitly selected CPU backend.
+///
+/// Candidate availability is checked before any state mutation. SIMD candidates
+/// only vectorize the contiguous inner gate-word XOR; stage order, address
+/// pairing, storage, padding and operation accounting remain identical to the
+/// scalar PVP-0 reference.
+pub fn pascal_subset_zeta_with_backend_in_place(
+    bitplanes: &mut PvpBitplanesV1,
+    backend: PvpBackendV1,
+) -> Result<PvpTransformStatsV1, PvpError> {
+    if !backend.available()
+    {
+        return Err(PvpError::BackendUnavailable { backend });
+    }
+
+    match backend
+    {
+        PvpBackendV1::Scalar => transform_with_row_xor(bitplanes, backend, xor_rows_scalar),
+        #[cfg(target_arch = "x86_64")]
+        PvpBackendV1::Avx2 =>
+        {
+            transform_with_row_xor(bitplanes, backend, |words, src, dst, len| unsafe {
+                xor_rows_avx2(words, src, dst, len)
+            })
+        },
+        #[cfg(not(target_arch = "x86_64"))]
+        PvpBackendV1::Avx2 => unreachable!("AVX2 availability is false on this target"),
+        #[cfg(target_arch = "x86_64")]
+        PvpBackendV1::Avx512 =>
+        {
+            transform_with_row_xor(bitplanes, backend, |words, src, dst, len| unsafe {
+                xor_rows_avx512(words, src, dst, len)
+            })
+        },
+        #[cfg(not(target_arch = "x86_64"))]
+        PvpBackendV1::Avx512 => unreachable!("AVX-512 availability is false on this target"),
+        #[cfg(target_arch = "aarch64")]
+        PvpBackendV1::Neon =>
+        {
+            transform_with_row_xor(bitplanes, backend, |words, src, dst, len| unsafe {
+                xor_rows_neon(words, src, dst, len)
+            })
+        },
+        #[cfg(not(target_arch = "aarch64"))]
+        PvpBackendV1::Neon => unreachable!("NEON availability is false on this target"),
+    }
+}
+
+fn transform_with_row_xor<F>(
+    bitplanes: &mut PvpBitplanesV1,
+    backend: PvpBackendV1,
+    mut xor_rows: F,
+) -> Result<PvpTransformStatsV1, PvpError>
+where
+    F: FnMut(&mut [u64], usize, usize, usize),
+{
     bitplanes.validate_padding_zero()?;
     let layout = bitplanes.layout;
     let words_per_address = layout.gate_words_per_address();
@@ -458,10 +625,12 @@ pub fn pascal_subset_zeta_scalar_in_place(
                 let target_base = target_address
                     .checked_mul(words_per_address)
                     .ok_or(PvpError::SizeOverflow)?;
-                for word in 0..words_per_address
-                {
-                    bitplanes.words[target_base + word] ^= bitplanes.words[source_base + word];
-                }
+                xor_rows(
+                    &mut bitplanes.words,
+                    source_base,
+                    target_base,
+                    words_per_address,
+                );
             }
             block_start = block_start
                 .checked_add(block)
@@ -474,6 +643,7 @@ pub fn pascal_subset_zeta_scalar_in_place(
 
     let butterfly_pairs = (layout.addresses() / 2) as u128 * u128::from(layout.stages());
     Ok(PvpTransformStatsV1 {
+        backend,
         addresses: layout.addresses(),
         gates: layout.gates(),
         stages: layout.stages(),
@@ -484,6 +654,96 @@ pub fn pascal_subset_zeta_scalar_in_place(
         padding_bits: layout.padding_bits(),
         scratch_words: 0,
     })
+}
+
+fn xor_rows_scalar(words: &mut [u64], source_base: usize, target_base: usize, len: usize) {
+    debug_assert!(source_base + len <= target_base);
+    debug_assert!(target_base + len <= words.len());
+    let (before_target, target_and_after) = words.split_at_mut(target_base);
+    let source = &before_target[source_base..source_base + len];
+    let target = &mut target_and_after[..len];
+    for (dst, &src) in target.iter_mut().zip(source)
+    {
+        *dst ^= src;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn xor_rows_avx2(words: &mut [u64], source_base: usize, target_base: usize, len: usize) {
+    use core::arch::x86_64::*;
+
+    debug_assert!(source_base + len <= target_base);
+    debug_assert!(target_base + len <= words.len());
+
+    let base = words.as_mut_ptr();
+    let mut i = 0_usize;
+    while i + 4 <= len
+    {
+        let source = _mm256_loadu_si256(base.add(source_base + i).cast::<__m256i>());
+        let target = _mm256_loadu_si256(base.add(target_base + i).cast::<__m256i>());
+        _mm256_storeu_si256(
+            base.add(target_base + i).cast::<__m256i>(),
+            _mm256_xor_si256(target, source),
+        );
+        i += 4;
+    }
+    while i < len
+    {
+        *base.add(target_base + i) ^= *base.add(source_base + i);
+        i += 1;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+unsafe fn xor_rows_avx512(words: &mut [u64], source_base: usize, target_base: usize, len: usize) {
+    use core::arch::x86_64::*;
+
+    debug_assert!(source_base + len <= target_base);
+    debug_assert!(target_base + len <= words.len());
+
+    let base = words.as_mut_ptr();
+    let mut i = 0_usize;
+    while i + 8 <= len
+    {
+        let source = _mm512_loadu_si512(base.add(source_base + i).cast::<__m512i>());
+        let target = _mm512_loadu_si512(base.add(target_base + i).cast::<__m512i>());
+        _mm512_storeu_si512(
+            base.add(target_base + i).cast::<__m512i>(),
+            _mm512_xor_si512(target, source),
+        );
+        i += 8;
+    }
+    while i < len
+    {
+        *base.add(target_base + i) ^= *base.add(source_base + i);
+        i += 1;
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn xor_rows_neon(words: &mut [u64], source_base: usize, target_base: usize, len: usize) {
+    use core::arch::aarch64::*;
+
+    debug_assert!(source_base + len <= target_base);
+    debug_assert!(target_base + len <= words.len());
+
+    let base = words.as_mut_ptr();
+    let mut i = 0_usize;
+    while i + 2 <= len
+    {
+        let source = vld1q_u64(base.add(source_base + i));
+        let target = vld1q_u64(base.add(target_base + i));
+        vst1q_u64(base.add(target_base + i), veorq_u64(target, source));
+        i += 2;
+    }
+    while i < len
+    {
+        *base.add(target_base + i) ^= *base.add(source_base + i);
+        i += 1;
+    }
 }
 
 /// Independent direct subset-enumeration oracle.
@@ -679,6 +939,7 @@ mod tests {
         let stats = pascal_subset_zeta_scalar_in_place(&mut actual).unwrap();
 
         assert_eq!(actual, expected);
+        assert_eq!(stats.backend, PvpBackendV1::Scalar);
         assert_eq!(stats.addresses, 16);
         assert_eq!(stats.gates, 70);
         assert_eq!(stats.stages, 4);
@@ -701,6 +962,77 @@ mod tests {
         pascal_subset_zeta_scalar_in_place(&mut transformed).unwrap();
 
         assert_eq!(transformed, original);
+    }
+
+    #[test]
+    fn stable_simd_candidates_match_scalar_reference() {
+        let backends = [PvpBackendV1::Avx512, PvpBackendV1::Avx2, PvpBackendV1::Neon];
+        let geometries = [(8, 1), (16, 63), (32, 64), (64, 65), (64, 257)];
+
+        for (addresses, gates) in geometries
+        {
+            let layout = PvpLayoutV1::new(addresses, gates).unwrap();
+            let source = fixture_gate_major(layout);
+            let mut reference = PvpBitplanesV1::from_gate_major_words(layout, &source).unwrap();
+            let scalar_stats = pascal_subset_zeta_scalar_in_place(&mut reference).unwrap();
+
+            for backend in backends
+            {
+                if !backend.available()
+                {
+                    continue;
+                }
+                let mut candidate = PvpBitplanesV1::from_gate_major_words(layout, &source).unwrap();
+                let stats =
+                    pascal_subset_zeta_with_backend_in_place(&mut candidate, backend).unwrap();
+                assert_eq!(candidate, reference, "backend={}", backend.label());
+                assert_eq!(stats.backend, backend);
+                assert_eq!(
+                    stats.logical_gate_xor_ops,
+                    scalar_stats.logical_gate_xor_ops
+                );
+                assert_eq!(stats.packed_word_updates, scalar_stats.packed_word_updates);
+                assert_eq!(stats.storage_bits, scalar_stats.storage_bits);
+                assert_eq!(stats.padding_bits, scalar_stats.padding_bits);
+                assert_eq!(stats.scratch_words, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn auto_dispatch_matches_scalar_reference() {
+        let layout = PvpLayoutV1::new(64, 513).unwrap();
+        let source = fixture_gate_major(layout);
+        let mut scalar = PvpBitplanesV1::from_gate_major_words(layout, &source).unwrap();
+        let mut automatic = scalar.clone();
+
+        pascal_subset_zeta_scalar_in_place(&mut scalar).unwrap();
+        let stats = pascal_subset_zeta_auto_in_place(&mut automatic).unwrap();
+
+        assert_eq!(automatic, scalar);
+        assert_eq!(stats.backend, detect_best_pvp_backend_v1());
+        assert!(stats.backend.available());
+    }
+
+    #[test]
+    fn unavailable_backend_fails_before_mutation() {
+        let unavailable = [PvpBackendV1::Avx512, PvpBackendV1::Avx2, PvpBackendV1::Neon]
+            .into_iter()
+            .find(|backend| !backend.available())
+            .expect("at least one foreign-architecture backend is unavailable");
+
+        let layout = PvpLayoutV1::new(8, 65).unwrap();
+        let source = fixture_gate_major(layout);
+        let mut value = PvpBitplanesV1::from_gate_major_words(layout, &source).unwrap();
+        let before = value.clone();
+
+        assert_eq!(
+            pascal_subset_zeta_with_backend_in_place(&mut value, unavailable),
+            Err(PvpError::BackendUnavailable {
+                backend: unavailable
+            })
+        );
+        assert_eq!(value, before);
     }
 
     #[test]
