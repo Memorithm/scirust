@@ -567,23 +567,30 @@ pub fn pascal_subset_zeta_with_backend_in_place(
     {
         PvpBackendV1::Scalar => transform_with_row_xor(bitplanes, backend, xor_rows_scalar),
         #[cfg(target_arch = "x86_64")]
-        PvpBackendV1::Avx2 => transform_with_row_xor(bitplanes, backend, |words, src, dst, len| {
-            unsafe { xor_rows_avx2(words, src, dst, len) }
-        }),
+        PvpBackendV1::Avx2 =>
+        {
+            transform_with_row_xor(bitplanes, backend, |words, src, dst, len| unsafe {
+                xor_rows_avx2(words, src, dst, len)
+            })
+        },
         #[cfg(not(target_arch = "x86_64"))]
         PvpBackendV1::Avx2 => unreachable!("AVX2 availability is false on this target"),
         #[cfg(target_arch = "x86_64")]
-        PvpBackendV1::Avx512 => {
-            transform_with_row_xor(bitplanes, backend, |words, src, dst, len| {
-                unsafe { xor_rows_avx512(words, src, dst, len) }
+        PvpBackendV1::Avx512 =>
+        {
+            transform_with_row_xor(bitplanes, backend, |words, src, dst, len| unsafe {
+                xor_rows_avx512(words, src, dst, len)
             })
         },
         #[cfg(not(target_arch = "x86_64"))]
         PvpBackendV1::Avx512 => unreachable!("AVX-512 availability is false on this target"),
         #[cfg(target_arch = "aarch64")]
-        PvpBackendV1::Neon => transform_with_row_xor(bitplanes, backend, |words, src, dst, len| {
-            unsafe { xor_rows_neon(words, src, dst, len) }
-        }),
+        PvpBackendV1::Neon =>
+        {
+            transform_with_row_xor(bitplanes, backend, |words, src, dst, len| unsafe {
+                xor_rows_neon(words, src, dst, len)
+            })
+        },
         #[cfg(not(target_arch = "aarch64"))]
         PvpBackendV1::Neon => unreachable!("NEON availability is false on this target"),
     }
@@ -663,12 +670,7 @@ fn xor_rows_scalar(words: &mut [u64], source_base: usize, target_base: usize, le
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
-unsafe fn xor_rows_avx2(
-    words: &mut [u64],
-    source_base: usize,
-    target_base: usize,
-    len: usize,
-) {
+unsafe fn xor_rows_avx2(words: &mut [u64], source_base: usize, target_base: usize, len: usize) {
     use core::arch::x86_64::*;
 
     debug_assert!(source_base + len <= target_base);
@@ -695,12 +697,7 @@ unsafe fn xor_rows_avx2(
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-unsafe fn xor_rows_avx512(
-    words: &mut [u64],
-    source_base: usize,
-    target_base: usize,
-    len: usize,
-) {
+unsafe fn xor_rows_avx512(words: &mut [u64], source_base: usize, target_base: usize, len: usize) {
     use core::arch::x86_64::*;
 
     debug_assert!(source_base + len <= target_base);
@@ -727,12 +724,7 @@ unsafe fn xor_rows_avx512(
 
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
-unsafe fn xor_rows_neon(
-    words: &mut [u64],
-    source_base: usize,
-    target_base: usize,
-    len: usize,
-) {
+unsafe fn xor_rows_neon(words: &mut [u64], source_base: usize, target_base: usize, len: usize) {
     use core::arch::aarch64::*;
 
     debug_assert!(source_base + len <= target_base);
@@ -974,11 +966,7 @@ mod tests {
 
     #[test]
     fn stable_simd_candidates_match_scalar_reference() {
-        let backends = [
-            PvpBackendV1::Avx512,
-            PvpBackendV1::Avx2,
-            PvpBackendV1::Neon,
-        ];
+        let backends = [PvpBackendV1::Avx512, PvpBackendV1::Avx2, PvpBackendV1::Neon];
         let geometries = [(8, 1), (16, 63), (32, 64), (64, 65), (64, 257)];
 
         for (addresses, gates) in geometries
@@ -994,13 +982,15 @@ mod tests {
                 {
                     continue;
                 }
-                let mut candidate =
-                    PvpBitplanesV1::from_gate_major_words(layout, &source).unwrap();
+                let mut candidate = PvpBitplanesV1::from_gate_major_words(layout, &source).unwrap();
                 let stats =
                     pascal_subset_zeta_with_backend_in_place(&mut candidate, backend).unwrap();
                 assert_eq!(candidate, reference, "backend={}", backend.label());
                 assert_eq!(stats.backend, backend);
-                assert_eq!(stats.logical_gate_xor_ops, scalar_stats.logical_gate_xor_ops);
+                assert_eq!(
+                    stats.logical_gate_xor_ops,
+                    scalar_stats.logical_gate_xor_ops
+                );
                 assert_eq!(stats.packed_word_updates, scalar_stats.packed_word_updates);
                 assert_eq!(stats.storage_bits, scalar_stats.storage_bits);
                 assert_eq!(stats.padding_bits, scalar_stats.padding_bits);
@@ -1026,14 +1016,10 @@ mod tests {
 
     #[test]
     fn unavailable_backend_fails_before_mutation() {
-        let unavailable = [
-            PvpBackendV1::Avx512,
-            PvpBackendV1::Avx2,
-            PvpBackendV1::Neon,
-        ]
-        .into_iter()
-        .find(|backend| !backend.available())
-        .expect("at least one foreign-architecture backend is unavailable");
+        let unavailable = [PvpBackendV1::Avx512, PvpBackendV1::Avx2, PvpBackendV1::Neon]
+            .into_iter()
+            .find(|backend| !backend.available())
+            .expect("at least one foreign-architecture backend is unavailable");
 
         let layout = PvpLayoutV1::new(8, 65).unwrap();
         let source = fixture_gate_major(layout);
