@@ -9,6 +9,8 @@
 //! - [`wilcoxon_signed_rank`]: one-sample / paired Wilcoxon signed-rank on
 //!   differences, dropping exact zeros (Wilcoxon's convention) and correcting
 //!   the variance for tied absolute differences.
+//! - [`kruskal_wallis`]: k-sample Kruskal–Wallis H test (rank-based one-way
+//!   ANOVA) with the tie correction and the χ²(k − 1) reference distribution.
 //!
 //! Every function validates its input and returns `None` rather than a
 //! meaningless number: mismatched lengths, non-finite values, too few
@@ -18,8 +20,8 @@
 //! small samples without ties an exact permutation distribution is more
 //! accurate, and callers that need it should compute it explicitly.
 
-use crate::dist::{Distribution, Normal, StudentT};
-use crate::htest::Tail;
+use crate::dist::{ChiSquared, Distribution, Normal, StudentT};
+use crate::htest::{Tail, TestResult};
 
 /// Outcome of a correlation test.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -330,6 +332,61 @@ pub fn wilcoxon_signed_rank(differences: &[f64], tail: Tail) -> Option<RankTestR
     })
 }
 
+/// Kruskal–Wallis H test of `H₀`: all `groups` come from the same
+/// distribution (the rank-based analogue of [`crate::htest::one_way_anova`]).
+///
+/// Every observation is mid-ranked in the pooled sample and
+/// `H = 12 / (N(N+1)) · Σ Rᵢ²/nᵢ − 3(N+1)` is divided by the tie correction
+/// `1 − Σ(t³−t)/(N³−N)`. The p-value is the upper tail of `χ²(k − 1)`, as in
+/// SciPy's `kruskal`. Empty groups contain no observations and are ignored,
+/// matching [`crate::htest::one_way_anova`].
+///
+/// Returns `None` if fewer than two non-empty groups remain, any value is
+/// non-finite, or every observation is tied (the statistic is undefined).
+///
+/// ```
+/// use scirust_stats::prelude::*;
+/// let low = [1.1, 2.0, 1.4, 1.8];
+/// let mid = [3.2, 2.9, 3.8, 3.5];
+/// let high = [5.0, 6.1, 5.4, 5.9];
+/// let r = kruskal_wallis(&[&low, &mid, &high]).unwrap();
+/// assert_eq!(r.df, 2.0);
+/// assert!(r.p_value < 0.01);
+/// ```
+pub fn kruskal_wallis(groups: &[&[f64]]) -> Option<TestResult> {
+    let groups: Vec<&[f64]> = groups.iter().copied().filter(|g| !g.is_empty()).collect();
+    let k = groups.len();
+    if k < 2 || !groups.iter().all(|g| all_finite(g))
+    {
+        return None;
+    }
+    let pooled: Vec<f64> = groups.iter().flat_map(|g| g.iter().copied()).collect();
+    let (ranks, tie_term) = ranks_with_ties(&pooled);
+    let n = pooled.len() as f64;
+    let correction = 1.0 - tie_term / (n * n * n - n);
+    if correction.is_nan() || correction <= 0.0
+    {
+        return None;
+    }
+    let mut offset = 0;
+    let mut sum_sq_over_n = 0.0;
+    for g in &groups
+    {
+        let r: f64 = ranks[offset..offset + g.len()].iter().sum();
+        sum_sq_over_n += r * r / g.len() as f64;
+        offset += g.len();
+    }
+    let h = (12.0 / (n * (n + 1.0)) * sum_sq_over_n - 3.0 * (n + 1.0)) / correction;
+    // Rounding can push an exactly-null configuration a hair below zero.
+    let h = h.max(0.0);
+    let df = (k - 1) as f64;
+    Some(TestResult {
+        statistic: h,
+        df,
+        p_value: ChiSquared::new(df).sf(h),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -503,5 +560,59 @@ mod tests {
                 r.p_value
             );
         }
+    }
+
+    #[test]
+    fn kruskal_wallis_rejects_bad_input() {
+        let g = [1.0, 2.0, 3.0];
+        assert!(kruskal_wallis(&[]).is_none());
+        assert!(kruskal_wallis(&[&g]).is_none());
+        assert!(kruskal_wallis(&[&g, &[]]).is_none());
+        assert!(kruskal_wallis(&[&g, &[1.0, f64::NAN]]).is_none());
+        assert!(kruskal_wallis(&[&[4.0, 4.0], &[4.0]]).is_none());
+    }
+
+    #[test]
+    fn kruskal_wallis_invariants() {
+        let a = [1.2, 3.4, 2.2, 5.0];
+        let b = [2.8, 6.1, 4.4];
+        let c = [7.5, 6.6, 8.0, 9.3, 5.5];
+        let base = kruskal_wallis(&[&a, &b, &c]).unwrap();
+        // Group order and empty groups do not matter.
+        let perm = kruskal_wallis(&[&c, &[], &a, &b]).unwrap();
+        assert!(close(base.statistic, perm.statistic, 1e-12));
+        assert_eq!(perm.df, 2.0);
+        // Only ranks matter: a monotone transform leaves H unchanged.
+        let ln = |g: &[f64]| g.iter().map(|v| v.ln()).collect::<Vec<_>>();
+        let (la, lb, lc) = (ln(&a), ln(&b), ln(&c));
+        let mono = kruskal_wallis(&[&la, &lb, &lc]).unwrap();
+        assert!(close(base.statistic, mono.statistic, 1e-12));
+        // Identical groups have equal rank sums, so H = 0 and p = 1.
+        let null = kruskal_wallis(&[&a, &a]).unwrap();
+        assert!(null.statistic.abs() < 1e-12);
+        assert!(close(null.p_value, 1.0, 1e-9));
+        // With two groups and no ties, H equals the squared Mann–Whitney z.
+        let z = mann_whitney_u(&a, &c, Tail::TwoSided).unwrap().z;
+        let h2 = kruskal_wallis(&[&a, &c]).unwrap();
+        assert!(close(h2.statistic, z * z, 1e-12));
+    }
+
+    /// Reference values from SciPy 1.18.1 (`kruskal`).
+    #[test]
+    fn kruskal_wallis_matches_scipy_oracle() {
+        let g1 = [2.9, 3.0, 2.5, 2.6, 3.2];
+        let g2 = [3.8, 2.7, 4.0, 2.4];
+        let g3 = [2.8, 3.4, 3.7, 2.2, 2.0];
+        let r = kruskal_wallis(&[&g1, &g2, &g3]).unwrap();
+        assert!(close(r.statistic, 0.7714285714285722, 1e-12));
+        assert!(close(r.p_value, 0.6799647735788936, 1e-10));
+
+        // Heavily tied integer data exercises the tie correction.
+        let h1 = [1.0, 2.0, 2.0, 3.0, 4.0, 5.0];
+        let h2 = [3.0, 3.0, 4.0, 6.0, 7.0, 7.0, 8.0];
+        let h3 = [2.0, 5.0, 5.0, 9.0, 9.0];
+        let r = kruskal_wallis(&[&h1, &h2, &h3]).unwrap();
+        assert!(close(r.statistic, 5.412311570330432, 1e-12));
+        assert!(close(r.p_value, 0.06679308076510128, 1e-10));
     }
 }
