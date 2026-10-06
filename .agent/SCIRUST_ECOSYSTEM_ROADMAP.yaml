@@ -772,6 +772,66 @@ pascal_vector_projection_program_2026_10_06:
         - changing_PVP_layout_or_stage_order_to_fit_SVE
         - using_vendor_GPU_software_for_CPU_SVE_qualification
       promotion: blocked
+    PVP3_same_host_benchmark_preregistration:
+      status: frozen_not_executed
+      prerequisite:
+        - PVP1_stable_SIMD_merged_green
+        - PVP1_SVE_exact_head_CI_green_before_SVE_is_included_as_measured_candidate
+      objective: map_when_regular_address_major_bitplanes_convert_CPU_register_width_into_real_runtime_gain
+      geometry_grid:
+        K:
+          - 64
+          - 256
+          - 1024
+          - 4096
+          - 16384
+          - 65536
+          - 262144
+          - 1048576
+        G:
+          - 64
+          - 128
+          - 256
+          - 512
+          - 1024
+          - 2048
+        exploratory_large_K:
+          - 2097152
+          - 4194304
+        exploratory_admission: only_if_checked_state_bytes_fit_declared_host_budget
+      candidates:
+        - scalar_u64
+        - AVX2_when_available
+        - AVX512_when_available
+        - NEON_when_available
+        - SVE_only_after_exact_head_merge_and_native_runtime_detection
+      protocol:
+        warmups: 5
+        measured_repetitions: 30
+        same_input_per_candidate: true
+        rotating_candidate_order: true
+        exact_output_checksum_required: true
+        pre_measurement_candidate_vs_scalar_bit_exact_gate: true
+        retain_all_candidate_failures: true
+      report:
+        - median_ns
+        - p95_ns
+        - transforms_per_second
+        - logical_gate_xor_ops
+        - packed_word_updates
+        - state_bytes
+        - zero_scratch_contract
+        - backend_and_CPU_identity
+        - compiler_and_exact_source_revision
+      forbid:
+        - physical_bandwidth_claim_from_logical_byte_counts
+        - hosted_x86_runner_result_as_stable_hardware_speed_claim
+        - QEMU_SVE_timing_as_native_SVE_performance_evidence
+        - dropping_slow_candidates_after_observation
+      decision:
+        - determine_crossovers_by_K_G_and_backend
+        - retain_scalar_when_SIMD_does_not_win
+        - native_fixed_host_required_for_performance_promotion
   hardware_sovereignty:
     - ecosystem_first_CPU_SIMD_and_WGPU
     - no_new_required_CUDA_NVRTC_cuDNN_TensorRT_TensorRT_LLM_NVML_CUTLASS_dependency_for_PVP
