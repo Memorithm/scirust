@@ -731,6 +731,24 @@ pascal_vector_projection_program_2026_10_06:
     SML_GENIUS: Pascal_ANF_model_semantics_and_final_model_internalization
     FLAT_ATTENTION: specialized_WGPU_kernel_IR_and_GPU_qualification
     NNIS: optional_portable_runtime_carrier_and_end_to_end_hardware_qualification
+  implementation_state:
+    PVP1_stable_SIMD:
+      status: implementation_PR_open_exact_head_CI_pending
+      pull_request: 1538
+      exact_head: 3e98aeafd89f7883ab23c578b7602db928235f21
+      scope:
+        - scalar_reference_preserved
+        - AVX2_u64x4
+        - AVX512F_u64x8
+        - NEON_u64x2
+        - explicit_backend_availability
+        - widest_stable_auto_dispatch
+        - bit_exact_candidate_vs_scalar_tests
+      exclusions:
+        - SVE_deferred_to_separate_aarch64_nightly_slice
+        - WGPU_deferred_to_FLAT_PVP_track
+        - no_performance_claim
+      promotion: blocked_until_all_required_exact_head_CI_is_green
   hardware_sovereignty:
     - ecosystem_first_CPU_SIMD_and_WGPU
     - no_new_required_CUDA_NVRTC_cuDNN_TensorRT_TensorRT_LLM_NVML_CUTLASS_dependency_for_PVP
