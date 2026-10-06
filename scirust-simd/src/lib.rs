@@ -703,6 +703,7 @@ pub mod eigen;
 pub mod gemm;
 pub mod grad;
 pub mod matrix;
+pub mod pvp;
 
 // Transformer-inference stack — attention, KV cache, norm, quantization, and
 // the block/model assembly built on top of them. Zero consumers anywhere in
