@@ -1072,8 +1072,14 @@ mod tests {
 
             assert_eq!(sve, scalar);
             assert_eq!(sve_stats.backend, PvpBackendV1::Sve);
-            assert_eq!(sve_stats.logical_gate_xor_ops, scalar_stats.logical_gate_xor_ops);
-            assert_eq!(sve_stats.packed_word_updates, scalar_stats.packed_word_updates);
+            assert_eq!(
+                sve_stats.logical_gate_xor_ops,
+                scalar_stats.logical_gate_xor_ops
+            );
+            assert_eq!(
+                sve_stats.packed_word_updates,
+                scalar_stats.packed_word_updates
+            );
             assert_eq!(sve_stats.storage_bits, scalar_stats.storage_bits);
             assert_eq!(sve_stats.padding_bits, scalar_stats.padding_bits);
             assert_eq!(sve_stats.scratch_words, 0);
@@ -1108,9 +1114,15 @@ mod tests {
 
     #[test]
     fn unavailable_backend_fails_before_mutation() {
-        let mut backends = vec![PvpBackendV1::Avx512, PvpBackendV1::Avx2, PvpBackendV1::Neon];
+        #[cfg(not(feature = "nightly-simd"))]
+        let backends = [PvpBackendV1::Avx512, PvpBackendV1::Avx2, PvpBackendV1::Neon];
         #[cfg(feature = "nightly-simd")]
-        backends.push(PvpBackendV1::Sve);
+        let backends = [
+            PvpBackendV1::Avx512,
+            PvpBackendV1::Avx2,
+            PvpBackendV1::Neon,
+            PvpBackendV1::Sve,
+        ];
         let unavailable = backends
             .into_iter()
             .find(|backend| !backend.available())
