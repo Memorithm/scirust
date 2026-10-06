@@ -222,3 +222,20 @@ External research input: DeepSeek-AI, *DeepSeek-V4.1-Flash: Pushing the Limits o
 | 83 | Confidence-scheduled speculative verification | extend existing speculative/EAGLE references with an acceptance-confidence interface and a scheduler driven by an explicit measured throughput curve; output correctness remains verified against the target model | `nn::nd_decoder` | 📋 | M |
 
 Downstream ownership remains unchanged: FLAT owns attention/routing execution, SLHAv2 compressed-KV semantics, KVLab comparative experiments, NNIS runtime execution, and ElasticXxx adaptive resource policy. No item becomes ✅ without independent oracle tests and the repository's normal green gates.
+
+
+## PVP — Pascal Vector Projection reusable-primitives track
+
+Source bootstrap: `docs/PASCAL_VECTOR_PROJECTION_BOOTSTRAP.md`.
+
+This programme turns the retained SML Pascal/subset-zeta semantics into a reusable hardware-regular bitplane substrate. It is not a new model, attention mechanism or SciRust product policy.
+
+- [ ] **SR-PVP0** — versioned address-major `[K, ceil(G/64)] u64` layout, checked dimensions/storage and canonical fingerprints.
+- [ ] **SR-PVP1** — scalar-u64 butterfly plus exact pack/unpack/transpose oracles.
+- [ ] **SR-PVP2** — architecture-specific candidates: NEON, AVX2, AVX-512, SVE where available, with scalar fallback.
+- [ ] **SR-PVP3** — deterministic candidate descriptors, capability gating and correctness qualification before timing, reusing the SIMD-GEMM discipline.
+- [ ] **SR-PVP4** — physical CPU benchmark matrix over K/G/alignment/reuse with full sample retention and exact-head provenance.
+- [ ] **SR-PVP5** — backend-neutral shared contract consumed by FLAT WGPU and NNIS portable sessions without importing SML semantics.
+- [ ] **SR-PVP6** — promote only primitives with demonstrated multi-consumer reuse; SML may internalize a qualified minimum and must not depend on SciRust at final runtime.
+
+Hardware policy: PVP is CPU/SIMD/open-GPU oriented. CUDA/NVRTC/cuDNN/TensorRT/TensorRT-LLM/NVML/CUTLASS/vendor SDKs are excluded as required dependencies. Existing optional CUDA support is out of scope and does not count as PVP evidence.
