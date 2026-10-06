@@ -3,7 +3,7 @@
 //! corresponding distribution in [`crate::dist`] — so every p-value traces back
 //! to the audited `scirust-special` numeric base.
 
-use crate::describe::{mean, variance};
+use crate::describe::{mean, median, variance};
 use crate::discrete::DiscreteDistribution;
 use crate::dist::{ChiSquared, Distribution, FisherF, StudentT};
 
@@ -140,6 +140,137 @@ pub fn one_way_anova(groups: &[&[f64]]) -> Option<TestResult> {
         statistic: f,
         df: df1,
         p_value: p,
+    })
+}
+
+/// Location used to centre each group in [`levene_test`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LeveneCenter {
+    /// Group means: Levene's original (1960) test, most powerful for
+    /// symmetric, light-tailed data.
+    Mean,
+    /// Group medians: the Brown–Forsythe (1974) variant, robust to skewed or
+    /// heavy-tailed data (SciPy's default for `levene`).
+    Median,
+}
+
+/// Levene / Brown–Forsythe test of `H₀`: all `groups` have equal variance.
+///
+/// Each observation is replaced by its absolute deviation from the group
+/// centre chosen by `center`, and a one-way ANOVA F statistic is computed on
+/// those deviations against `F(k − 1, N − k)`. Empty groups are ignored, as
+/// in [`one_way_anova`]. `df` holds the numerator degrees of freedom `k − 1`.
+///
+/// Returns `None` if fewer than two non-empty groups remain, there are no
+/// within-group degrees of freedom (`N ≤ k`), any value is non-finite, or
+/// every deviation equals its group mean (the F ratio is undefined).
+///
+/// ```
+/// use scirust_stats::prelude::*;
+/// let tight = [10.0, 10.1, 9.9, 10.0, 10.05, 9.95];
+/// let wide = [7.0, 13.0, 9.0, 11.5, 8.0, 12.5];
+/// let r = levene_test(&[&tight, &wide], LeveneCenter::Median).unwrap();
+/// assert_eq!(r.df, 1.0);
+/// assert!(r.p_value < 0.01);
+/// ```
+pub fn levene_test(groups: &[&[f64]], center: LeveneCenter) -> Option<TestResult> {
+    let groups: Vec<&[f64]> = groups.iter().copied().filter(|g| !g.is_empty()).collect();
+    let k = groups.len();
+    let n_total: usize = groups.iter().map(|g| g.len()).sum();
+    if k < 2 || n_total <= k || groups.iter().any(|g| g.iter().any(|v| !v.is_finite()))
+    {
+        return None;
+    }
+    let deviations: Vec<Vec<f64>> = groups
+        .iter()
+        .map(|g| {
+            let c = match center
+            {
+                LeveneCenter::Mean => mean(g),
+                LeveneCenter::Median => median(g),
+            };
+            g.iter().map(|x| (x - c).abs()).collect()
+        })
+        .collect();
+    let group_means: Vec<f64> = deviations.iter().map(|d| mean(d)).collect();
+    let grand = deviations.iter().flatten().sum::<f64>() / n_total as f64;
+    let mut ss_between = 0.0;
+    let mut ss_within = 0.0;
+    for (d, &m) in deviations.iter().zip(&group_means)
+    {
+        ss_between += d.len() as f64 * (m - grand).powi(2);
+        ss_within += d.iter().map(|z| (z - m).powi(2)).sum::<f64>();
+    }
+    if !(ss_within > 0.0 && ss_within.is_finite() && ss_between.is_finite())
+    {
+        return None;
+    }
+    let df1 = (k - 1) as f64;
+    let df2 = (n_total - k) as f64;
+    let w = (ss_between / df1) / (ss_within / df2);
+    Some(TestResult {
+        statistic: w,
+        df: df1,
+        p_value: FisherF::new(df1, df2).sf(w),
+    })
+}
+
+/// Bartlett's test of `H₀`: all `groups` have equal variance.
+///
+/// The statistic
+/// `T = [(N − k) ln s²ₚ − Σ(nᵢ − 1) ln sᵢ²] / [1 + (Σ 1/(nᵢ − 1) − 1/(N − k)) / (3(k − 1))]`
+/// is referred to `χ²(k − 1)`, as in SciPy's `bartlett`. It is exact under
+/// normality but sensitive to departures from it; prefer [`levene_test`] with
+/// [`LeveneCenter::Median`] for non-normal data.
+///
+/// Returns `None` if fewer than two groups are given, any group has fewer than
+/// two observations or zero variance, or any value is non-finite.
+///
+/// ```
+/// use scirust_stats::prelude::*;
+/// let tight = [10.0, 10.1, 9.9, 10.0, 10.05, 9.95];
+/// let wide = [7.0, 13.0, 9.0, 11.5, 8.0, 12.5];
+/// let r = bartlett_test(&[&tight, &wide]).unwrap();
+/// assert!(r.p_value < 0.001);
+/// ```
+pub fn bartlett_test(groups: &[&[f64]]) -> Option<TestResult> {
+    let k = groups.len();
+    if k < 2
+    {
+        return None;
+    }
+    let mut n_total = 0usize;
+    let mut pooled_ss = 0.0;
+    let mut sum_log = 0.0;
+    let mut sum_inv = 0.0;
+    for g in groups
+    {
+        if g.len() < 2 || g.iter().any(|v| !v.is_finite())
+        {
+            return None;
+        }
+        let v = variance(g);
+        if !(v > 0.0 && v.is_finite())
+        {
+            return None;
+        }
+        let dof = (g.len() - 1) as f64;
+        n_total += g.len();
+        pooled_ss += dof * v;
+        sum_log += dof * v.ln();
+        sum_inv += 1.0 / dof;
+    }
+    let df_within = (n_total - k) as f64;
+    let df = (k - 1) as f64;
+    let pooled = pooled_ss / df_within;
+    let numerator = df_within * pooled.ln() - sum_log;
+    let denominator = 1.0 + (sum_inv - 1.0 / df_within) / (3.0 * df);
+    // ln is concave, so the numerator is ≥ 0 up to rounding.
+    let t = (numerator / denominator).max(0.0);
+    Some(TestResult {
+        statistic: t,
+        df,
+        p_value: ChiSquared::new(df).sf(t),
     })
 }
 
@@ -475,5 +606,73 @@ mod tests {
         // Degenerate: a single bin cannot yield a test.
         assert!(chi2_gof_discrete(&[10], &bad, 0, 5.0).is_none());
         assert!(chi2_gof_discrete(&[0, 0, 0], &bad, 0, 5.0).is_none());
+    }
+
+    #[test]
+    fn variance_tests_reject_bad_input() {
+        let g = [1.0, 2.0, 4.0];
+        for c in [LeveneCenter::Mean, LeveneCenter::Median]
+        {
+            assert!(levene_test(&[&g], c).is_none());
+            assert!(levene_test(&[&g, &[]], c).is_none());
+            assert!(levene_test(&[&[1.0], &[2.0]], c).is_none());
+            assert!(levene_test(&[&g, &[1.0, f64::INFINITY]], c).is_none());
+            // Every deviation equals its group mean: F is 0/0.
+            assert!(levene_test(&[&[1.0, 3.0], &[5.0, 9.0]], c).is_none());
+        }
+        assert!(bartlett_test(&[&g]).is_none());
+        assert!(bartlett_test(&[&g, &[3.0]]).is_none());
+        assert!(bartlett_test(&[&g, &[2.0, 2.0]]).is_none());
+        assert!(bartlett_test(&[&g, &[f64::NAN, 1.0]]).is_none());
+    }
+
+    #[test]
+    fn variance_tests_invariants() {
+        let a = [4.1, 5.3, 3.8, 6.0, 5.1, 4.4];
+        let b = [2.0, 9.5, 5.5, 1.2, 8.8, 6.1, 3.3];
+        // Shifting a group changes neither its spread nor the statistics.
+        let shifted: Vec<f64> = b.iter().map(|v| v + 100.0).collect();
+        for c in [LeveneCenter::Mean, LeveneCenter::Median]
+        {
+            let r = levene_test(&[&a, &b], c).unwrap();
+            let s = levene_test(&[&a, &shifted], c).unwrap();
+            assert!(close(r.statistic, s.statistic, 1e-9));
+            assert!(r.p_value < 0.05);
+            // Groups with identical spread give W = 0 and p = 1.
+            let same = levene_test(&[&a, &a], c).unwrap();
+            assert!(same.statistic.abs() < 1e-12);
+            assert!(close(same.p_value, 1.0, 1e-9));
+        }
+        let r = bartlett_test(&[&a, &b]).unwrap();
+        let s = bartlett_test(&[&a, &shifted]).unwrap();
+        assert!(close(r.statistic, s.statistic, 1e-9));
+        assert_eq!(r.df, 1.0);
+        let same = bartlett_test(&[&b, &b, &b]).unwrap();
+        assert!(same.statistic.abs() < 1e-12);
+        assert!(close(same.p_value, 1.0, 1e-9));
+    }
+
+    /// Reference values from SciPy 1.18.1 (`levene(center=...)`, `bartlett`),
+    /// on the NIST gear-diameter style data used in SciPy's own tests.
+    #[test]
+    fn variance_tests_match_scipy_oracle() {
+        let a = [8.88, 9.12, 9.04, 8.98, 9.00, 9.08, 9.01, 8.85, 9.06, 8.99];
+        let b = [8.88, 8.95, 9.29, 9.44, 9.15, 9.58, 8.36, 9.18, 8.67, 9.05];
+        let c = [8.95, 9.12, 8.95, 8.85, 9.03, 8.84, 9.07, 8.98, 8.86, 8.98];
+        let groups: [&[f64]; 3] = [&a, &b, &c];
+
+        let r = levene_test(&groups, LeveneCenter::Mean).unwrap();
+        assert_eq!(r.df, 2.0);
+        assert!(close(r.statistic, 7.905194483442054, 1e-10));
+        assert!(close(r.p_value, 0.001983795817472729, 1e-9));
+
+        let r = levene_test(&groups, LeveneCenter::Median).unwrap();
+        assert!(close(r.statistic, 7.584952754501659, 1e-10));
+        assert!(close(r.p_value, 0.002431505967249677, 1e-9));
+
+        let r = bartlett_test(&groups).unwrap();
+        assert_eq!(r.df, 2.0);
+        assert!(close(r.statistic, 22.789434813726768, 1e-10));
+        assert!(close(r.p_value, 1.1254782518834628e-05, 1e-9));
     }
 }

@@ -31,13 +31,15 @@
 //!   all with typed errors, no hidden `NaN`, and reuse of the [`describe`] median
 //!   and quantile.
 //! - **Hypothesis tests** ([`htest`]): one- and two-sample t-tests (pooled &
-//!   Welch), one-way ANOVA, Pearson χ² goodness-of-fit (raw counts *and* a
+//!   Welch), one-way ANOVA, Levene / Brown–Forsythe and Bartlett tests for
+//!   equal variances, Pearson χ² goodness-of-fit (raw counts *and* a
 //!   `chi2_gof_discrete` that bins a fitted discrete distribution, pools thin
 //!   bins, and adjusts the dof for estimated parameters), one-sample
 //!   Kolmogorov–Smirnov.
 //! - **Correlation and rank tests** ([`nonparam`]): Pearson and Spearman
 //!   correlation tests, Mann–Whitney U and Wilcoxon signed-rank with
-//!   tie-corrected normal approximations.
+//!   tie-corrected normal approximations, and the k-sample Kruskal–Wallis H
+//!   test.
 //! - **Survival analysis** ([`survival`], [`cox`]): validated right-censored
 //!   observations, Kaplan-Meier product-limit curves, Nelson-Aalen cumulative
 //!   hazards, the two-sample log-rank test, and Cox proportional-hazards
@@ -104,13 +106,13 @@ pub use dist::{
     Beta, ChiSquared, Distribution, Exponential, FisherF, Gamma, Normal, StudentT, Uniform,
 };
 pub use htest::{
-    Tail, TestResult, chi_square_gof, chi2_gof_discrete, ks_test_one_sample, one_way_anova,
-    t_test_one_sample, t_test_two_sample,
+    LeveneCenter, Tail, TestResult, bartlett_test, chi_square_gof, chi2_gof_discrete,
+    ks_test_one_sample, levene_test, one_way_anova, t_test_one_sample, t_test_two_sample,
 };
 pub use lottery::{LotteryGame, PrizeTier, draw_frequency_chi_square};
 pub use nonparam::{
-    CorrelationTest, RankTestResult, average_ranks, mann_whitney_u, pearson_test, spearman_test,
-    wilcoxon_signed_rank,
+    CorrelationTest, RankTestResult, average_ranks, kruskal_wallis, mann_whitney_u, pearson_test,
+    spearman_test, wilcoxon_signed_rank,
 };
 pub use rng::SplitMix64;
 pub use robust::{
@@ -144,13 +146,13 @@ pub mod prelude {
         Beta, ChiSquared, Distribution, Exponential, FisherF, Gamma, Normal, StudentT, Uniform,
     };
     pub use crate::htest::{
-        Tail, TestResult, chi_square_gof, chi2_gof_discrete, ks_test_one_sample, one_way_anova,
-        t_test_one_sample, t_test_two_sample,
+        LeveneCenter, Tail, TestResult, bartlett_test, chi_square_gof, chi2_gof_discrete,
+        ks_test_one_sample, levene_test, one_way_anova, t_test_one_sample, t_test_two_sample,
     };
     pub use crate::lottery::{LotteryGame, PrizeTier, draw_frequency_chi_square};
     pub use crate::nonparam::{
-        CorrelationTest, RankTestResult, average_ranks, mann_whitney_u, pearson_test,
-        spearman_test, wilcoxon_signed_rank,
+        CorrelationTest, RankTestResult, average_ranks, kruskal_wallis, mann_whitney_u,
+        pearson_test, spearman_test, wilcoxon_signed_rank,
     };
     pub use crate::rng::SplitMix64;
     pub use crate::robust::{
