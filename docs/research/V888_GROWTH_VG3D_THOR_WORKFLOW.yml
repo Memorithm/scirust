@@ -1,0 +1,218 @@
+# Proposed GitHub Actions workflow for V888-GROWTH VG-3D.
+# Intended path: .github/workflows/v888-growth-vg3d-thor.yml
+# Not installed under .github/workflows/ in this PR because the available
+# OAuth token lacks the `workflow` scope required to create workflow files.
+# Copy/rename into .github/workflows/ with a token that has workflow scope.
+#
+name: V888-GROWTH VG-3D modularity/mixing/agreement
+
+on:
+  push:
+    branches: [research/v888-growth-vg3d-exporter-1500]
+    paths:
+      - "scirust-graph/**"
+      - "docs/research/V888_GROWTH_VG3D.md"
+      - "docs/V888_GROWTH_PROGRAM.md"
+      - ".github/workflows/v888-growth-vg3d-thor.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v888-growth-vg3d-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  vg3d:
+    name: Inferred modularity and hemilineage mixing on Thor
+    runs-on: [self-hosted, Linux, ARM64, scirust-arm64, jetson-thor, internal]
+    timeout-minutes: 90
+    env:
+      CARGO_INCREMENTAL: "0"
+      RUSTFLAGS: "-D warnings"
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Isolate Rust toolchain homes
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="$RUNNER_TEMP/v888-vg3d-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -p "$base/cargo" "$base/rustup" "$base/target" "$base/evidence" "$base/private"
+          echo "CARGO_HOME=$base/cargo" >> "$GITHUB_ENV"
+          echo "RUSTUP_HOME=$base/rustup" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_DIR=$base/target" >> "$GITHUB_ENV"
+          echo "VG3D_EVIDENCE=$base/evidence" >> "$GITHUB_ENV"
+          # Derived annotation rows stay here and are never uploaded.
+          echo "VG3D_PRIVATE=$base/private" >> "$GITHUB_ENV"
+
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: 1.89.0
+
+      - name: Qualify Rust modularity contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +1.89.0 test -p scirust-graph --locked
+          RUSTDOCFLAGS="-D warnings" cargo +1.89.0 test -p scirust-graph --doc --locked
+          cargo +1.89.0 build --release -p scirust-graph --example v888_growth_vg3d --locked
+
+      - name: Resolve frozen external graph
+        shell: bash
+        run: |
+          set -euo pipefail
+          candidates=(
+            "$HOME/datasets/banc_v888"
+            "/mnt/nvme/github-runners/home/datasets/banc_v888"
+            "/mnt/nvme-r38.4/github-runners/home/datasets/banc_v888"
+            "/ota_keep/mnt-nvme-r38.4/github-runners/home/datasets/banc_v888"
+          )
+          ROOT=""
+          for candidate in "${candidates[@]}"; do
+            graph="$candidate/analysis/bool01-35717145115-1/graph.csr"
+            if [[ -r "$graph" ]]; then
+              ROOT="$candidate"
+              break
+            fi
+          done
+          if [[ -z "$ROOT" ]]; then
+            echo "::error::qualified V888 graph not found on this Thor runner"
+            exit 1
+          fi
+          GRAPH="$ROOT/analysis/bool01-35717145115-1/graph.csr"
+          test "$(stat -c '%s' "$GRAPH")" = "166466540"
+          echo "385111a69cc8a1d748c0bdfd9b0b738c51fe83cde98f45762553435a2d15a2a4  $GRAPH" | sha256sum --check
+          echo "VG3D_GRAPH=$GRAPH" >> "$GITHUB_ENV"
+          echo "VG3D_ROOT=$ROOT" >> "$GITHUB_ENV"
+          sha256sum "$GRAPH" > "$VG3D_EVIDENCE/graph-before.sha256"
+          BLOCKS=""
+          for candidate in \
+            "$ROOT/analysis/bool02-blocks.tsv" \
+            "$ROOT/analysis/bool01-35717145115-1/blocks.tsv" \
+            "$ROOT/analysis/region_blocks.tsv"
+          do
+            if [[ -r "$candidate" ]]; then
+              BLOCKS="$candidate"
+              break
+            fi
+          done
+          if [[ -n "$BLOCKS" ]]; then
+            echo "VG3D_BLOCKS=$BLOCKS" >> "$GITHUB_ENV"
+          else
+            echo "VG3D_BLOCKS=" >> "$GITHUB_ENV"
+            echo "blocks_tsv=absent_using_vacuous_single_label" > "$VG3D_EVIDENCE/blocks-status.txt"
+          fi
+
+      - name: Derive hemilineage annotation (kept off the artefact)
+        shell: bash
+        run: |
+          set -euo pipefail
+          META="$VG3D_ROOT/banc_888_meta.feather"
+          PY="$VG3D_ROOT/.analysis-venv/bin/python"
+          if [[ -r "$META" && -x "$PY" ]]; then
+            "$PY" - "$META" "$VG3D_PRIVATE/hemilineage.tsv" <<'PY'
+          import sys
+          import pyarrow.feather as feather
+          meta_path, out_path = sys.argv[1], sys.argv[2]
+          table = feather.read_table(meta_path)
+          columns = {name.lower(): name for name in table.column_names}
+          id_column = next((columns[c] for c in ("banc_888_id", "root_id", "root_888") if c in columns), None)
+          label_column = columns.get("hemilineage")
+          if id_column is None or label_column is None:
+              raise SystemExit("metadata lacks an id or hemilineage column")
+          ids = table.column(id_column).to_pylist()
+          labels = table.column(label_column).to_pylist()
+          rows = {}
+          for node_id, label in zip(ids, labels):
+              if node_id is None or label is None:
+                  continue
+              label = str(label).strip()
+              if not label or label.lower() == "nan" or "\t" in label:
+                  continue
+              node_id = int(node_id)
+              if node_id in rows and rows[node_id] != label:
+                  raise SystemExit(f"conflicting hemilineage for {node_id}")
+              rows[node_id] = label
+          with open(out_path, "w", encoding="utf-8") as handle:
+              for node_id in sorted(rows):
+                  handle.write(f"{node_id}\t{rows[node_id]}\n")
+          print(f"hemilineage_rows={len(rows)} labels={len(set(rows.values()))}")
+          PY
+            echo "VG3D_LABELS=$VG3D_PRIVATE/hemilineage.tsv" >> "$GITHUB_ENV"
+            {
+              echo "labels_source=banc_888_meta.feather:hemilineage"
+              echo "labels_rows=$(wc -l < "$VG3D_PRIVATE/hemilineage.tsv")"
+              echo "labels_sha256=$(sha256sum "$VG3D_PRIVATE/hemilineage.tsv" | cut -d' ' -f1)"
+            } > "$VG3D_EVIDENCE/labels-status.txt"
+          else
+            echo "VG3D_LABELS=" >> "$GITHUB_ENV"
+            echo "labels_source=absent_no_annotation_join" > "$VG3D_EVIDENCE/labels-status.txt"
+          fi
+
+      - name: Emit deterministic VG-3D modularity summaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$VG3D_EVIDENCE/modularity"
+          mkdir -p "$OUT"
+          ARGS=("$VG3D_GRAPH" "$OUT" "512" "29" "weak_bfs")
+          if [[ -n "${VG3D_BLOCKS}" ]]; then
+            ARGS+=("--blocks" "$VG3D_BLOCKS")
+            echo "blocks_tsv=$VG3D_BLOCKS" > "$VG3D_EVIDENCE/blocks-status.txt"
+          fi
+          if [[ -n "${VG3D_LABELS}" ]]; then
+            ARGS+=("--labels" "$VG3D_LABELS")
+          fi
+          "$CARGO_TARGET_DIR/release/examples/v888_growth_vg3d" "${ARGS[@]}" \
+            2> "$VG3D_EVIDENCE/summary.txt"
+          cat "$VG3D_EVIDENCE/summary.txt"
+          test -f "$OUT/summary.json"
+          test -f "$OUT/nodes.tsv"
+          test -f "$OUT/modularity_per_arm.tsv"
+          test -f "$OUT/deltas.tsv"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          summary = json.loads(Path(os.environ["VG3D_EVIDENCE"], "modularity", "summary.json").read_text())
+          assert summary["nodes"] == 512
+          assert len(summary["deltas"]) == 4
+          assert summary["biological_module_claim"] is False
+          assert summary["developmental_causality_claim"] is False
+          assert summary["topology_advantage_claim"] is False
+          if os.environ.get("VG3D_LABELS"):
+              assert summary["annotation"] is not None
+          print("summary_ok")
+          PY
+          sha256sum "$OUT/summary.json" > "$VG3D_EVIDENCE/summary.sha256"
+          sha256sum "$VG3D_GRAPH" > "$VG3D_EVIDENCE/graph-after.sha256"
+          cmp "$VG3D_EVIDENCE/graph-before.sha256" "$VG3D_EVIDENCE/graph-after.sha256"
+
+      - name: Publish evidence summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "### V888-GROWTH VG-3D"
+            echo
+            echo "source_revision=${GITHUB_SHA}"
+            cat "$VG3D_EVIDENCE/summary.txt"
+            cat "$VG3D_EVIDENCE/blocks-status.txt"
+            cat "$VG3D_EVIDENCE/labels-status.txt"
+            cat "$VG3D_EVIDENCE/summary.sha256"
+            echo "biological_module_claim=false"
+            echo "developmental_causality_claim=false"
+            echo "topology_advantage_claim=false"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: v888-growth-vg3d-${{ github.sha }}
+          path: ${{ env.VG3D_EVIDENCE }}/
+          if-no-files-found: warn
+          retention-days: 30

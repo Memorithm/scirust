@@ -146,8 +146,14 @@ gains, exact label-mixing tables with nominal assortativity for caller
 annotations such as hemilineage, adjusted-Rand partition agreement, and a
 per-arm comparison against the VG-3B controls
 (`docs/research/V888_GROWTH_VG3D.md`). Inferred communities are descriptive
-local optima, not biological modules. The Thor exporter, ensemble dispersion
-and any qualification remain later VG-3D work.
+local optima, not biological modules.
+
+The second VG-3D slice adds a fail-closed `node_id<TAB>label` annotation join
+(`v888_growth_parse_annotation_tsv`, `v888_growth_join_annotation`) with an
+explicit `<unlabelled>` bucket, the deterministic pilot exporter
+`v888_growth_vg3d`, and a Thor workflow recipe under `docs/research/` that
+derives hemilineage labels Thor-side without uploading them. The Thor evidence
+run, ensemble dispersion and any qualification remain later VG-3D work.
 
 The earlier Thor workflow `V888 Thor dataset and growth phase 0` downloads the
 external adult dataset into persistent host storage and emits only compact

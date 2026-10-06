@@ -4,8 +4,8 @@
 //! per-node structural facts suitable for later joins with morphology or
 //! annotation tables, exposes deterministic unit-adjacency matched controls for
 //! VG-3B, and re-exports reachability / centrality / rich-club helpers for
-//! VG-3C, plus inferred modularity, label mixing and partition agreement for
-//! VG-3D. It does not infer developmental causality, biological importance,
+//! VG-3C, plus inferred modularity, label mixing, partition agreement and
+//! deterministic caller-annotation joins for VG-3D. It does not infer developmental causality, biological importance,
 //! model quality, topology advantage, or growth mechanisms.
 
 use core::fmt;
@@ -14,6 +14,10 @@ use crate::banc_v888::BancV888NodeId;
 use crate::directed::DirectedGraphError;
 use crate::v888_executable::BancV888ExecutableGraph;
 
+pub use crate::v888_growth_annotation::{
+    V888_GROWTH_UNLABELLED, V888GrowthAnnotation, V888GrowthAnnotationError,
+    V888GrowthAnnotationJoin, v888_growth_join_annotation, v888_growth_parse_annotation_tsv,
+};
 pub use crate::v888_growth_controls::{
     V888GrowthControlArm, V888GrowthControlArmResult, V888GrowthControlBundle,
     V888GrowthControlError, V888GrowthControlMatch, V888GrowthControlStats, V888GrowthSubsetPolicy,
