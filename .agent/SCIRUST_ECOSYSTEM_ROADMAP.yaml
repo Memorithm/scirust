@@ -696,3 +696,46 @@ v888_executable_graph_handoff_2026_10_04:
     - exact_head_required_CI_green
     - dedicated_Thor_source_reproduction_green
     - public_validator_matches_frozen_graph_size_hash_and_counts
+pascal_vector_projection_program_2026_10_06:
+  status: active_shared_primitive_research
+  ownership:
+    SciRust: reusable_bitplane_layout_transpose_pack_unpack_CPU_SIMD_dispatch_capability_oracles
+    SML_GENIUS: Pascal_ANF_model_semantics_and_final_model_internalization
+    FLAT_ATTENTION: specialized_WGPU_kernel_IR_and_GPU_qualification
+    NNIS: optional_portable_runtime_carrier_and_end_to_end_hardware_qualification
+  hardware_sovereignty:
+    - ecosystem_first_CPU_SIMD_and_WGPU
+    - no_new_required_CUDA_NVRTC_cuDNN_TensorRT_TensorRT_LLM_NVML_CUTLASS_dependency_for_PVP
+    - GPU_driver_only_is_allowed_vendor_specific_layer_for_the_new_PVP_program
+    - existing_optional_CUDA_support_in_SciRust_remains_outside_this_program
+  shared_candidate:
+    name: Pascal_Vector_Projection_PVP
+    representation:
+      logical: address_major_gate_bitplanes
+      cpu: "[K, ceil(G/64)] u64"
+      gpu_portable: "[K, ceil(G/128)] vec4<u32>"
+    required_properties:
+      - contiguous_inner_gate_words
+      - deterministic_pack_unpack_transpose
+      - no_pointer_chasing_in_hot_transform
+      - exact_scalar_oracle
+      - bounded_checked_indexing_and_storage_accounting
+  reuse_current_SciRust:
+    - scirust_simd_runtime_dispatch_AVX512_AVX2_SSE2_NEON_SVE_scalar
+    - stable_core_arch_CPU_paths
+    - optional_portable_simd
+    - scirust_compute_hardware_capability_probe
+    - candidate_plan_and_candidate_qualification_patterns
+    - correctness_before_timing
+  ordered_sequence:
+    - SR_PVP0_versioned_bitplane_layout_and_scalar_reference
+    - SR_PVP1_pack_unpack_transpose_differentials
+    - SR_PVP2_NEON_AVX2_AVX512_and_SVE_candidate_kernels
+    - SR_PVP3_candidate_qualification_and_same_host_benchmarks
+    - SR_PVP4_backend_neutral_contract_for_FLAT_and_NNIS_consumers
+    - SR_PVP5_promote_only_general_primitives_with_multiple_consumers
+  boundary:
+    - SciRust_must_not_absorb_SML_model_or_ANF_policy
+    - SciRust_must_not_absorb_FLAT_attention_or_GPU_kernel_ownership
+    - SciRust_must_not_make_NNIS_required_by_SML
+
