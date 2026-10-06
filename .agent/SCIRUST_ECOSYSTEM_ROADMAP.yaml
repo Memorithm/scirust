@@ -749,6 +749,27 @@ pascal_vector_projection_program_2026_10_06:
         - WGPU_deferred_to_FLAT_PVP_track
         - no_performance_claim
       promotion: blocked_until_all_required_exact_head_CI_is_green
+    PVP1_SVE_scalable:
+      status: frozen_next_slice_not_opened
+      prerequisite: PVP1_stable_SIMD_merged_green
+      scope:
+        - SVE_u64_scalable_row_XOR
+        - runtime_vector_length_via_svcntd
+        - predicated_u64_tail_no_scalar_epilogue_required
+        - SVE_preferred_over_NEON_only_when_nightly_simd_and_runtime_feature_are_both_present
+        - scalar_and_NEON_fallbacks_preserved
+      required_qualification:
+        - aarch64_unknown_linux_gnu_typecheck_with_scirust_simd_nightly_simd
+        - exact_candidate_vs_scalar_equivalence
+        - explicit_SVE_runtime_feature_gate
+        - execute_PVP_tests_under_aarch64_QEMU_with_SVE_enabled_if_supported_by_runner
+        - if_QEMU_SVE_execution_is_unavailable_record_compile_only_and_block_physical_SVE_promotion
+        - native_SVE_hardware_required_before_any_latency_or_throughput_claim
+      forbidden:
+        - treating_aarch64_cross_compile_as_SVE_execution_evidence
+        - changing_PVP_layout_or_stage_order_to_fit_SVE
+        - using_vendor_GPU_software_for_CPU_SVE_qualification
+      promotion: blocked
   hardware_sovereignty:
     - ecosystem_first_CPU_SIMD_and_WGPU
     - no_new_required_CUDA_NVRTC_cuDNN_TensorRT_TensorRT_LLM_NVML_CUTLASS_dependency_for_PVP
