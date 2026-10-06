@@ -4,7 +4,8 @@
 //! per-node structural facts suitable for later joins with morphology or
 //! annotation tables, exposes deterministic unit-adjacency matched controls for
 //! VG-3B, and re-exports reachability / centrality / rich-club helpers for
-//! VG-3C. It does not infer developmental causality, biological importance,
+//! VG-3C, plus inferred modularity, label mixing and partition agreement for
+//! VG-3D. It does not infer developmental causality, biological importance,
 //! model quality, topology advantage, or growth mechanisms.
 
 use core::fmt;
@@ -28,6 +29,13 @@ pub use crate::v888_growth_metrics::{
     v888_growth_compare_metric_arms, v888_growth_directed_betweenness, v888_growth_f64_to_nano,
     v888_growth_harmonic_closeness, v888_growth_metric_bundle, v888_growth_reachability_from_edges,
     v888_growth_reachability_profile, v888_growth_rich_club_curve, v888_growth_unit_digraph,
+};
+pub use crate::v888_growth_modularity::{
+    V888GrowthCommunityPartition, V888GrowthLabelMixing, V888GrowthLouvainOptions,
+    V888GrowthModularity, V888GrowthModularityArm, V888GrowthModularityDelta,
+    V888GrowthModularityError, V888GrowthPartitionAgreement, v888_growth_compare_modularity_arms,
+    v888_growth_directed_modularity, v888_growth_infer_communities, v888_growth_label_mixing,
+    v888_growth_partition_agreement,
 };
 
 /// One exact per-neuron topology row for V888-GROWTH VG-3.

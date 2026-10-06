@@ -8,6 +8,7 @@ pub mod v888_executable;
 pub mod v888_growth;
 pub mod v888_growth_controls;
 pub mod v888_growth_metrics;
+pub mod v888_growth_modularity;
 
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};

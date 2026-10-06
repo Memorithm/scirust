@@ -140,6 +140,15 @@ residual joins, mixing/ensemble qualification and any topology-advantage claim.
 Those remain VG-3D / later VG-3 work. No developmental-causality claim follows
 from this slice.
 
+VG-3D (first slice) adds Rust-owned deterministic directed modularity, a
+deterministic directed Louvain community inference with exact integer move
+gains, exact label-mixing tables with nominal assortativity for caller
+annotations such as hemilineage, adjusted-Rand partition agreement, and a
+per-arm comparison against the VG-3B controls
+(`docs/research/V888_GROWTH_VG3D.md`). Inferred communities are descriptive
+local optima, not biological modules. The Thor exporter, ensemble dispersion
+and any qualification remain later VG-3D work.
+
 The earlier Thor workflow `V888 Thor dataset and growth phase 0` downloads the
 external adult dataset into persistent host storage and emits only compact
 manifests and analysis outputs as GitHub evidence. Raw BANC files and the
