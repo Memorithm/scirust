@@ -95,3 +95,10 @@ For BANC v888, sparse recurrent graph, event-driven, spiking, SML CSP, FLAT spar
 For portable FP4 KV reference work, cross-layer KV reuse reference contracts, or confidence-scheduled speculative verification, also read `deepseek_v41_reusable_primitives_program_2026_09_24` in the off-main ecosystem roadmap and the post-80 extension in `docs/RESEARCH_ROADMAP.md`.
 
 SciRust may host deterministic reusable reference primitives only. Runtime policy, compressed-KV product semantics, sparse-attention promotion, resource actuation, and model architecture remain owned by their destination repositories.
+
+
+## Mandatory Pascal Vector Projection bootstrap
+
+For Pascal/subset-zeta, massive ANF-bank bitplanes, Boolean-butterfly, or SML hardware-alignment work, read [`docs/PASCAL_VECTOR_PROJECTION_BOOTSTRAP.md`](docs/PASCAL_VECTOR_PROJECTION_BOOTSTRAP.md) plus the current off-main SciRust ecosystem roadmap and ML maturity overlay.
+
+SciRust owns reusable bitplane/layout/SIMD primitives only. The PVP target path is scalar/CPU SIMD/WGPU-compatible and must not require CUDA, NVRTC, cuDNN, TensorRT/TensorRT-LLM, NVML, CUTLASS or vendor SDK software; the installed GPU driver is the only vendor-specific layer admitted. SML-GENIUS remains self-sufficient and may later internalize the minimum qualified primitive.
