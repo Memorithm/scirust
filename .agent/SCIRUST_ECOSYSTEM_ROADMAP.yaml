@@ -60,7 +60,7 @@ ownership:
     - SciCapsule_product_CLI_trust_policy_and_bounded_execution_semantics
     - evolutionary_candidate_search_strategy_owned_by_Forge
     - generic_elastic_resource_control_loop_owned_by_ElasticXxx
-    - NNIS_native_CUDA_model_runtime_internals
+    - NNIS_product_runtime_internals_including_legacy_NVIDIA_specific_paths
     - FLAT_ATTENTION_specialized_attention_engine_ownership
     - SLHAv2_compressed_KV_product_and_CCOs_policy_ownership
     - product_specific_agent_harness_semantics_owned_by_SoulSystem_or_other_agent_products
@@ -114,12 +114,14 @@ ecosystem_interfaces:
       - SciRust_exposes_tensor_reference_and_backend_seams
       - FLAT_ATTENTION_exposes_versioned_attention_execution_capabilities
       - optimized_FLAT_results_are_validated_against_SciRust_or_equivalent_deterministic_oracles
-  Memorithm/NVIDIA-Native-Inference-Stack:
-    relationship: specialized_native_NVIDIA_inference_runtime
+  Memorithm/NNIS:
+    relationship: native_neural_inference_runtime_with_portable_CPU_WGPU_direction_and_legacy_NVIDIA_specific_reference_paths
     status: active_ecosystem_product
     contract_direction:
       - share_only_backend_neutral_tensor_representation_or_model_contracts_when_stable
-      - do_not_move_NNIS_CUDA_JIT_kernel_or_model_runtime_internals_into_SciRust_without_a_general_abstraction
+      - prefer_CPU_WGPU_open_backend_contracts_for_new_cross_repository_work
+      - do_not_move_NNIS_product_runtime_or_legacy_CUDA_JIT_internals_into_SciRust_without_a_general_abstraction
+      - no_new_cross_repository_path_requires_NVIDIA_software_above_the_installed_GPU_driver
   Memorithm/forge:
     relationship: execution_driven_candidate_search_engine
     status: active_ecosystem_product
@@ -213,7 +215,8 @@ roadmap:
     status: active
     goals:
       - integrate_FLAT_ATTENTION_through_explicit_attention_capability_boundaries
-      - integrate_NNIS_only_through_backend_neutral_or_explicit_adapter_contracts
+      - integrate_NNIS_only_through_backend_neutral_or_explicit_portable_adapter_contracts
+      - prefer_NNIS_CPU_WGPU_paths_for_new_work_and_treat_legacy_NVIDIA_specific_paths_as_non_authoritative_for_portable_claims
       - use_Forge_for_candidate_search_without_moving_search_semantics_into_SciRust
       - keep_reference_oracles_independent_of_the_optimized_candidate
     exit_criteria:
