@@ -392,7 +392,14 @@ mod tests {
         let ex: Vec<f64> = x.iter().map(|v: &f64| v.exp()).collect();
         let cy: Vec<f64> = y.iter().map(|v| v * v * v).collect();
         let mono = spearman_test(&ex, &cy, Tail::TwoSided).unwrap();
-        assert_eq!(raw, mono);
+        // Ranks are identical, so the coefficient and df match exactly. The
+        // statistic and p-value go through transcendental functions, which
+        // Miri deliberately perturbs by a few ULPs, so compare those with a
+        // tolerance rather than bit-for-bit.
+        assert_eq!(raw.coefficient, mono.coefficient);
+        assert_eq!(raw.df, mono.df);
+        assert!(close(raw.statistic, mono.statistic, 1e-12));
+        assert!(close(raw.p_value, mono.p_value, 1e-12));
     }
 
     #[test]
