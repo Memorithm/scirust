@@ -59,20 +59,34 @@ pub trait Distribution {
 /// loop is still capped at 128 iterations) and gives the best answer f64
 /// can represent even in that regime.
 fn invert_cdf(cdf: impl Fn(f64) -> f64, p: f64, mut lo: f64, mut hi: f64) -> f64 {
-    // Expand the bracket outward until it straddles `p`.
-    let mut guard = 0;
-    while cdf(lo) > p && guard < 200
+    // Expand the bracket outward until it straddles `p`. The span doubles on
+    // every step, so the loops reach the end of the finite `f64` range in
+    // about a thousand steps; they stop there (at `∓f64::MAX`) rather than at
+    // an arbitrary step budget. An earlier budget of 200 doublings capped
+    // the bracket near `±3.2e62`, so a heavy-tailed quantile beyond it (for
+    // example `StudentT::new(1.0).quantile(1e-100) ≈ −3.18e99`) silently came
+    // back as `≈ −3.2e62`.
+    while cdf(lo) > p && lo > f64::MIN
     {
         let span = (hi - lo).max(1.0);
-        lo -= span;
-        guard += 1;
+        let next = lo - span;
+        lo = if next.is_finite() { next } else { f64::MIN };
     }
-    guard = 0;
-    while cdf(hi) < p && guard < 200
+    while cdf(hi) < p && hi < f64::MAX
     {
         let span = (hi - lo).max(1.0);
-        hi += span;
-        guard += 1;
+        let next = hi + span;
+        hi = if next.is_finite() { next } else { f64::MAX };
+    }
+    // The quantile lies beyond the largest finite `f64`: report it as the
+    // infinity it rounds to instead of pinning it to `∓f64::MAX`.
+    if lo == f64::MIN && cdf(lo) > p
+    {
+        return f64::NEG_INFINITY;
+    }
+    if hi == f64::MAX && cdf(hi) < p
+    {
+        return f64::INFINITY;
     }
 
     // Non-negative support (`lo == 0`): the quantile can sit many orders of
@@ -88,7 +102,7 @@ fn invert_cdf(cdf: impl Fn(f64) -> f64, p: f64, mut lo: f64, mut hi: f64) -> f64
         // last bracket `b` with `cdf(b) >= p`.
         let mut a = hi;
         let mut b = hi;
-        guard = 0;
+        let mut guard = 0;
         while cdf(a) >= p && a > f64::MIN_POSITIVE && guard < 400
         {
             b = a;
@@ -124,7 +138,9 @@ fn invert_cdf(cdf: impl Fn(f64) -> f64, p: f64, mut lo: f64, mut hi: f64) -> f64
     // General support (may be negative): linear bisection.
     for _ in 0..128
     {
-        let mid = 0.5 * (lo + hi);
+        // `0.5·lo + 0.5·hi` rather than `0.5·(lo + hi)`: the bracket may span
+        // the whole finite range, where `lo + hi` would overflow.
+        let mid = 0.5 * lo + 0.5 * hi;
         if cdf(mid) < p
         {
             lo = mid;
@@ -138,7 +154,35 @@ fn invert_cdf(cdf: impl Fn(f64) -> f64, p: f64, mut lo: f64, mut hi: f64) -> f64
             break;
         }
     }
-    0.5 * (lo + hi)
+    0.5 * lo + 0.5 * hi
+}
+
+/// Quantile by bisection on whichever tail keeps full precision at `p`.
+///
+/// For `p ≤ ½` this is [`invert_cdf`] on the CDF. For `p > ½` it solves
+/// `sf(x) = 1 − p` instead (`1 − p` is exact there): inverting the CDF near
+/// `1` can only resolve the upper tail to the `≈1.1e-16` spacing of `f64`
+/// values just below `1`, and some CDFs lose more than that when their own
+/// argument rounds towards `1` (`FisherF` forms `d1·x/(d1·x + d2)`). That
+/// limited upper-tail quantiles to a few significant digits, e.g.
+/// `FisherF::new(1.0, 1.0).quantile(1.0 - 1e-8)` came back ≈11 % low and
+/// `ChiSquared::new(1.0).quantile(1.0 - 1e-15)` ≈0.17 % low. The negated
+/// survival function `−sf` is increasing, so [`invert_cdf`] applies as is.
+fn invert_two_tailed(
+    cdf: impl Fn(f64) -> f64,
+    sf: impl Fn(f64) -> f64,
+    p: f64,
+    lo: f64,
+    hi: f64,
+) -> f64 {
+    if p > 0.5
+    {
+        invert_cdf(|x| -sf(x), -(1.0 - p), lo, hi)
+    }
+    else
+    {
+        invert_cdf(cdf, p, lo, hi)
+    }
 }
 
 /// Standard normal quantile `Φ⁻¹(p)` for `p ∈ (0, 1)`.
@@ -466,7 +510,7 @@ impl Distribution for Gamma {
             return f64::INFINITY;
         }
         let hi = self.mean() + 12.0 * self.std_dev();
-        invert_cdf(|x| self.cdf(x), p, 0.0, hi.max(1.0))
+        invert_two_tailed(|x| self.cdf(x), |x| self.sf(x), p, 0.0, hi.max(1.0))
     }
     fn mean(&self) -> f64 {
         self.shape * self.scale
@@ -523,7 +567,7 @@ impl Distribution for ChiSquared {
             return f64::INFINITY;
         }
         let hi = self.mean() + 12.0 * self.std_dev();
-        invert_cdf(|x| self.cdf(x), p, 0.0, hi.max(1.0))
+        invert_two_tailed(|x| self.cdf(x), |x| self.sf(x), p, 0.0, hi.max(1.0))
     }
     fn mean(&self) -> f64 {
         self.k
@@ -580,7 +624,20 @@ impl Distribution for StudentT {
         // Mass of one tail beyond |t|, P(T > |t|). The switch point is the
         // one `regularized_incomplete_beta(ν/2, ½, x)` uses internally, so
         // each branch evaluates its continued fraction on the direct side.
-        let tail = if x < (0.5 * nu + 1.0) / (0.5 * nu + 2.5)
+        let tail = if x < 1e-100
+        {
+            // Far tail: `I_x(a, ½) = x^a / (a·B(a, ½)) · (1 + O(x))`, so the
+            // leading term is exact to f64 precision here. It is evaluated in
+            // log space with `ln x = ln ν − 2·ln|t|`, which stays finite where
+            // `t²` overflows (|t| ≳ 1.3e154) or `x` underflows; forming `x`
+            // directly used to return a tail of exactly 0 there, although the
+            // true tail of a small-ν t distribution is still far above the
+            // smallest f64 (`ν = 1, t = 1e200`: ≈3.18e-201).
+            let a = 0.5 * nu;
+            let ln_x = nu.ln() - 2.0 * t.abs().ln();
+            0.5 * (a * ln_x - a.ln() - ln_beta(a, 0.5)).exp()
+        }
+        else if x < (0.5 * nu + 1.0) / (0.5 * nu + 2.5)
         {
             0.5 * regularized_incomplete_beta(nu / 2.0, 0.5, x)
         }
@@ -601,7 +658,7 @@ impl Distribution for StudentT {
         {
             return f64::INFINITY;
         }
-        invert_cdf(|t| self.cdf(t), p, -100.0, 100.0)
+        invert_two_tailed(|t| self.cdf(t), |t| self.sf(t), p, -100.0, 100.0)
     }
     fn mean(&self) -> f64 {
         if self.nu > 1.0 { 0.0 } else { f64::NAN }
@@ -672,7 +729,7 @@ impl Distribution for FisherF {
         {
             return f64::INFINITY;
         }
-        invert_cdf(|x| self.cdf(x), p, 0.0, 100.0)
+        invert_two_tailed(|x| self.cdf(x), |x| self.sf(x), p, 0.0, 100.0)
     }
     fn mean(&self) -> f64 {
         if self.d2 > 2.0
@@ -763,7 +820,7 @@ impl Distribution for Beta {
         {
             return 1.0;
         }
-        invert_cdf(|x| self.cdf(x), p, 0.0, 1.0)
+        invert_two_tailed(|x| self.cdf(x), |x| self.sf(x), p, 0.0, 1.0)
     }
     fn mean(&self) -> f64 {
         self.a / (self.a + self.b)
@@ -1007,6 +1064,109 @@ mod tests {
         let c = ChiSquared::new(0.02);
         let p_hat = c.cdf(c.quantile(0.01));
         assert!(close(p_hat, 0.01, 1e-6), "chi2 p_hat={p_hat}");
+    }
+
+    #[test]
+    // Same Miri policy as the other quantile round-trip tests.
+    #[cfg_attr(miri, ignore)]
+    fn upper_tail_quantiles_keep_full_precision() {
+        // Regression: every bisection-based quantile inverted the CDF, which
+        // near 1 can only resolve the upper tail to the ≈1.1e-16 spacing of
+        // f64 values below 1 (and less where the CDF's own argument rounds
+        // towards 1). References: mpmath at 60 digits, solving
+        // sf(x) = 1 − p for the exact f64 `p`; they agree with SciPy 1.18.1.
+        // Old results in the comments.
+        let p15 = 1.0 - 1e-15;
+        // 64.3255…, 0.17 % low.
+        assert!(rel_ok(
+            ChiSquared::new(1.0).quantile(p15),
+            64.432_038_969_363_55,
+            1e-11
+        ));
+        // 41.2816…, 0.14 % low.
+        assert!(rel_ok(
+            Gamma::new(3.0, 1.0).quantile(p15),
+            41.338_374_259_893_29,
+            1e-11
+        ));
+        // 14.8959…, 0.2 % low.
+        assert!(rel_ok(
+            StudentT::new(30.0).quantile(p15),
+            14.926_307_996_864_4,
+            1e-11
+        ));
+        // 3.6029e15, 11 % low: F's CDF forms d1·x/(d1·x + d2), which rounds to 1.
+        assert!(rel_ok(
+            FisherF::new(1.0, 1.0).quantile(1.0 - 1e-8),
+            4.052_847_304_964_346e15,
+            1e-10
+        ));
+        // Beta(2, 3): 1 − x was 6.41e-6 instead of 6.30e-6 (1.8 % off).
+        let x = Beta::new(2.0, 3.0).quantile(p15);
+        assert!(
+            rel_ok(1.0 - x, 6.297_936_339_841_653e-6, 1e-9),
+            "1 - x = {}",
+            1.0 - x
+        );
+        // The defining identity, sf(quantile(p)) = 1 − p, across the upper half.
+        for &q in &[0.4, 1e-3, 1e-6, 1e-10, 1e-14]
+        {
+            let p = 1.0 - q;
+            let q = 1.0 - p; // the exact upper-tail mass for this f64 `p`
+            let c = ChiSquared::new(4.0);
+            assert!(rel_ok(c.sf(c.quantile(p)), q, 1e-9), "chi2 q={q}");
+            let t = StudentT::new(3.0);
+            assert!(rel_ok(t.sf(t.quantile(p)), q, 1e-9), "t q={q}");
+            let f = FisherF::new(3.0, 7.0);
+            assert!(rel_ok(f.sf(f.quantile(p)), q, 1e-9), "F q={q}");
+        }
+    }
+
+    #[test]
+    // Same Miri policy as the other quantile round-trip tests.
+    #[cfg_attr(miri, ignore)]
+    fn heavy_tailed_quantiles_are_not_capped_by_the_bracket_budget() {
+        // Regression: `invert_cdf` stopped widening its bracket after 200
+        // doublings (≈ ±3.2e62), so the far tail of a small-ν t distribution
+        // came back as ≈ −3.2e62 whatever the true value. mpmath references.
+        assert!(rel_ok(
+            StudentT::new(1.0).quantile(1e-100),
+            -3.183_098_861_837_907e99,
+            1e-10
+        ));
+        assert!(rel_ok(
+            StudentT::new(5.0).quantile(1e-300),
+            -1.568_392_559_099_337_8e60,
+            1e-10
+        ));
+        // ν = 0.3: the true 1e-100 quantile is beyond the f64 range
+        // (sf(f64::MAX) ≈ 1.17e-93 > 1e-100), so it rounds to −∞.
+        assert_eq!(StudentT::new(0.3).quantile(1e-100), f64::NEG_INFINITY);
+        // Upper side: F(0.001, 0.001) keeps sf(f64::MAX) ≈ 0.35 (mpmath), so
+        // its 0.7 quantile is beyond f64 too (it used to return ≈1.76e16).
+        assert_eq!(FisherF::new(0.001, 0.001).quantile(0.7), f64::INFINITY);
+    }
+
+    #[test]
+    fn student_t_far_tail_survives_t_squared_overflow() {
+        // Regression: for |t| ≳ 1.3e154, t² overflowed, x = ν/(ν + t²) became
+        // 0 and sf returned exactly 0. mpmath references.
+        let cauchy = StudentT::new(1.0);
+        assert!(rel_ok(cauchy.sf(1e200), 3.183_098_861_837_907e-201, 1e-12));
+        assert!(rel_ok(
+            cauchy.cdf(-1e200),
+            3.183_098_861_837_907e-201,
+            1e-12
+        ));
+        assert!(rel_ok(
+            StudentT::new(0.3).sf(f64::MAX),
+            1.166_899_385_112_180_4e-93,
+            1e-11
+        ));
+        // Still exactly 0 / 1 at infinity, and monotone across the switch.
+        assert_eq!(cauchy.sf(f64::INFINITY), 0.0);
+        assert_eq!(cauchy.cdf(f64::INFINITY), 1.0);
+        assert!(cauchy.sf(1e99) > cauchy.sf(1e101));
     }
 
     #[test]
