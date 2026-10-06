@@ -29,7 +29,7 @@ pub use crate::v888_growth_ensemble::{
     V888_GROWTH_ENSEMBLE_MAX_SEEDS, V888GrowthDispersion, V888GrowthEnsembleArmSummary,
     V888GrowthEnsembleDescriptor, V888GrowthEnsembleError, V888GrowthEnsembleReport,
     V888GrowthEnsembleSample, V888GrowthEnsembleValues, v888_growth_control_ensemble,
-    v888_growth_dispersion,
+    v888_growth_dispersion, v888_growth_ensemble_seeds,
 };
 pub use crate::v888_growth_metrics::{
     V888GrowthBetweenness, V888GrowthDistanceProfile, V888GrowthHarmonicCloseness,

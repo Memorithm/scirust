@@ -1,8 +1,9 @@
 # V888-GROWTH VG-3D — inferred modularity, label mixing and partition agreement
 
 Status: implementation slices for SciRust issue #1500 (Rust-owned primitives,
-then the annotation join, pilot exporter and Thor workflow recipe; the Thor
-evidence run itself has not been executed yet).
+the annotation join, pilot exporter and Thor workflow recipe, then multi-seed
+control ensembles wired into that exporter; the Thor evidence run itself has
+not been executed yet).
 
 VG-3C stopped before inferred modularity, morphology / hemilineage joins and
 mixing descriptors. This slice adds the reusable deterministic primitives those
@@ -49,7 +50,9 @@ annotation tables are added to Git.
 - Annotation joins (hemilineage, block) measure how strongly unit edges follow
   the labels on each arm. A reference-versus-control delta is descriptive only.
 - No uniform null ensemble or mixing-time property of the VG-3B rewiring chains
-  is claimed; ensemble qualification remains open.
+  is claimed. The multi-seed ensemble below reports dispersion across
+  realisations; its below / equal / above-reference counts are descriptive,
+  not p-values, and ensemble qualification remains open.
 - No topology advantage and no developmental-causality claim follows.
 
 ## Annotation join and pilot exporter (second VG-3D slice)
@@ -93,9 +96,50 @@ hemilineage table from the external `banc_888_meta.feather` into a private
 runner directory that is never uploaded, records only its row count and
 SHA-256, and uploads the compact summaries above.
 
+## Multi-seed control ensembles (third and fourth VG-3D slices)
+
+A single VG-3B draw cannot show how far a descriptor moves from one control
+realisation to the next. Re-exported from `scirust_graph::v888_growth`
+(module `scirust_graph::v888_growth_ensemble`):
+
+- `v888_growth_control_ensemble` — regenerates the four-arm ladder for a
+  duplicate-free list of 2 to 1024 seeds, evaluates the VG-3C reachability /
+  harmonic closeness / betweenness descriptors and the VG-3D inferred
+  modularity / annotation descriptors on every arm, and returns raw per-seed
+  samples plus one dispersion summary per `(arm, descriptor)`. Each arm also
+  reports how many distinct control graphs its seeds produced, so a stuck
+  rewiring chain shows up instead of reading as zero dispersion;
+- `v888_growth_dispersion` — deterministic minimum, maximum, input-order mean,
+  two-pass sample standard deviation, median, and nano-rounded counts of draws
+  below / equal to / above the reference value;
+- `v888_growth_ensemble_seeds` — the exporter's seed rule,
+  `seed, seed + 1, …, seed + count - 1` (wrapping at `u64::MAX`), so the first
+  ensemble draw is the same realisation as the single-draw rows.
+
+The pilot exporter takes `--ensemble <count>` (2 to 64 for the pilot):
+
+```text
+v888_growth_vg3d <graph.csr> <out_dir> <size<=512> <seed> <ranked|weak_bfs> \
+    [--blocks blocks.tsv] [--labels labels.tsv] [--ensemble count]
+```
+
+and then also writes
+
+| file | content |
+|---|---|
+| `ensemble_dispersion.tsv` | per arm and descriptor: draws, distinct graphs, reference, defined / undefined, min, max, mean, SD, median, below / equal / above-reference counts |
+| `ensemble_samples.tsv` | one row per `(seed, arm)` with accepted swaps and every descriptor value |
+
+plus an `ensemble` object in `summary.json` (seed count and range, sample
+count, per-arm distinct graphs and nano-scaled inferred-`Q` mean / SD, and an
+explicit `comparison_counts_are_p_values: false`). Annotation-only descriptors
+are omitted without `--labels`. The exporter fails closed if the ensemble's
+reference modularity disagrees with the single-draw reference arm. The Thor
+recipe runs `--ensemble 16` (seeds 29 to 44) and checks these fields.
+
 ## Next VG-3D work
 
 - install the workflow recipe with a `workflow`-scoped credential and record
-  the first Thor evidence run;
-- multi-seed control ensembles with per-arm dispersion of the VG-3C/VG-3D
-  descriptors, as a precondition for any later qualification.
+  the first Thor evidence run, including the 16-seed ensemble summaries;
+- only after that run, decide whether any descriptor's dispersion is narrow
+  enough to support a later qualification step.

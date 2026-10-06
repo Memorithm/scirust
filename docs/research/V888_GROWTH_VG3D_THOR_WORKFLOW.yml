@@ -8,7 +8,9 @@ name: V888-GROWTH VG-3D modularity/mixing/agreement
 
 on:
   push:
-    branches: [research/v888-growth-vg3d-exporter-1500]
+    branches:
+      - research/v888-growth-vg3d-exporter-1500
+      - research/v888-growth-vg3d-ensemble-exporter-1500
     paths:
       - "scirust-graph/**"
       - "docs/research/V888_GROWTH_VG3D.md"
@@ -160,7 +162,7 @@ jobs:
           set -euo pipefail
           OUT="$VG3D_EVIDENCE/modularity"
           mkdir -p "$OUT"
-          ARGS=("$VG3D_GRAPH" "$OUT" "512" "29" "weak_bfs")
+          ARGS=("$VG3D_GRAPH" "$OUT" "512" "29" "weak_bfs" "--ensemble" "16")
           if [[ -n "${VG3D_BLOCKS}" ]]; then
             ARGS+=("--blocks" "$VG3D_BLOCKS")
             echo "blocks_tsv=$VG3D_BLOCKS" > "$VG3D_EVIDENCE/blocks-status.txt"
@@ -175,6 +177,8 @@ jobs:
           test -f "$OUT/nodes.tsv"
           test -f "$OUT/modularity_per_arm.tsv"
           test -f "$OUT/deltas.tsv"
+          test -f "$OUT/ensemble_dispersion.tsv"
+          test -f "$OUT/ensemble_samples.tsv"
           python3 - <<'PY'
           import json, os
           from pathlib import Path
@@ -184,6 +188,11 @@ jobs:
           assert summary["biological_module_claim"] is False
           assert summary["developmental_causality_claim"] is False
           assert summary["topology_advantage_claim"] is False
+          ensemble = summary["ensemble"]
+          assert ensemble["seeds"] == 16 and ensemble["first_seed"] == 29
+          assert ensemble["samples"] == 16 * 4
+          assert len(ensemble["arms"]) == 4
+          assert ensemble["comparison_counts_are_p_values"] is False
           if os.environ.get("VG3D_LABELS"):
               assert summary["annotation"] is not None
           print("summary_ok")
@@ -204,6 +213,7 @@ jobs:
             cat "$VG3D_EVIDENCE/blocks-status.txt"
             cat "$VG3D_EVIDENCE/labels-status.txt"
             cat "$VG3D_EVIDENCE/summary.sha256"
+            echo "ensemble_seeds=16 (29..44); below/equal/above counts are descriptive, not p-values"
             echo "biological_module_claim=false"
             echo "developmental_causality_claim=false"
             echo "topology_advantage_claim=false"
