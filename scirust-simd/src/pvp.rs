@@ -1051,11 +1051,12 @@ mod tests {
 
     #[cfg(all(feature = "nightly-simd", target_arch = "aarch64"))]
     #[test]
-    fn sve_candidate_matches_scalar_reference_when_available() {
-        if !PvpBackendV1::Sve.available()
-        {
-            return;
-        }
+    #[ignore = "requires an SVE runtime; executed by the dedicated QEMU/native PVP gate"]
+    fn sve_candidate_matches_scalar_reference_on_sve_runtime() {
+        assert!(
+            PvpBackendV1::Sve.available(),
+            "dedicated SVE execution gate requires runtime SVE support"
+        );
 
         let geometries = [(8, 1), (16, 63), (32, 65), (64, 257), (128, 513)];
         for (addresses, gates) in geometries
@@ -1081,11 +1082,13 @@ mod tests {
 
     #[cfg(all(feature = "nightly-simd", target_arch = "aarch64"))]
     #[test]
-    fn auto_dispatch_prefers_sve_over_neon_when_available() {
-        if PvpBackendV1::Sve.available()
-        {
-            assert_eq!(detect_best_pvp_backend_v1(), PvpBackendV1::Sve);
-        }
+    #[ignore = "requires an SVE runtime; executed by the dedicated QEMU/native PVP gate"]
+    fn auto_dispatch_prefers_sve_on_sve_runtime() {
+        assert!(
+            PvpBackendV1::Sve.available(),
+            "dedicated SVE execution gate requires runtime SVE support"
+        );
+        assert_eq!(detect_best_pvp_backend_v1(), PvpBackendV1::Sve);
     }
 
     #[test]
