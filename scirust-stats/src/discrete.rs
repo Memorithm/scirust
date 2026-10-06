@@ -449,6 +449,12 @@ impl DiscreteDistribution for Geometric {
         -(k as f64 * self.ln_q()).exp_m1()
     }
     fn sf(&self, k: u64) -> f64 {
+        // Guard k = 0 so p = 1 (ln q = −∞) avoids 0·(−∞) = NaN: the whole
+        // mass lies at k ≥ 1, so P(X > 0) = 1 for every p.
+        if k == 0
+        {
+            return 1.0;
+        }
         (k as f64 * self.ln_q()).exp()
     }
     fn mean(&self) -> f64 {
@@ -1428,6 +1434,64 @@ impl DiscreteDistribution for YuleSimon {
     }
 }
 
+/// Below this rate the Boltzmann moments switch to the pole-free series
+/// forms (their Bernoulli series converge with ratio `(x/2π)² < 0.007` here).
+const SMALL_RATE: f64 = 0.5;
+
+/// `q/(1 − q)²` with `q = e^(−x)`, i.e. `1/(4 sinh²(x/2))`, for `x > 0`:
+/// the variance of a geometric count of failures with continuation
+/// probability `q`. No `1 − q` cancellation at small `x`; `0` once
+/// `sinh` overflows.
+fn geometric_variance(x: f64) -> f64 {
+    let s = (0.5 * x).sinh();
+    0.25 / (s * s)
+}
+
+/// `g(x) = 1/(e^x − 1) − 1/x`, the Bose function with its pole removed.
+/// Bernoulli series `−1/2 + Σ B₂ₖ x^(2k−1)/(2k)!` below [`SMALL_RATE`]
+/// (truncation error < 1e-17 there), direct form above.
+fn bose_regular(x: f64) -> f64 {
+    if x >= SMALL_RATE
+    {
+        return 1.0 / x.exp_m1() - 1.0 / x;
+    }
+    let x2 = x * x;
+    // B₂ₖ/(2k)! for k = 1..=7, innermost (highest order) first.
+    let c = [
+        1.0 / 74_724_249_600.0,
+        -691.0 / 1_307_674_368_000.0,
+        1.0 / 47_900_160.0,
+        -1.0 / 1_209_600.0,
+        1.0 / 30_240.0,
+        -1.0 / 720.0,
+        1.0 / 12.0,
+    ];
+    let odd = c.iter().fold(0.0, |acc, &ck| acc * x2 + ck);
+    -0.5 + x * odd
+}
+
+/// `k(x) = 1/(4 sinh²(x/2)) − 1/x²`, the geometric variance with its double
+/// pole removed. Series `−Σ (2k−1)·B₂ₖ x^(2k−2)/(2k)!` (that is
+/// `−1/12 + x²/240 − x⁴/6048 + …`) below [`SMALL_RATE`], direct form above.
+fn geometric_variance_regular(x: f64) -> f64 {
+    if x >= SMALL_RATE
+    {
+        return geometric_variance(x) - 1.0 / (x * x);
+    }
+    let x2 = x * x;
+    // −(2k−1)·B₂ₖ/(2k)! for k = 1..=7, innermost (highest order) first.
+    let c = [
+        -13.0 / 74_724_249_600.0,
+        7_601.0 / 1_307_674_368_000.0,
+        -1.0 / 5_322_240.0,
+        1.0 / 172_800.0,
+        -1.0 / 6_048.0,
+        1.0 / 240.0,
+        -1.0 / 12.0,
+    ];
+    c.iter().fold(0.0, |acc, &ck| acc * x2 + ck)
+}
+
 // ============================================================ //
 //  Boltzmann (truncated Planck)                                //
 // ============================================================ //
@@ -1480,21 +1544,41 @@ impl DiscreteDistribution for Boltzmann {
         {
             return 0.0;
         }
-        // (e^(−λ(k+1)) − e^(−λN)) / (1 − e^(−λN)) — direct upper tail.
-        let a = (-self.lambda * (k as f64 + 1.0)).exp();
-        let b = (-self.lambda * self.n as f64).exp();
-        (a - b) / self.denom()
+        // (e^(−λ(k+1)) − e^(−λN)) / (1 − e^(−λN)), with the numerator
+        // factored as e^(−λ(k+1))·(1 − e^(−λ(N−k−1))) so that the two nearly
+        // equal exponentials of a small-λ law never get subtracted.
+        let head = (-self.lambda * (k as f64 + 1.0)).exp();
+        let gap = -(-self.lambda * (self.n - k - 1) as f64).exp_m1();
+        head * gap / self.denom()
     }
     fn mean(&self) -> f64 {
-        let z = (-self.lambda).exp();
-        let zn = (-self.lambda * self.n as f64).exp();
-        z / (1.0 - z) - self.n as f64 * zn / (1.0 - zn)
+        // E[X] = 1/(e^λ − 1) − N/(e^(λN) − 1). For small λ both terms are
+        // ≈ 1/λ and cancel, so there the 1/x poles are removed analytically:
+        // with g(x) = 1/(e^x − 1) − 1/x, E[X] = g(λ) − N·g(λN).
+        let (l, nn) = (self.lambda, self.n as f64);
+        if l >= SMALL_RATE
+        {
+            1.0 / l.exp_m1() - nn / (l * nn).exp_m1()
+        }
+        else
+        {
+            bose_regular(l) - nn * bose_regular(l * nn)
+        }
     }
     fn variance(&self) -> f64 {
-        let z = (-self.lambda).exp();
-        let zn = (-self.lambda * self.n as f64).exp();
-        let nn = self.n as f64;
-        z / ((1.0 - z) * (1.0 - z)) - nn * nn * zn / ((1.0 - zn) * (1.0 - zn))
+        // Var[X] = h(λ) − N²·h(λN) with h(x) = e^x/(e^x − 1)² = 1/(4 sinh²(x/2)).
+        // For small λ both terms are ≈ 1/λ² and cancel, so there the double
+        // pole is removed analytically: with k(x) = h(x) − 1/x²,
+        // Var[X] = k(λ) − N²·k(λN).
+        let (l, nn) = (self.lambda, self.n as f64);
+        if l >= SMALL_RATE
+        {
+            geometric_variance(l) - nn * nn * geometric_variance(l * nn)
+        }
+        else
+        {
+            geometric_variance_regular(l) - nn * nn * geometric_variance_regular(l * nn)
+        }
     }
 }
 
@@ -1522,6 +1606,44 @@ impl Logarithmic {
             c: -1.0 / (-p).ln_1p(),
         }
     }
+
+    /// Head sum `P(X ≤ k) = Σ_{i=1..k} pmf(i)` (O(k) terms).
+    fn head(&self, k: u64) -> f64 {
+        let mut acc = 0.0;
+        for i in 1..=k
+        {
+            acc += self.pmf(i);
+        }
+        acc.min(1.0)
+    }
+
+    /// Direct upper tail `P(X > k) = c·Σ_{i>k} pⁱ/i` for `k ≥ 1`.
+    ///
+    /// Summed as `t₀·Σ_j r_j` with `t₀ = p^(k+1)/(k+1)` kept in log space
+    /// (so a tiny leading term does not underflow before scaling) and the
+    /// ratio `r_{j+1}/r_j = p·(k+1+j)/(k+2+j) < p`. The remainder after term
+    /// `r_j` is at most `r_j·p/(1−p)`, which is the stopping rule. Returns
+    /// `None` if that bound is not met within a fixed term budget (only when
+    /// `1 − p` is below about `5e-6`), so callers fall back to the head sum.
+    fn upper_tail(&self, k: u64) -> Option<f64> {
+        const MAX_TERMS: u64 = 10_000_000;
+        let i0 = k as f64 + 1.0;
+        let ln_t0 = i0 * self.p.ln() - i0.ln();
+        let geo = self.p / (1.0 - self.p);
+        let (mut r, mut acc) = (1.0_f64, 0.0_f64);
+        for j in 0..MAX_TERMS
+        {
+            acc += r;
+            if r * geo <= 1e-17 * acc
+            {
+                let t = (self.c.ln() + ln_t0 + acc.ln()).exp();
+                return Some(t.min(1.0));
+            }
+            let i = i0 + j as f64;
+            r *= self.p * i / (i + 1.0);
+        }
+        None
+    }
 }
 
 impl DiscreteDistribution for Logarithmic {
@@ -1538,13 +1660,23 @@ impl DiscreteDistribution for Logarithmic {
         {
             return 0.0;
         }
-        // Head sum over the finite range 1..=k (geometric-decay terms).
-        let mut acc = 0.0;
-        for i in 1..=k
+        // Upper half: 1 − (direct tail), so cdf reaches exactly 1.0 once the
+        // tail underflows instead of stalling one ulp short of it.
+        match self.upper_tail(k)
         {
-            acc += self.pmf(i);
+            Some(t) if t <= 0.5 => 1.0 - t,
+            _ => self.head(k),
         }
-        acc.min(1.0)
+    }
+    fn sf(&self, k: u64) -> f64 {
+        if k == 0
+        {
+            return 1.0;
+        }
+        // Direct tail sum: no 1 − cdf cancellation, so far-tail values keep
+        // full relative precision instead of collapsing to 0 or 1.1e-16.
+        self.upper_tail(k)
+            .unwrap_or_else(|| (1.0 - self.head(k)).max(0.0))
     }
     fn mean(&self) -> f64 {
         // −p / ((1−p)·ln(1−p)) = c·p/(1−p).
@@ -1597,8 +1729,8 @@ impl DiscreteDistribution for Planck {
         1.0 / self.lambda.exp_m1()
     }
     fn variance(&self) -> f64 {
-        let q = (-self.lambda).exp();
-        q / ((1.0 - q) * (1.0 - q))
+        // q/(1 − q)² with q = e^(−λ), evaluated without forming 1 − q.
+        geometric_variance(self.lambda)
     }
 }
 
@@ -1671,8 +1803,8 @@ impl DiscreteLaplace {
     }
     /// Variance `2·e^(−a) / (1 − e^(−a))²`.
     pub fn variance(&self) -> f64 {
-        let q = (-self.a).exp();
-        2.0 * q / ((1.0 - q) * (1.0 - q))
+        // 2q/(1 − q)² with q = e^(−a), evaluated without forming 1 − q.
+        2.0 * geometric_variance(self.a)
     }
     /// Standard deviation.
     pub fn std_dev(&self) -> f64 {
@@ -2388,5 +2520,124 @@ mod tests {
         assert!(close(nb.variance(), 11.242_424_242_424_242, 1e-11));
         // Underdispersed (var ≤ mean) ⇒ no negative-binomial fit.
         assert!(NegativeBinomial::fit_mom(&[2.0, 2.0, 2.0, 3.0]).is_none());
+    }
+
+    // Regression tests for small-rate cancellation and far-tail collapse.
+    // Oracle values: mpmath 1.4.1 at 50+ digits: exact pmf sums for the
+    // finite laws, closed forms for Planck/discrete Laplace, and
+    // `c·p^(k+1)·lerchphi(p, 1, k+1)` for the log-series tail.
+
+    /// Pure relative closeness, so tiny tail values are actually checked
+    /// (`close` degrades to an absolute test below 1).
+    fn rel(a: f64, b: f64, tol: f64) -> bool {
+        ((a - b) / b).abs() <= tol
+    }
+
+    #[test]
+    fn boltzmann_moments_survive_small_rates() {
+        // λ = 1e-10, N = 1000: the old 1/(1 − e^(−λ)) form returned a
+        // negative mean (−333.3) and variance (−1.67e13).
+        let b = Boltzmann::new(1e-10, 1000);
+        assert!(rel(b.mean(), 499.499_991_666_675, 1e-12));
+        assert!(rel(b.variance(), 83_333.249_999_999_96, 1e-12));
+        // λ = 1e-8, N = 10: old variance 1.18e7 instead of 8.25.
+        let b = Boltzmann::new(1e-8, 10);
+        assert!(rel(b.mean(), 4.499_999_917_5, 1e-13));
+        assert!(rel(b.variance(), 8.249_999_999_999_996, 1e-13));
+        // λ = 1e-6, N = 100: old variance 865.0 (3.8 % high).
+        let b = Boltzmann::new(1e-6, 100);
+        assert!(rel(b.mean(), 49.499_166_750_000_139, 1e-13));
+        assert!(rel(b.variance(), 833.249_999_583_333_3, 1e-13));
+        // Large-rate branch unchanged.
+        let b = Boltzmann::new(0.5, 4);
+        assert!(rel(b.mean(), 0.915_423_511_538_135_7, 1e-14));
+        assert!(rel(b.variance(), 1.021_451_445_167_521_9, 1e-14));
+        let b = Boltzmann::new(1e-3, 5);
+        assert!(rel(b.mean(), 1.998_000_000_866_666, 1e-14));
+        assert!(rel(b.variance(), 1.999_997_400_002_583_3, 1e-14));
+    }
+
+    #[test]
+    fn boltzmann_moment_branches_agree_at_switch() {
+        // The series and direct forms must meet continuously at λ = 0.5.
+        for &n in &[1u64, 2, 7, 50, 1000]
+        {
+            let lo = Boltzmann::new(SMALL_RATE * (1.0 - 1e-12), n);
+            let hi = Boltzmann::new(SMALL_RATE, n);
+            assert!(close(lo.mean(), hi.mean(), 1e-11), "mean n={n}");
+            assert!(close(lo.variance(), hi.variance(), 1e-11), "var n={n}");
+        }
+        // N = 1 is a point mass at 0.
+        let b = Boltzmann::new(1e-9, 1);
+        assert!(b.mean().abs() < 1e-15 && b.variance().abs() < 1e-15);
+    }
+
+    #[test]
+    fn boltzmann_sf_no_cancellation_near_top_level() {
+        // sf(N−2) = pmf(N−1); the old e^(−λ(k+1)) − e^(−λN) form lost ~1e-6
+        // relative precision here (9.999990225e-4).
+        let b = Boltzmann::new(1e-10, 1000);
+        assert!(rel(b.sf(998), 9.999_999_500_500_008e-4, 1e-12));
+        assert!(rel(b.sf(0), 0.998_999_999_950_05, 1e-12));
+        let b = Boltzmann::new(1e-8, 10);
+        assert!(rel(b.sf(8), 0.099_999_995_500_000_06, 1e-13));
+    }
+
+    #[test]
+    fn planck_and_dlaplace_variance_small_rate() {
+        // 1 − e^(−λ) cancellation used to give 1.0000000022e16 at λ = 1e-8.
+        let v = Planck::new(1e-8).variance();
+        assert!(rel(v, 9_999_999_999_999_999.5, 1e-14));
+        assert!(close(
+            Planck::new(1e-5).variance(),
+            9_999_999_999.916_665,
+            1e-14
+        ));
+        let v = DiscreteLaplace::new(1e-8).variance();
+        assert!(rel(v, 19_999_999_999_999_999.0, 1e-14));
+    }
+
+    #[test]
+    fn logarithmic_far_tail_is_direct() {
+        // The default 1 − cdf stalled at 1.1e-16 (p = 0.5) or returned 0
+        // (p = 1e-3) instead of the true tiny tails.
+        let l = Logarithmic::new(0.5);
+        assert!(rel(l.sf(10), 1.187_690_168_272_118_9e-4, 1e-13));
+        assert!(rel(l.sf(60), 2.019_291_821_716_591e-20, 1e-13));
+        assert!(rel(l.sf(200), 4.444_726_234_643_462e-63, 1e-12));
+        assert!(rel(l.sf(3), 0.038_203_306_074_024_4, 1e-14));
+        assert!(rel(l.cdf(3), 0.961_796_693_925_975_6, 1e-14));
+        assert_eq!(l.cdf(2000), 1.0);
+        let l = Logarithmic::new(1e-3);
+        assert!(rel(l.sf(10), 9.094_699_739_987_579e-32, 1e-13));
+        assert!(rel(l.sf(60), 1.640_138_138_194_345e-182, 1e-12));
+        let l = Logarithmic::new(0.9);
+        assert!(rel(l.sf(10), 0.079_839_611_018_923_84, 1e-13));
+        assert!(rel(l.sf(200), 1.315_613_176_104_763_6e-11, 1e-12));
+        let l = Logarithmic::new(0.999);
+        assert!(rel(l.sf(100), 0.263_176_042_357_603, 1e-12));
+        assert!(rel(l.sf(20_000), 1.408_248_794_787_243_4e-11, 1e-11));
+    }
+
+    #[test]
+    fn logarithmic_isf_and_quantile_terminate() {
+        // With sf = 1 − cdf stuck at 1.1e-16, isf(1e-20) doubled its bracket
+        // to u64::MAX and then summed 2^64 pmf terms (never returned).
+        let l = Logarithmic::new(0.5);
+        assert_eq!(l.isf(1e-20), 61);
+        assert!(l.quantile(1.0) < 2_000);
+    }
+
+    #[test]
+    fn geometric_p_one_survival_at_zero() {
+        // p = 1 used to give sf(0) = exp(0·(−∞)) = NaN, so isf(0.5) was 0
+        // (outside the k ≥ 1 support) instead of 1.
+        let g = Geometric::new(1.0);
+        assert_eq!(g.sf(0), 1.0);
+        assert_eq!(g.logsf(0), 0.0);
+        assert_eq!(g.sf(1), 0.0);
+        assert_eq!(g.isf(0.5), 1);
+        assert_eq!(g.isf(0.999), 1);
+        assert_eq!(Geometric::new(0.3).sf(0), 1.0);
     }
 }
