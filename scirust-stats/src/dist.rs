@@ -556,11 +556,41 @@ impl Distribution for StudentT {
         (ln_norm - (nu + 1.0) / 2.0 * (1.0 + t * t / nu).ln()).exp()
     }
     fn cdf(&self, t: f64) -> f64 {
-        // I_{ν/(ν+t²)}(ν/2, 1/2) gives the two-tailed mass; split by sign.
+        // By symmetry, cdf(t) = sf(−t). Each side is evaluated as a tail
+        // (or near-centre) quantity directly, never as `1 − small`.
+        self.sf(-t)
+    }
+    /// Upper tail `P(T > t)`, evaluated without the `1 − cdf` cancellation.
+    ///
+    /// For `t ≥ 0` the tail `P(T > t) = ½·I_{ν/(ν+t²)}(ν/2, ½)` is computed
+    /// directly, so it keeps full relative precision far below `f64::EPSILON`
+    /// (it used to collapse to exactly `0` once the tail fell below ≈1e-16,
+    /// e.g. for `ν = 20, t = 50`, true value ≈ 8.77e-23). Near the centre,
+    /// where the incomplete beta would itself switch to its `1 − …` side, the
+    /// complementary form `½ − ½·I_{t²/(ν+t²)}(½, ν/2)` is used instead, so
+    /// that `x = ν/(ν+t²)` rounding to `1` for tiny `|t|` loses nothing.
+    fn sf(&self, t: f64) -> f64 {
+        if t.is_nan()
+        {
+            return f64::NAN;
+        }
         let nu = self.nu;
-        let x = nu / (nu + t * t);
-        let ib = 0.5 * regularized_incomplete_beta(nu / 2.0, 0.5, x);
-        if t >= 0.0 { 1.0 - ib } else { ib }
+        let t2 = t * t;
+        let x = nu / (nu + t2);
+        // Mass of one tail beyond |t|, P(T > |t|). The switch point is the
+        // one `regularized_incomplete_beta(ν/2, ½, x)` uses internally, so
+        // each branch evaluates its continued fraction on the direct side.
+        let tail = if x < (0.5 * nu + 1.0) / (0.5 * nu + 2.5)
+        {
+            0.5 * regularized_incomplete_beta(nu / 2.0, 0.5, x)
+        }
+        else
+        {
+            // P(|T| <= |t|) = I_{t²/(ν+t²)}(½, ν/2), computed without
+            // forming 1 − x.
+            0.5 - 0.5 * regularized_incomplete_beta(0.5, nu / 2.0, t2 / (nu + t2))
+        };
+        if t >= 0.0 { tail } else { 1.0 - tail }
     }
     fn quantile(&self, p: f64) -> f64 {
         if p <= 0.0
@@ -690,6 +720,39 @@ impl Distribution for Beta {
     }
     fn cdf(&self, x: f64) -> f64 {
         regularized_incomplete_beta(self.a, self.b, x)
+    }
+    /// Upper tail `P(X > x) = I_{1−x}(b, a)`, evaluated without the
+    /// `1 − cdf` cancellation.
+    ///
+    /// Above the point `(a+1)/(a+b+2)` where the incomplete-beta continued
+    /// fraction switches sides, the tail is computed directly from the
+    /// reflected form, so it keeps full relative precision far below
+    /// `f64::EPSILON` (it used to collapse to exactly `0`, e.g. for
+    /// `Beta(10, 10)` at `x = 0.999`, true value ≈ 9.16e-26). Below that point
+    /// `1 − cdf` is already accurate (the cdf is not close to `1` there) and
+    /// avoids rounding `1 − x` for tiny `x`.
+    fn sf(&self, x: f64) -> f64 {
+        if x.is_nan()
+        {
+            return f64::NAN;
+        }
+        if x <= 0.0
+        {
+            return 1.0;
+        }
+        if x >= 1.0
+        {
+            return 0.0;
+        }
+        let (a, b) = (self.a, self.b);
+        if x < (a + 1.0) / (a + b + 2.0)
+        {
+            1.0 - regularized_incomplete_beta(a, b, x)
+        }
+        else
+        {
+            regularized_incomplete_beta(b, a, 1.0 - x)
+        }
     }
     fn quantile(&self, p: f64) -> f64 {
         if p <= 0.0
