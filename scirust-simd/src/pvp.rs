@@ -894,6 +894,10 @@ fn gate_major_bit(
 }
 
 #[cfg(test)]
+#[path = "pvp_anf_bank_tests.rs"]
+mod anf_bank_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
