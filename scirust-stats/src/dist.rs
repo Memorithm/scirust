@@ -596,8 +596,11 @@ impl StudentT {
 impl Distribution for StudentT {
     fn pdf(&self, t: f64) -> f64 {
         let nu = self.nu;
-        let ln_norm = ln_gamma((nu + 1.0) / 2.0) - ln_gamma(nu / 2.0) - 0.5 * (nu * PI).ln();
-        (ln_norm - (nu + 1.0) / 2.0 * (1.0 + t * t / nu).ln()).exp()
+        // Γ((ν+1)/2) / (√(νπ)·Γ(ν/2)) = 1 / (√ν·B(ν/2, ½)). `ln_beta` keeps
+        // this exact for huge ν, where the ln Γ difference used to cancel
+        // (ν = 1e15 gave pdf(0) ≈ 0.159 instead of 1/√(2π) ≈ 0.399).
+        let ln_norm = -ln_beta(0.5 * nu, 0.5) - 0.5 * nu.ln();
+        (ln_norm - (nu + 1.0) / 2.0 * (t * t / nu).ln_1p()).exp()
     }
     fn cdf(&self, t: f64) -> f64 {
         // By symmetry, cdf(t) = sf(−t). Each side is evaluated as a tail
@@ -697,7 +700,7 @@ impl Distribution for FisherF {
         let (d1, d2) = (self.d1, self.d2);
         // ln pdf = (d1/2)ln(d1/d2) + (d1/2−1)ln x − ((d1+d2)/2)ln(1+d1 x/d2) − lnB(d1/2,d2/2)
         let ln = (d1 / 2.0) * (d1 / d2).ln() + (d1 / 2.0 - 1.0) * x.ln()
-            - (d1 + d2) / 2.0 * (1.0 + d1 * x / d2).ln()
+            - (d1 + d2) / 2.0 * (d1 * x / d2).ln_1p()
             - ln_beta(d1 / 2.0, d2 / 2.0);
         ln.exp()
     }
@@ -773,7 +776,8 @@ impl Distribution for Beta {
         {
             return 0.0;
         }
-        ((self.a - 1.0) * x.ln() + (self.b - 1.0) * (1.0 - x).ln() - ln_beta(self.a, self.b)).exp()
+        // `ln_1p(−x)` keeps `ln(1 − x)` exact for tiny `x` (large-`b` shapes).
+        ((self.a - 1.0) * x.ln() + (self.b - 1.0) * (-x).ln_1p() - ln_beta(self.a, self.b)).exp()
     }
     fn cdf(&self, x: f64) -> f64 {
         regularized_incomplete_beta(self.a, self.b, x)

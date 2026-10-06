@@ -210,9 +210,71 @@ pub fn beta(a: f64, b: f64) -> f64 {
     ln_beta(a, b).exp()
 }
 
-/// `ln B(a, b)` — numerically stable for large arguments.
+/// `ln B(a, b)`, the logarithm of the beta function.
+///
+/// When the larger argument is at least 20, `ln B` is evaluated from
+/// Stirling's series without forming any large `ln Γ` value (the approach of
+/// R's `lbeta`): with `p = min(a, b)`, `q = max(a, b)` and `s = p + q`,
+///
+/// * `p ≥ 20`: `ln B = ½ln 2π − ½ln q + (p−½)·ln(p/s) + q·ln_1p(−p/s)
+///   + C(p) + C(q) − C(s)`;
+/// * `p < 20`: `ln B = ln Γ(p) + p − p·ln s + (q−½)·ln_1p(−p/s) + C(q) − C(s)`,
+///
+/// where `C(x) = ln Γ(x) − [(x−½)ln x − x + ½ln 2π]` is the Stirling
+/// correction. Every term is at most of the size of the result, so the
+/// relative error stays a small multiple of the rounding unit. The plain sum
+/// `ln Γ(a) + ln Γ(b) − ln Γ(a+b)`, used before, subtracts values of size
+/// `q·ln q` and lost every significant digit once one argument was large and
+/// the other small (`ln B(1e15, ½)` came out as `−20` instead of `≈ −16.697`).
+///
+/// Below that range, and for non-positive or non-finite arguments (where the
+/// result is `ln |B|` of the analytic continuation, `±∞` or `NaN`), the plain
+/// `ln Γ` sum is kept; there its terms are small enough not to cancel badly.
+///
+/// # Examples
+///
+/// ```
+/// use scirust_special::ln_beta;
+/// // B(2, 3) = 1/12.
+/// assert!((ln_beta(2.0, 3.0) - (1.0_f64 / 12.0).ln()).abs() < 1e-13);
+/// // One huge argument: ln B(q, ½) → ln Γ(½) − ½·ln q.
+/// let lb = ln_beta(1e15, 0.5);
+/// assert!((lb - (-16.697_023_254_530_64)).abs() < 1e-12);
+/// ```
 pub fn ln_beta(a: f64, b: f64) -> f64 {
-    ln_gamma(a) + ln_gamma(b) - ln_gamma(a + b)
+    let (p, q) = if a <= b { (a, b) } else { (b, a) };
+    if !(p > 0.0 && q.is_finite() && q >= LN_BETA_STIRLING_MIN)
+    {
+        return ln_gamma(a) + ln_gamma(b) - ln_gamma(a + b);
+    }
+    let s = p + q;
+    let ratio = p / s; // ∈ (0, ½], never the cancelling `1 − q/s`
+    if p >= LN_BETA_STIRLING_MIN
+    {
+        let corr = stirling_correction(p) + stirling_correction(q) - stirling_correction(s);
+        0.5 * (2.0 * PI).ln() - 0.5 * q.ln() + (p - 0.5) * ratio.ln() + q * (-ratio).ln_1p() + corr
+    }
+    else
+    {
+        let corr = stirling_correction(q) - stirling_correction(s);
+        ln_gamma(p) + p - p * s.ln() + (q - 0.5) * (-ratio).ln_1p() + corr
+    }
+}
+
+/// Smallest larger argument for which [`ln_beta`] uses the Stirling form.
+const LN_BETA_STIRLING_MIN: f64 = 20.0;
+
+/// Stirling correction `C(x) = ln Γ(x) − [(x−½)·ln x − x + ½·ln 2π]` for
+/// `x ≥ 20`, from the Bernoulli series `Σ B₂ₙ / (2n(2n−1)·x^(2n−1))`. Six
+/// terms; the first omitted one is below `1e-19` at `x = 20`.
+fn stirling_correction(x: f64) -> f64 {
+    debug_assert!(x >= LN_BETA_STIRLING_MIN);
+    let r = x.recip();
+    let r2 = r * r;
+    r * (1.0 / 12.0
+        - r2 * (1.0 / 360.0
+            - r2 * (1.0 / 1260.0
+                - r2 * (1.0 / 1680.0 - r2 * (1.0 / 1188.0 - r2 * (691.0 / 360_360.0))))))
 }
 
 // ============================================================ //
@@ -485,9 +547,12 @@ fn gamma_cf_q(a: f64, x: f64) -> f64 {
 ///
 /// The continued-fraction budget scales with `√(a+b)`; `NaN` is returned for
 /// non-positive or non-finite `a`/`b`, `NaN` `x`, or a genuine
-/// non-convergence (never a silently truncated value). For very large shape
-/// parameters the absolute accuracy is limited by the `ln Γ` cancellation in
-/// the prefactor (≈ `ε·(a+b)·ln(a+b)`), not by the continued fraction.
+/// non-convergence (never a silently truncated value). The prefactor
+/// `x^a (1−x)^b / B(a, b)` uses [`ln_beta`], so one large and one small shape
+/// parameter (Student-t with huge `ν`) no longer cancels; when *both* shape
+/// parameters are very large, the absolute accuracy is still limited by the
+/// cancellation between `a·ln x + b·ln(1−x)` and `ln B(a, b)` near the mode
+/// (≈ `ε·(a+b)`), not by the continued fraction.
 pub fn regularized_incomplete_beta(a: f64, b: f64, x: f64) -> f64 {
     if a <= 0.0 || b <= 0.0 || !a.is_finite() || !b.is_finite() || x.is_nan()
     {
@@ -501,8 +566,9 @@ pub fn regularized_incomplete_beta(a: f64, b: f64, x: f64) -> f64 {
     {
         return 1.0;
     }
-    let front =
-        (ln_gamma(a + b) - ln_gamma(a) - ln_gamma(b) + a * x.ln() + b * (1.0 - x).ln()).exp();
+    // `x ∈ (0, 1)`: `ln_1p(−x)` keeps `ln(1 − x)` exact for tiny `x`, and
+    // `ln_beta` avoids the large-argument `ln Γ` cancellation.
+    let front = (a * x.ln() + b * (-x).ln_1p() - ln_beta(a, b)).exp();
     if x < (a + 1.0) / (a + b + 2.0)
     {
         front * beta_cf(a, b, x) / a
@@ -1811,6 +1877,114 @@ mod proptests {
                 residual.abs() < 1e-3 * scale,
                 "n={n} x={x} residual={residual} scale={scale}"
             );
+        }
+    }
+}
+
+/// Regression tests for `ln_beta` with one or both arguments large.
+///
+/// `ln_beta` used to be `ln Γ(a) + ln Γ(b) − ln Γ(a+b)`, which subtracts
+/// values of size `q·ln q` (`q = max(a, b)`) and lost every significant digit
+/// once `q` was large and the other argument small: `ln B(1e15, ½)` gave `−20`
+/// instead of `≈ −16.697`, and the incomplete-beta prefactor built from the
+/// same sum returned `I_x(½, 1e15) ≈ 22.9` (a "probability" above 1) at
+/// `x = 1e-15`. References are mpmath 1.3 at 50 significant digits on the
+/// exact `f64` inputs; tolerances are relative, never bit-for-bit.
+#[cfg(test)]
+mod ln_beta_large_argument_tests {
+    use super::*;
+
+    fn rel_err(got: f64, want: f64) -> f64 {
+        ((got - want) / want).abs()
+    }
+
+    #[test]
+    fn ln_beta_matches_mpmath_across_the_stirling_threshold() {
+        // (a, b, ln B(a, b)); covers both Stirling branches, the plain branch
+        // just below the threshold, and the threshold itself.
+        let cases = [
+            (0.5, 20.0, -0.919_251_844_406_603_9),
+            (20.0, 20.0, -27.951_991_886_244_47),
+            (19.5, 0.25, 0.550_246_743_051_409_9),
+            (19.999, 5.0, -12.266_563_156_814_03),
+            (20.0, 5.0, -12.266_791_380_564_88),
+            (1e-3, 1e3, 6.900_271_629_687_955),
+            (7.0, 1e8, -122.365_514_205_656_45),
+            (1e6, 3e6, -2_249_346.423_450_852_7),
+            (1e300, 1e300, -1.386_294_361_119_890_7e300),
+        ];
+        for (a, b, want) in cases
+        {
+            let got = ln_beta(a, b);
+            assert!(
+                rel_err(got, want) < 1e-13,
+                "ln_beta({a}, {b}) = {got:e}, want {want:e}"
+            );
+            // Symmetric by construction.
+            assert!(rel_err(ln_beta(b, a), want) < 1e-13, "ln_beta({b}, {a})");
+        }
+    }
+
+    #[test]
+    fn ln_beta_keeps_precision_with_one_huge_argument() {
+        // Each of these failed before: the first three by whole units or by
+        // ≥1e-11 relative, the last one returned NaN (∞ − ∞).
+        let cases = [
+            (1e15, 0.5, -16.697_023_254_530_64),
+            (2.5, 1e12, -68.792_869_919_350_33),
+            (1e-10, 1e5, 23.025_850_928_731_443),
+            (1.7e308, 1e-300, 690.775_527_898_213_7),
+        ];
+        for (a, b, want) in cases
+        {
+            let got = ln_beta(a, b);
+            assert!(
+                got.is_finite() && rel_err(got, want) < 1e-13,
+                "ln_beta({a}, {b}) = {got:e}, want {want:e}"
+            );
+        }
+    }
+
+    #[test]
+    fn ln_beta_edge_inputs_keep_their_previous_meaning() {
+        assert_eq!(ln_beta(0.0, 2.0), f64::INFINITY);
+        assert!(ln_beta(f64::NAN, 2.0).is_nan());
+        assert!(ln_beta(-0.5, 30.0).is_finite()); // ln |B| of the continuation
+    }
+
+    #[test]
+    fn incomplete_beta_prefactor_no_longer_cancels_for_large_shapes() {
+        // (a, b, x, I_x(a, b)); before: 22.93 and 0.3189 respectively.
+        let cases = [
+            (0.5, 1e15, 1e-15, 0.842_700_792_949_714_9),
+            (3.0, 1e14, 2e-14, 0.323_323_583_816_947_37),
+        ];
+        for (a, b, x, want) in cases
+        {
+            let got = regularized_incomplete_beta(a, b, x);
+            assert!(
+                rel_err(got, want) < 1e-12,
+                "I_{x}({a}, {b}) = {got:e}, want {want:e}"
+            );
+        }
+    }
+}
+
+// Excluded from Miri for the same reason as `proptests` above.
+#[cfg(all(test, not(miri)))]
+mod ln_beta_large_argument_proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// B(a+1, b) = B(a, b)·a/(a+b) with `b` up to 1e15, where the plain
+        /// `ln Γ` sum was off by whole units.
+        #[test]
+        fn beta_recurrence_with_a_huge_argument(a in 0.05f64..50.0, log_b in 3.0f64..15.0) {
+            let b = 10f64.powf(log_b);
+            let lhs = ln_beta(a + 1.0, b);
+            let rhs = ln_beta(a, b) + a.ln() - (a + b).ln();
+            prop_assert!((lhs - rhs).abs() <= 1e-11 * lhs.abs().max(1.0), "a={a} b={b} lhs={lhs} rhs={rhs}");
         }
     }
 }
