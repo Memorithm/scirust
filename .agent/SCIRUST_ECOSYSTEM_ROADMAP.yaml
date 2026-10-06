@@ -702,9 +702,10 @@ v888_executable_graph_handoff_2026_10_04:
 pascal_vector_projection_program_2026_10_06:
   implementation_state:
     PVP0:
-      status: implementation_PR_open_exact_head_CI_in_progress
+      status: merged_qualified_scalar_reference
       pull_request: 1537
       exact_head: 58e8ee71d8b79e7e85fd04859ebe923992a2a556
+      merge_sha: 527ec0e6dbde7e422397f68d9ff32c013b81f54f
       crate: scirust-simd
       module: scirust-simd/src/pvp.rs
       scope:
@@ -723,7 +724,7 @@ pascal_vector_projection_program_2026_10_06:
         - aarch64_cross_check
         - deterministic_fingerprint
         - miri_unsafe_regressions
-      promotion: blocked_until_all_required_exact_head_CI_is_green
+      promotion: qualified_shared_scalar_reference
   status: active_shared_primitive_research
   ownership:
     SciRust: reusable_bitplane_layout_transpose_pack_unpack_CPU_SIMD_dispatch_capability_oracles
