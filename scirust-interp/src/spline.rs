@@ -2,7 +2,7 @@
 
 use crate::error::InterpError;
 use crate::traits::Interpolator;
-use crate::util::{find_segment, thomas, validate_nodes};
+use crate::util::{find_segment, piecewise_integral, thomas, validate_nodes};
 
 /// A C² cubic spline through the given nodes.
 ///
@@ -71,6 +71,60 @@ impl CubicSpline {
     /// spline has `moments()[0] == moments()[n - 1] == 0`).
     pub fn moments(&self) -> &[f64] {
         &self.m
+    }
+
+    /// First derivative of the spline at `x`.
+    ///
+    /// Continuous everywhere (the spline is C²); outside the node range the
+    /// boundary cubic is differentiated. A NaN query returns NaN.
+    pub fn derivative(&self, x: f64) -> f64 {
+        let (i, h, a, b) = self.local(x);
+        let (y0, y1) = (self.ys[i], self.ys[i + 1]);
+        let (m0, m1) = (self.m[i], self.m[i + 1]);
+        -m0 * a * a / (2.0 * h) + m1 * b * b / (2.0 * h) - (y0 / h - m0 * h / 6.0)
+            + (y1 / h - m1 * h / 6.0)
+    }
+
+    /// Second derivative of the spline at `x`.
+    ///
+    /// Piecewise linear between the [`moments`](Self::moments) and equal to
+    /// them at the nodes; outside the node range the boundary cubic is
+    /// differentiated. A NaN query returns NaN.
+    pub fn second_derivative(&self, x: f64) -> f64 {
+        let (i, h, a, b) = self.local(x);
+        (self.m[i] * a + self.m[i + 1] * b) / h
+    }
+
+    /// Exact definite integral of the spline from `a` to `b`.
+    ///
+    /// Integrates each cubic piece in closed form, including the extrapolated
+    /// boundary cubics when a bound lies outside the node range. Reversed
+    /// bounds flip the sign, equal bounds give `0`, and a non-finite bound
+    /// gives NaN.
+    pub fn integrate(&self, a: f64, b: f64) -> f64 {
+        piecewise_integral(&self.xs, a, b, |i, lo, hi| {
+            let (x0, x1) = (self.xs[i], self.xs[i + 1]);
+            let h = x1 - x0;
+            let (y0, y1) = (self.ys[i], self.ys[i + 1]);
+            let (m0, m1) = (self.m[i], self.m[i + 1]);
+            let ca = y0 / h - m0 * h / 6.0;
+            let cb = y1 / h - m1 * h / 6.0;
+            // Antiderivative of the moment form in x.
+            let anti = |x: f64| {
+                let a = x1 - x;
+                let b = x - x0;
+                -m0 * a.powi(4) / (24.0 * h) + m1 * b.powi(4) / (24.0 * h) - ca * a * a / 2.0
+                    + cb * b * b / 2.0
+            };
+            anti(hi) - anti(lo)
+        })
+    }
+
+    /// Segment index, width and the local offsets `(x1 - x, x - x0)` for `x`.
+    fn local(&self, x: f64) -> (usize, f64, f64, f64) {
+        let i = find_segment(&self.xs, x);
+        let (x0, x1) = (self.xs[i], self.xs[i + 1]);
+        (i, x1 - x0, x1 - x, x - x0)
     }
 }
 

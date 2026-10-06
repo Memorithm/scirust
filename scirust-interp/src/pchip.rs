@@ -2,7 +2,10 @@
 
 use crate::error::InterpError;
 use crate::traits::Interpolator;
-use crate::util::{find_segment, hermite, validate_nodes};
+use crate::util::{
+    find_segment, hermite, hermite_derivative, hermite_integral, hermite_second_derivative,
+    piecewise_integral, validate_nodes,
+};
 
 /// Piecewise cubic Hermite interpolant with Fritsch–Carlson slopes (PCHIP).
 ///
@@ -33,6 +36,63 @@ impl PchipInterp {
             xs: xs.to_vec(),
             ys: ys.to_vec(),
             d,
+        })
+    }
+
+    /// First derivative of the interpolant at `x`.
+    ///
+    /// Differentiates the cubic Hermite piece containing `x` (the boundary
+    /// piece outside the node range). The result is continuous across nodes
+    /// and equals the stored node slope at each node. A NaN query returns NaN.
+    pub fn derivative(&self, x: f64) -> f64 {
+        let i = find_segment(&self.xs, x);
+        let h = self.xs[i + 1] - self.xs[i];
+        hermite_derivative(
+            self.ys[i],
+            self.ys[i + 1],
+            self.d[i],
+            self.d[i + 1],
+            h,
+            x - self.xs[i],
+        )
+    }
+
+    /// Second derivative of the interpolant at `x`.
+    ///
+    /// The interpolant is only C¹, so the second derivative may jump at
+    /// interior nodes; at a node the right-hand piece is used (the left-hand
+    /// piece at the last node). A NaN query returns NaN.
+    pub fn second_derivative(&self, x: f64) -> f64 {
+        let i = find_segment(&self.xs, x);
+        let h = self.xs[i + 1] - self.xs[i];
+        hermite_second_derivative(
+            self.ys[i],
+            self.ys[i + 1],
+            self.d[i],
+            self.d[i + 1],
+            h,
+            x - self.xs[i],
+        )
+    }
+
+    /// Exact definite integral of the interpolant from `a` to `b`.
+    ///
+    /// Integrates each cubic Hermite piece in closed form, including the
+    /// extrapolated boundary pieces when a bound lies outside the node range.
+    /// Reversed bounds flip the sign, equal bounds give `0`, and a non-finite
+    /// bound gives NaN.
+    pub fn integrate(&self, a: f64, b: f64) -> f64 {
+        piecewise_integral(&self.xs, a, b, |i, lo, hi| {
+            let x0 = self.xs[i];
+            hermite_integral(
+                self.ys[i],
+                self.ys[i + 1],
+                self.d[i],
+                self.d[i + 1],
+                self.xs[i + 1] - x0,
+                lo - x0,
+                hi - x0,
+            )
         })
     }
 }

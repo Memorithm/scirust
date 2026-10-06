@@ -3,4 +3,4 @@ name = "scirust-interp"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "Deterministic 1-D interpolation: linear, natural/clamped cubic spline, monotone PCHIP, Akima, barycentric Lagrange, nearest. Validated constructors, oracle-tested. Pure Rust, no unsafe, no dependencies."
+description = "Deterministic 1-D interpolation: linear, natural/clamped cubic spline, monotone PCHIP, Akima, barycentric Lagrange, nearest. Derivatives and exact definite integrals for the piecewise methods. Validated constructors, oracle-tested. Pure Rust, no unsafe, no dependencies."
