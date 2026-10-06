@@ -700,6 +700,30 @@ v888_executable_graph_handoff_2026_10_04:
     - dedicated_Thor_source_reproduction_green
     - public_validator_matches_frozen_graph_size_hash_and_counts
 pascal_vector_projection_program_2026_10_06:
+  implementation_state:
+    PVP0:
+      status: implementation_PR_open_exact_head_CI_in_progress
+      pull_request: 1537
+      exact_head: 58e8ee71d8b79e7e85fd04859ebe923992a2a556
+      crate: scirust-simd
+      module: scirust-simd/src/pvp.rs
+      scope:
+        - versioned_address_major_bitplane_layout
+        - exact_storage_and_padding_accounting
+        - checked_gate_major_address_major_transpose
+        - independent_direct_submask_oracle
+        - zero_scratch_scalar_subset_zeta_butterfly
+      gates_already_green:
+        - format
+        - clippy
+        - MSRV_1_89
+        - portable_simd
+        - nightly_SIMD_extensions
+        - WGPU_lavapipe
+        - aarch64_cross_check
+        - deterministic_fingerprint
+        - miri_unsafe_regressions
+      promotion: blocked_until_all_required_exact_head_CI_is_green
   status: active_shared_primitive_research
   ownership:
     SciRust: reusable_bitplane_layout_transpose_pack_unpack_CPU_SIMD_dispatch_capability_oracles
