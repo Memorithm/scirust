@@ -40,6 +40,9 @@ pub enum PvpBackendV1 {
     Avx512,
     /// aarch64 NEON, two u64 gate words per vector.
     Neon,
+    /// aarch64 SVE, scalable u64 vector length selected at runtime.
+    #[cfg(feature = "nightly-simd")]
+    Sve,
 }
 
 impl PvpBackendV1 {
@@ -52,10 +55,15 @@ impl PvpBackendV1 {
             Self::Avx2 => "x86_64-avx2-u64x4",
             Self::Avx512 => "x86_64-avx512-u64x8",
             Self::Neon => "aarch64-neon-u64x2",
+            #[cfg(feature = "nightly-simd")]
+            Self::Sve => "aarch64-sve-scalable-u64",
         }
     }
 
     /// Fixed vector width in bits for the candidate.
+    ///
+    /// Returns 0 for scalable-vector candidates whose width is a runtime
+    /// hardware property rather than a compile-time constant.
     #[must_use]
     pub const fn register_bits(self) -> usize {
         match self
@@ -64,6 +72,8 @@ impl PvpBackendV1 {
             Self::Avx2 => 256,
             Self::Avx512 => 512,
             Self::Neon => 128,
+            #[cfg(feature = "nightly-simd")]
+            Self::Sve => 0,
         }
     }
 
@@ -85,6 +95,10 @@ impl PvpBackendV1 {
             Self::Neon => std::arch::is_aarch64_feature_detected!("neon"),
             #[cfg(not(target_arch = "aarch64"))]
             Self::Neon => false,
+            #[cfg(all(feature = "nightly-simd", target_arch = "aarch64"))]
+            Self::Sve => std::arch::is_aarch64_feature_detected!("sve"),
+            #[cfg(all(feature = "nightly-simd", not(target_arch = "aarch64")))]
+            Self::Sve => false,
         }
     }
 }
@@ -106,6 +120,11 @@ pub fn detect_best_pvp_backend_v1() -> PvpBackendV1 {
 
     #[cfg(target_arch = "aarch64")]
     {
+        #[cfg(feature = "nightly-simd")]
+        if PvpBackendV1::Sve.available()
+        {
+            return PvpBackendV1::Sve;
+        }
         if PvpBackendV1::Neon.available()
         {
             return PvpBackendV1::Neon;
@@ -593,6 +612,15 @@ pub fn pascal_subset_zeta_with_backend_in_place(
         },
         #[cfg(not(target_arch = "aarch64"))]
         PvpBackendV1::Neon => unreachable!("NEON availability is false on this target"),
+        #[cfg(all(feature = "nightly-simd", target_arch = "aarch64"))]
+        PvpBackendV1::Sve =>
+        {
+            transform_with_row_xor(bitplanes, backend, |words, src, dst, len| unsafe {
+                xor_rows_sve(words, src, dst, len)
+            })
+        },
+        #[cfg(all(feature = "nightly-simd", not(target_arch = "aarch64")))]
+        PvpBackendV1::Sve => unreachable!("SVE availability is false on this target"),
     }
 }
 
@@ -743,6 +771,28 @@ unsafe fn xor_rows_neon(words: &mut [u64], source_base: usize, target_base: usiz
     {
         *base.add(target_base + i) ^= *base.add(source_base + i);
         i += 1;
+    }
+}
+
+#[cfg(all(feature = "nightly-simd", target_arch = "aarch64"))]
+#[target_feature(enable = "sve")]
+unsafe fn xor_rows_sve(words: &mut [u64], source_base: usize, target_base: usize, len: usize) {
+    use core::arch::aarch64::*;
+
+    debug_assert!(source_base + len <= target_base);
+    debug_assert!(target_base + len <= words.len());
+
+    let base = words.as_mut_ptr();
+    let step = svcntd() as usize;
+    let mut i = 0_usize;
+    while i < len
+    {
+        let predicate = svwhilelt_b64_u64(i as u64, len as u64);
+        let source = svld1_u64(predicate, base.add(source_base + i));
+        let target = svld1_u64(predicate, base.add(target_base + i));
+        let value = sveor_u64_x(predicate, target, source);
+        svst1_u64(predicate, base.add(target_base + i), value);
+        i += step;
     }
 }
 
@@ -999,6 +1049,54 @@ mod tests {
         }
     }
 
+    #[cfg(all(feature = "nightly-simd", target_arch = "aarch64"))]
+    #[test]
+    #[ignore = "requires an SVE runtime; executed by the dedicated QEMU/native PVP gate"]
+    fn sve_candidate_matches_scalar_reference_on_sve_runtime() {
+        assert!(
+            PvpBackendV1::Sve.available(),
+            "dedicated SVE execution gate requires runtime SVE support"
+        );
+
+        let geometries = [(8, 1), (16, 63), (32, 65), (64, 257), (128, 513)];
+        for (addresses, gates) in geometries
+        {
+            let layout = PvpLayoutV1::new(addresses, gates).unwrap();
+            let source = fixture_gate_major(layout);
+            let mut scalar = PvpBitplanesV1::from_gate_major_words(layout, &source).unwrap();
+            let mut sve = scalar.clone();
+
+            let scalar_stats = pascal_subset_zeta_scalar_in_place(&mut scalar).unwrap();
+            let sve_stats =
+                pascal_subset_zeta_with_backend_in_place(&mut sve, PvpBackendV1::Sve).unwrap();
+
+            assert_eq!(sve, scalar);
+            assert_eq!(sve_stats.backend, PvpBackendV1::Sve);
+            assert_eq!(
+                sve_stats.logical_gate_xor_ops,
+                scalar_stats.logical_gate_xor_ops
+            );
+            assert_eq!(
+                sve_stats.packed_word_updates,
+                scalar_stats.packed_word_updates
+            );
+            assert_eq!(sve_stats.storage_bits, scalar_stats.storage_bits);
+            assert_eq!(sve_stats.padding_bits, scalar_stats.padding_bits);
+            assert_eq!(sve_stats.scratch_words, 0);
+        }
+    }
+
+    #[cfg(all(feature = "nightly-simd", target_arch = "aarch64"))]
+    #[test]
+    #[ignore = "requires an SVE runtime; executed by the dedicated QEMU/native PVP gate"]
+    fn auto_dispatch_prefers_sve_on_sve_runtime() {
+        assert!(
+            PvpBackendV1::Sve.available(),
+            "dedicated SVE execution gate requires runtime SVE support"
+        );
+        assert_eq!(detect_best_pvp_backend_v1(), PvpBackendV1::Sve);
+    }
+
     #[test]
     fn auto_dispatch_matches_scalar_reference() {
         let layout = PvpLayoutV1::new(64, 513).unwrap();
@@ -1016,10 +1114,19 @@ mod tests {
 
     #[test]
     fn unavailable_backend_fails_before_mutation() {
-        let unavailable = [PvpBackendV1::Avx512, PvpBackendV1::Avx2, PvpBackendV1::Neon]
+        #[cfg(not(feature = "nightly-simd"))]
+        let backends = [PvpBackendV1::Avx512, PvpBackendV1::Avx2, PvpBackendV1::Neon];
+        #[cfg(feature = "nightly-simd")]
+        let backends = [
+            PvpBackendV1::Avx512,
+            PvpBackendV1::Avx2,
+            PvpBackendV1::Neon,
+            PvpBackendV1::Sve,
+        ];
+        let unavailable = backends
             .into_iter()
             .find(|backend| !backend.available())
-            .expect("at least one foreign-architecture backend is unavailable");
+            .expect("at least one architecture backend is unavailable");
 
         let layout = PvpLayoutV1::new(8, 65).unwrap();
         let source = fixture_gate_major(layout);
