@@ -6,8 +6,7 @@
 //! probability in the platform traces back to one validated numeric base.
 
 use scirust_special::{
-    erfc, erfinv, ln_beta, ln_gamma, regularized_gamma_p, regularized_gamma_q,
-    regularized_incomplete_beta,
+    erfc, ln_beta, ln_gamma, regularized_gamma_p, regularized_gamma_q, regularized_incomplete_beta,
 };
 
 use crate::rng::SplitMix64;
@@ -142,6 +141,110 @@ fn invert_cdf(cdf: impl Fn(f64) -> f64, p: f64, mut lo: f64, mut hi: f64) -> f64
     0.5 * (lo + hi)
 }
 
+/// Standard normal quantile `Φ⁻¹(p)` for `p ∈ (0, 1)`.
+///
+/// Wichura's algorithm AS 241 (`PPND16`, *Applied Statistics* 37 (1988)
+/// 477–484), accurate to about 1e-16 relative over the whole open interval.
+/// It works from `p` (or `1 − p`) directly, so the lower tail keeps full
+/// relative precision; the previous `√2 · erfinv(2p − 1)` formulation lost
+/// the low digits of `p` when forming `2p − 1` and returned `−∞` once
+/// `p ≲ 1.1e-16`, even though `Φ⁻¹(p)` is finite down to the smallest
+/// subnormal `p`.
+fn standard_normal_quantile(p: f64) -> f64 {
+    let q = p - 0.5;
+    if q.abs() <= 0.425
+    {
+        let r = 0.180_625 - q * q;
+        let num = ((((((2.509_080_928_730_122_7e3 * r + 3.343_057_558_358_813e4) * r
+            + 6.726_577_092_700_87e4)
+            * r
+            + 4.592_195_393_154_987e4)
+            * r
+            + 1.373_169_376_550_946e4)
+            * r
+            + 1.971_590_950_306_551_4e3)
+            * r
+            + 1.331_416_678_917_843_8e2)
+            * r
+            + 3.387_132_872_796_366_6;
+        let den = ((((((5.226_495_278_852_854e3 * r + 2.872_908_573_572_194_3e4) * r
+            + 3.930_789_580_009_271e4)
+            * r
+            + 2.121_379_430_158_659_6e4)
+            * r
+            + 5.394_196_021_424_751e3)
+            * r
+            + 6.871_870_074_920_579e2)
+            * r
+            + 4.231_333_070_160_091e1)
+            * r
+            + 1.0;
+        return q * num / den;
+    }
+    // Tail: work with the smaller of p and 1 − p (both exact here).
+    let tail = if q < 0.0 { p } else { 1.0 - p };
+    let mut r = (-tail.ln()).sqrt();
+    let z = if r <= 5.0
+    {
+        r -= 1.6;
+        let num = ((((((7.745_450_142_783_414e-4 * r + 2.272_384_498_926_918_5e-2) * r
+            + 2.417_807_251_774_506e-1)
+            * r
+            + 1.270_458_252_452_368_4)
+            * r
+            + 3.647_848_324_763_204_6)
+            * r
+            + 5.769_497_221_460_691)
+            * r
+            + 4.630_337_846_156_546)
+            * r
+            + 1.423_437_110_749_683_6;
+        let den = ((((((1.050_750_071_644_416_8e-9 * r + 5.475_938_084_995_345e-4) * r
+            + 1.519_866_656_361_645_7e-2)
+            * r
+            + 1.481_039_764_274_800_7e-1)
+            * r
+            + 6.897_673_349_851e-1)
+            * r
+            + 1.676_384_830_183_803_8)
+            * r
+            + 2.053_191_626_637_759)
+            * r
+            + 1.0;
+        num / den
+    }
+    else
+    {
+        r -= 5.0;
+        let num = ((((((2.010_334_399_292_288_1e-7 * r + 2.711_555_568_743_487_6e-5) * r
+            + 1.242_660_947_388_078_4e-3)
+            * r
+            + 2.653_218_952_657_612_3e-2)
+            * r
+            + 2.965_605_718_285_048_9e-1)
+            * r
+            + 1.784_826_539_917_291_3)
+            * r
+            + 5.463_784_911_164_114)
+            * r
+            + 6.657_904_643_501_104;
+        let den = ((((((2.044_263_103_389_939_8e-15 * r + 1.421_511_758_316_446e-7) * r
+            + 1.846_318_317_510_054_7e-5)
+            * r
+            + 7.868_691_311_456_133e-4)
+            * r
+            + 1.487_536_129_085_061_5e-2)
+            * r
+            + 1.369_298_809_227_358e-1)
+            * r
+            + 5.998_322_065_558_88e-1)
+            * r
+            + 1.0;
+        num / den
+    };
+    if q < 0.0 { -z } else { z }
+}
+
 // ============================================================ //
 //  Normal                                                      //
 // ============================================================ //
@@ -187,7 +290,7 @@ impl Distribution for Normal {
         {
             return f64::INFINITY;
         }
-        self.mean + self.sd * std::f64::consts::SQRT_2 * erfinv(2.0 * p - 1.0)
+        self.mean + self.sd * standard_normal_quantile(p)
     }
     fn mean(&self) -> f64 {
         self.mean
@@ -231,14 +334,19 @@ impl Distribution for Exponential {
         }
         else
         {
-            1.0 - (-self.rate * x).exp()
+            // `-expm1(-λx)` rather than `1 − exp(−λx)`: the subtraction
+            // cancels catastrophically for small `λx` (it returns exactly 0
+            // once `λx < EPSILON/2`, although the true CDF is `≈ λx`).
+            -(-self.rate * x).exp_m1()
         }
     }
     fn sf(&self, x: f64) -> f64 {
         if x < 0.0 { 1.0 } else { (-self.rate * x).exp() }
     }
     fn quantile(&self, p: f64) -> f64 {
-        -(1.0 - p).ln() / self.rate
+        // `−ln1p(−p)` rather than `−ln(1 − p)`: forming `1 − p` discards the
+        // low digits of a small `p` (and rounds `p < EPSILON/2` to exactly 0).
+        -(-p).ln_1p() / self.rate
     }
     fn mean(&self) -> f64 {
         1.0 / self.rate
@@ -611,6 +719,11 @@ mod tests {
         (a - b).abs() <= tol * (1.0 + b.abs())
     }
 
+    /// Purely relative comparison, for tail values far below 1.
+    fn rel_ok(a: f64, b: f64, tol: f64) -> bool {
+        (a - b).abs() <= tol * b.abs()
+    }
+
     #[test]
     fn normal_matches_reference() {
         let n = Normal::standard();
@@ -628,6 +741,69 @@ mod tests {
         let m = Normal::new(10.0, 2.0);
         assert!(close(m.cdf(10.0), 0.5, 1e-12));
         assert!(close(m.std_dev(), 2.0, 1e-15));
+    }
+
+    #[test]
+    fn normal_quantile_keeps_relative_precision_in_the_far_lower_tail() {
+        // Regression test: the quantile used to be `√2 · erfinv(2p − 1)`.
+        // Forming `2p − 1` throws away the low digits of a small `p`
+        // (for p = 1e-10 only ~7 significant digits survive) and rounds to
+        // exactly −1 once p ≲ 1.1e-16, so the old code returned `−∞` for
+        // p = 1e-17, 1e-20, 1e-300, ... although Φ⁻¹(p) is finite down to the
+        // smallest subnormal. References: mpmath (60 digits), solving
+        // ncdf(z) = p for the exact f64 value of p.
+        let n = Normal::standard();
+        let cases: [(f64, f64); 6] = [
+            (1e-10, -6.361_340_902_404_057),
+            (1e-17, -8.493_793_224_109_599),
+            (1e-20, -9.262_340_089_798_407),
+            (1e-100, -21.273_453_560_965_326),
+            (1e-300, -37.047_096_299_361_2),
+            (5e-324, -38.467_405_617_144_344),
+        ];
+        for (p, want) in cases
+        {
+            let got = n.quantile(p);
+            assert!(got.is_finite(), "p = {p:e}: quantile = {got}");
+            assert!(
+                rel_ok(got, want, 1e-13),
+                "p = {p:e}: got {got}, want {want}"
+            );
+        }
+        // Upper tail mirrors the lower tail; 1 − 2⁻⁴⁰ and 2⁻⁴⁰ are exact.
+        let t = 2f64.powi(-40);
+        assert!(rel_ok(n.quantile(1.0 - t), -n.quantile(t), 1e-14));
+        // Shifted/scaled normals inherit the accuracy.
+        let m = Normal::new(3.0, 2.0);
+        assert!(rel_ok(
+            m.quantile(1e-20),
+            3.0 + 2.0 * -9.262_340_089_798_407,
+            1e-13
+        ));
+    }
+
+    #[test]
+    fn exponential_small_p_quantile_and_small_x_cdf_are_not_cancelled() {
+        // Regression test: `quantile` computed `−ln(1 − p)/λ` and `cdf`
+        // computed `1 − exp(−λx)`. Both subtract from 1 and cancel
+        // catastrophically: p = 1e-20 gave quantile 0 and x = 1e-20 gave
+        // cdf 0 (relative error 100%), and p = 1e-10 kept only ~7 digits.
+        // References: mpmath, −log1p(−p) and −expm1(−x).
+        let e = Exponential::new(1.0);
+        assert!(rel_ok(e.quantile(1e-20), 1e-20, 1e-14));
+        assert!(rel_ok(e.quantile(1e-10), 1.000_000_000_05e-10, 1e-14));
+        assert!(rel_ok(e.cdf(1e-20), 1e-20, 1e-14));
+        assert!(rel_ok(e.cdf(1e-10), 9.999_999_999_500_001e-11, 1e-14));
+        // Rate scaling: quantile(p) = −log1p(−p)/λ.
+        let fast = Exponential::new(4.0);
+        assert!(rel_ok(
+            fast.quantile(2.5e-7),
+            2.500_000_312_500_052e-7 / 4.0,
+            1e-14
+        ));
+        // Unchanged in the bulk.
+        assert!(close(e.quantile(0.5), 2.0_f64.ln(), 1e-15));
+        assert!(close(e.cdf(e.quantile(0.9)), 0.9, 1e-15));
     }
 
     #[test]
@@ -771,7 +947,7 @@ mod tests {
     }
 
     #[test]
-    // Ignored under Miri: `sample` goes through the quantile (erfinv/ln), and
+    // Ignored under Miri: `sample` goes through the quantile (AS 241 / ln), and
     // Miri deliberately randomizes the last ULPs of transcendental float
     // intrinsics per call, so lockstep bit-identity cannot hold under the
     // interpreter. On real hardware the property holds and stays enforced by
@@ -855,7 +1031,7 @@ mod proptests {
             let n = Normal::new(mean, sd);
             assert_cdf_monotonic_and_bounded(&n, lo, hi);
             assert_pdf_nonnegative(&n, x1);
-            // Normal's quantile is a closed form via erfinv, entirely
+            // Normal's quantile is a closed form (AS 241), entirely
             // independent of cdf's own erfc-based formula, so this
             // round-trip genuinely cross-checks the two.
             let x = n.quantile(p);
