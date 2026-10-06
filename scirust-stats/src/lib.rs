@@ -35,6 +35,9 @@
 //!   `chi2_gof_discrete` that bins a fitted discrete distribution, pools thin
 //!   bins, and adjusts the dof for estimated parameters), one-sample
 //!   Kolmogorov–Smirnov.
+//! - **Correlation and rank tests** ([`nonparam`]): Pearson and Spearman
+//!   correlation tests, Mann–Whitney U and Wilcoxon signed-rank with
+//!   tie-corrected normal approximations.
 //! - **Survival analysis** ([`survival`], [`cox`]): validated right-censored
 //!   observations, Kaplan-Meier product-limit curves, Nelson-Aalen cumulative
 //!   hazards, the two-sample log-rank test, and Cox proportional-hazards
@@ -81,6 +84,7 @@ pub mod discrete;
 pub mod dist;
 pub mod htest;
 pub mod lottery;
+pub mod nonparam;
 pub mod resampling;
 pub mod rng;
 pub mod robust;
@@ -104,6 +108,10 @@ pub use htest::{
     t_test_one_sample, t_test_two_sample,
 };
 pub use lottery::{LotteryGame, PrizeTier, draw_frequency_chi_square};
+pub use nonparam::{
+    CorrelationTest, RankTestResult, average_ranks, mann_whitney_u, pearson_test, spearman_test,
+    wilcoxon_signed_rank,
+};
 pub use rng::SplitMix64;
 pub use robust::{
     MadConsistency, MedianOfMeansConfig, MedianOfMeansPartition, RobustStatsError,
@@ -140,6 +148,10 @@ pub mod prelude {
         t_test_one_sample, t_test_two_sample,
     };
     pub use crate::lottery::{LotteryGame, PrizeTier, draw_frequency_chi_square};
+    pub use crate::nonparam::{
+        CorrelationTest, RankTestResult, average_ranks, mann_whitney_u, pearson_test,
+        spearman_test, wilcoxon_signed_rank,
+    };
     pub use crate::rng::SplitMix64;
     pub use crate::robust::{
         MadConsistency, MedianOfMeansConfig, MedianOfMeansPartition, RobustStatsError,
