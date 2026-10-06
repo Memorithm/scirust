@@ -751,7 +751,9 @@ pascal_vector_projection_program_2026_10_06:
         - no_performance_claim
       promotion: qualified_exact_stable_SIMD_candidates
     PVP1_SVE_scalable:
-      status: implementation_starting_from_stable_SIMD_merge
+      status: implementation_PR_open_exact_head_CI_in_progress
+      pull_request: 1540
+      exact_head: 2dc982fe9824aa0389a3498f39e5eb8d8a069b7b
       prerequisite: PVP1_stable_SIMD_merged_green
       scope:
         - SVE_u64_scalable_row_XOR
