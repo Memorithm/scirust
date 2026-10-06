@@ -1,7 +1,8 @@
 # V888-GROWTH VG-3D — inferred modularity, label mixing and partition agreement
 
-Status: implementation slice for SciRust issue #1500 (Rust-owned primitives;
-Thor exporter and evidence run follow in a later VG-3D slice).
+Status: implementation slices for SciRust issue #1500 (Rust-owned primitives,
+then the annotation join, pilot exporter and Thor workflow recipe; the Thor
+evidence run itself has not been executed yet).
 
 VG-3C stopped before inferred modularity, morphology / hemilineage joins and
 mixing descriptors. This slice adds the reusable deterministic primitives those
@@ -51,10 +52,50 @@ annotation tables are added to Git.
   is claimed; ensemble qualification remains open.
 - No topology advantage and no developmental-causality claim follows.
 
+## Annotation join and pilot exporter (second VG-3D slice)
+
+Re-exported from `scirust_graph::v888_growth` (module
+`scirust_graph::v888_growth_annotation`):
+
+- `v888_growth_parse_annotation_tsv` — fail-closed reader for
+  `node_id<TAB>label` rows (comments and blank lines skipped; malformed ids,
+  empty labels, extra fields, duplicate ids and the reserved bucket name are
+  rejected with the offending line);
+- `v888_growth_join_annotation` — maps the selected subset onto dense label
+  indices numbered in lexicographic label order, with every unannotated node
+  placed in one explicit trailing `<unlabelled>` bucket. The dense labels do
+  not depend on table row order, so the join is reproducible across platforms.
+
+The example `scirust-graph/examples/v888_growth_vg3d.rs`
+
+```text
+v888_growth_vg3d <graph.csr> <out_dir> <size<=512> <seed> <ranked|weak_bfs> \
+    [--blocks blocks.tsv] [--labels labels.tsv]
+```
+
+verifies the qualified graph SHA-256, selects the same pilot subset and VG-3B
+matched controls as VG-3B/3C, runs `v888_growth_compare_modularity_arms` with
+the joined annotation, and writes only compact summaries:
+
+| file | content |
+|---|---|
+| `nodes.tsv` | local index, node id, block, annotation index, reference community |
+| `annotation_labels.tsv` | dense index, label, selected-node count (with `--labels`) |
+| `mixing_reference.tsv` | reference-arm source-label × target-label unit-edge counts |
+| `modularity_per_arm.tsv` | inferred communities, exact `Q` rational, Louvain work, annotation `Q` / assortativity / ARI per arm |
+| `deltas.tsv` | nano-scaled integer deltas of each control arm against the reference |
+| `summary.json` | provenance, Louvain bounds, annotation coverage and the explicit `false` claim flags |
+
+The Thor workflow recipe `docs/research/V888_GROWTH_VG3D_THOR_WORKFLOW.yml`
+(intended path `.github/workflows/v888-growth-vg3d-thor.yml`; kept under
+`docs/` because the available token lacks `workflow` scope) derives the
+hemilineage table from the external `banc_888_meta.feather` into a private
+runner directory that is never uploaded, records only its row count and
+SHA-256, and uploads the compact summaries above.
+
 ## Next VG-3D work
 
-- deterministic exporter example and Thor workflow recipe (kept under `docs/`
-  until a credential with `workflow` scope can install it) that joins the
-  pilot subset with hemilineage labels and records compact TSV / JSON summaries;
+- install the workflow recipe with a `workflow`-scoped credential and record
+  the first Thor evidence run;
 - multi-seed control ensembles with per-arm dispersion of the VG-3C/VG-3D
   descriptors, as a precondition for any later qualification.
