@@ -11,6 +11,8 @@
 //!   the VG-3D inferred-modularity / annotation descriptors on every arm, and
 //!   returns the raw per-seed samples plus one [`V888GrowthDispersion`] per
 //!   `(arm, descriptor)`;
+//! - [`v888_growth_ensemble_seeds`] — the deterministic consecutive seed list
+//!   used by the VG-3D pilot exporter's `--ensemble` option;
 //! - [`v888_growth_dispersion`] — the deterministic summary itself (minimum,
 //!   maximum, mean, sample standard deviation, median, and nano-rounded counts
 //!   of samples below / equal to / above the reference value).
@@ -390,6 +392,44 @@ pub fn v888_growth_dispersion(
     summary
 }
 
+/// Deterministic ensemble seed list `base, base + 1, …, base + count - 1`.
+///
+/// Addition wraps at `u64::MAX`, so every seed is distinct for any accepted
+/// `count`. The first seed equals `base`, which lets an exporter's single-draw
+/// rows (generated from `base`) coincide with the ensemble's first sample.
+///
+/// `# Errors`
+///
+/// Returns [`V888GrowthEnsembleError::TooFewSeeds`] below two seeds and
+/// [`V888GrowthEnsembleError::TooManySeeds`] above
+/// [`V888_GROWTH_ENSEMBLE_MAX_SEEDS`], the same bounds as
+/// [`v888_growth_control_ensemble`].
+///
+/// ```
+/// use scirust_graph::v888_growth::v888_growth_ensemble_seeds;
+///
+/// assert_eq!(v888_growth_ensemble_seeds(29, 3)?, vec![29, 30, 31]);
+/// assert_eq!(v888_growth_ensemble_seeds(u64::MAX, 2)?, vec![u64::MAX, 0]);
+/// assert!(v888_growth_ensemble_seeds(29, 1).is_err());
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+pub fn v888_growth_ensemble_seeds(
+    base: u64,
+    count: usize,
+) -> Result<Vec<u64>, V888GrowthEnsembleError> {
+    if count < 2
+    {
+        return Err(V888GrowthEnsembleError::TooFewSeeds { observed: count });
+    }
+    if count > V888_GROWTH_ENSEMBLE_MAX_SEEDS
+    {
+        return Err(V888GrowthEnsembleError::TooManySeeds { observed: count });
+    }
+    Ok((0..count as u64)
+        .map(|offset| base.wrapping_add(offset))
+        .collect())
+}
+
 /// Run the VG-3B control ladder for every seed and summarise per-arm dispersion.
 ///
 /// `seeds` must hold between two and [`V888_GROWTH_ENSEMBLE_MAX_SEEDS`]
@@ -684,6 +724,24 @@ mod tests {
         let summary = v888_growth_dispersion(Some(0.1 + 0.2), &[Some(0.3), Some(0.3 + 1e-12)]);
         assert_eq!(summary.equal_reference, 2);
         assert_eq!(summary.below_reference + summary.above_reference, 0);
+    }
+
+    #[test]
+    fn ensemble_seeds_are_consecutive_distinct_and_bounded() {
+        assert_eq!(v888_growth_ensemble_seeds(7, 2).unwrap(), vec![7, 8]);
+        let wrapped = v888_growth_ensemble_seeds(u64::MAX - 1, 4).unwrap();
+        assert_eq!(wrapped, vec![u64::MAX - 1, u64::MAX, 0, 1]);
+        let full = v888_growth_ensemble_seeds(u64::MAX, V888_GROWTH_ENSEMBLE_MAX_SEEDS).unwrap();
+        assert_eq!(full.len(), V888_GROWTH_ENSEMBLE_MAX_SEEDS);
+        assert_eq!(full.iter().collect::<BTreeSet<_>>().len(), full.len());
+        assert!(matches!(
+            v888_growth_ensemble_seeds(0, 0),
+            Err(V888GrowthEnsembleError::TooFewSeeds { observed: 0 })
+        ));
+        assert!(matches!(
+            v888_growth_ensemble_seeds(0, V888_GROWTH_ENSEMBLE_MAX_SEEDS + 1),
+            Err(V888GrowthEnsembleError::TooManySeeds { .. })
+        ));
     }
 
     #[test]

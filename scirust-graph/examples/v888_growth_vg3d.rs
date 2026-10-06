@@ -6,20 +6,30 @@
 //! without a row fall into one explicit `<unlabelled>` bucket. Descriptive
 //! output only: no biological module, topology-advantage or
 //! developmental-causality claim.
+//!
+//! With `--ensemble <count>` the VG-3B ladder is regenerated for the seeds
+//! `seed, seed + 1, …, seed + count - 1` and every VG-3C / VG-3D scalar
+//! descriptor is summarised per arm (min / max / mean / sample SD / median and
+//! nano-rounded below / equal / above-reference counts). The counts are
+//! descriptive, not p-values.
 
 use scirust_graph::v888_executable::{BANC_V888_BOOL01_QUALIFICATION, BancV888ExecutableGraph};
 use scirust_graph::v888_growth::{
-    V888GrowthAnnotationJoin, V888GrowthLouvainOptions, V888GrowthModularityArm,
-    V888GrowthSubsetPolicy, v888_growth_compare_modularity_arms, v888_growth_join_annotation,
-    v888_growth_matched_controls, v888_growth_parse_annotation_tsv, v888_growth_select_subset,
-    v888_growth_unit_reference,
+    V888GrowthAnnotationJoin, V888GrowthEnsembleDescriptor, V888GrowthEnsembleReport,
+    V888GrowthLouvainOptions, V888GrowthModularityArm, V888GrowthSubsetPolicy,
+    v888_growth_compare_modularity_arms, v888_growth_control_ensemble, v888_growth_ensemble_seeds,
+    v888_growth_f64_to_nano, v888_growth_join_annotation, v888_growth_matched_controls,
+    v888_growth_parse_annotation_tsv, v888_growth_select_subset, v888_growth_unit_reference,
 };
 use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::PathBuf;
 
-const USAGE: &str = "usage: v888_growth_vg3d <graph.csr> <out_dir> <size> <seed> <ranked|weak_bfs> [--blocks blocks.tsv] [--labels labels.tsv]";
+const USAGE: &str = "usage: v888_growth_vg3d <graph.csr> <out_dir> <size> <seed> <ranked|weak_bfs> [--blocks blocks.tsv] [--labels labels.tsv] [--ensemble count]";
+
+/// Pilot bound on `--ensemble`; every draw reruns betweenness and Louvain on four arms.
+const MAX_PILOT_ENSEMBLE: usize = 64;
 
 fn parse_policy(raw: &str) -> Result<V888GrowthSubsetPolicy, String> {
     match raw
@@ -114,6 +124,129 @@ fn json_string(raw: &str) -> String {
     out
 }
 
+fn usize_flag(raw: &str, flag: &str) -> Result<usize, String> {
+    raw.parse::<usize>()
+        .map_err(|_| format!("`{flag}` needs a non-negative integer, got `{raw}`"))
+}
+
+fn write_ensemble_dispersion(
+    path: &PathBuf,
+    report: &V888GrowthEnsembleReport,
+) -> std::io::Result<()> {
+    let mut writer = BufWriter::new(fs::File::create(path)?);
+    write_tsv_row(
+        &mut writer,
+        &[
+            "arm".into(),
+            "descriptor".into(),
+            "draws".into(),
+            "distinct_graphs".into(),
+            "reference".into(),
+            "defined".into(),
+            "undefined".into(),
+            "min".into(),
+            "max".into(),
+            "mean".into(),
+            "std_dev".into(),
+            "median".into(),
+            "below_reference".into(),
+            "equal_reference".into(),
+            "above_reference".into(),
+        ],
+    )?;
+    for arm in &report.arms
+    {
+        for descriptor in V888GrowthEnsembleDescriptor::ALL
+        {
+            if descriptor.requires_annotation() && !report.annotated
+            {
+                continue;
+            }
+            let summary = &arm.dispersion[&descriptor];
+            write_tsv_row(
+                &mut writer,
+                &[
+                    arm.arm.name().to_string(),
+                    descriptor.name().to_string(),
+                    arm.draws.to_string(),
+                    arm.distinct_graphs.to_string(),
+                    opt_f64(summary.reference),
+                    summary.defined.to_string(),
+                    summary.undefined.to_string(),
+                    opt_f64(summary.min),
+                    opt_f64(summary.max),
+                    opt_f64(summary.mean),
+                    opt_f64(summary.std_dev),
+                    opt_f64(summary.median),
+                    summary.below_reference.to_string(),
+                    summary.equal_reference.to_string(),
+                    summary.above_reference.to_string(),
+                ],
+            )?;
+        }
+    }
+    writer.flush()
+}
+
+fn write_ensemble_samples(
+    path: &PathBuf,
+    report: &V888GrowthEnsembleReport,
+) -> std::io::Result<()> {
+    let descriptors: Vec<V888GrowthEnsembleDescriptor> = V888GrowthEnsembleDescriptor::ALL
+        .into_iter()
+        .filter(|descriptor| report.annotated || !descriptor.requires_annotation())
+        .collect();
+    let mut writer = BufWriter::new(fs::File::create(path)?);
+    let mut header: Vec<String> = vec!["seed".into(), "arm".into(), "accepted_swaps".into()];
+    header.extend(
+        descriptors
+            .iter()
+            .map(|descriptor| descriptor.name().to_string()),
+    );
+    write_tsv_row(&mut writer, &header)?;
+    for sample in &report.samples
+    {
+        let mut row = vec![
+            sample.seed.to_string(),
+            sample.arm.name().to_string(),
+            sample.accepted_swaps.to_string(),
+        ];
+        row.extend(
+            descriptors
+                .iter()
+                .map(|descriptor| opt_f64(sample.values.get(descriptor).copied().flatten())),
+        );
+        write_tsv_row(&mut writer, &row)?;
+    }
+    writer.flush()
+}
+
+fn ensemble_json(report: &V888GrowthEnsembleReport) -> String {
+    let arms: Vec<String> = report
+        .arms
+        .iter()
+        .map(|arm| {
+            let modularity = &arm.dispersion[&V888GrowthEnsembleDescriptor::InferredModularity];
+            format!(
+                "{{\"arm\":{},\"draws\":{},\"distinct_graphs\":{},\"inferred_q_mean_nano\":{},\"inferred_q_std_dev_nano\":{}}}",
+                json_string(arm.arm.name()),
+                arm.draws,
+                arm.distinct_graphs,
+                json_opt_i64(modularity.mean_nano()),
+                json_opt_i64(modularity.std_dev_nano()),
+            )
+        })
+        .collect();
+    format!(
+        "{{\"seeds\":{},\"first_seed\":{},\"last_seed\":{},\"seed_rule\":\"base_plus_offset_wrapping\",\"samples\":{},\"comparison_counts_are_p_values\":false,\"arms\":[{}]}}",
+        report.seeds.len(),
+        report.seeds.first().copied().unwrap_or_default(),
+        report.seeds.last().copied().unwrap_or_default(),
+        report.samples.len(),
+        arms.join(",")
+    )
+}
+
 fn emit_arm_row(
     writer: &mut impl Write,
     arm: &V888GrowthModularityArm,
@@ -172,22 +305,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let policy = parse_policy(&args.next().ok_or("missing subset policy")?)?;
     let mut blocks_path: Option<PathBuf> = None;
     let mut labels_path: Option<PathBuf> = None;
+    let mut ensemble_count: Option<usize> = None;
     while let Some(flag) = args.next()
     {
-        let slot = match flag.as_str()
+        let value = args
+            .next()
+            .ok_or_else(|| format!("`{flag}` needs a value"))?;
+        let duplicate = match flag.as_str()
         {
-            "--blocks" => &mut blocks_path,
-            "--labels" => &mut labels_path,
+            "--blocks" => blocks_path.replace(PathBuf::from(value)).is_some(),
+            "--labels" => labels_path.replace(PathBuf::from(value)).is_some(),
+            "--ensemble" => ensemble_count.replace(usize_flag(&value, &flag)?).is_some(),
             other => return Err(format!("unexpected argument `{other}`; {USAGE}").into()),
         };
-        if slot.is_some()
+        if duplicate
         {
             return Err(format!("`{flag}` given twice").into());
         }
-        *slot = Some(PathBuf::from(
-            args.next()
-                .ok_or_else(|| format!("`{flag}` needs a path"))?,
-        ));
+    }
+    if let Some(count) = ensemble_count
+    {
+        if !(2..=MAX_PILOT_ENSEMBLE).contains(&count)
+        {
+            return Err(format!(
+                "`--ensemble` must be between 2 and {MAX_PILOT_ENSEMBLE} for the pilot exporter, got {count}"
+            )
+            .into());
+        }
     }
     if size > 512
     {
@@ -247,6 +391,46 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         join.as_ref().map(|join| join.labels.as_slice()),
         options,
     )?;
+
+    let ensemble = match ensemble_count
+    {
+        Some(count) =>
+        {
+            let seeds = v888_growth_ensemble_seeds(seed, count)?;
+            let report = v888_growth_control_ensemble(
+                &control_bundle.reference_edges,
+                selected.len(),
+                &local_groups,
+                &seeds,
+                join.as_ref().map(|join| join.labels.as_slice()),
+                options,
+            )?;
+            // Fail closed if the ensemble and the single-draw comparison disagree
+            // on the shared reference arm.
+            let ensemble_q = report
+                .reference
+                .get(&V888GrowthEnsembleDescriptor::InferredModularity)
+                .copied()
+                .flatten()
+                .map(v888_growth_f64_to_nano);
+            if ensemble_q
+                != reference_arm
+                    .inferred
+                    .modularity
+                    .q
+                    .map(v888_growth_f64_to_nano)
+            {
+                return Err(
+                    "ensemble reference modularity disagrees with the single-draw reference arm"
+                        .into(),
+                );
+            }
+            write_ensemble_dispersion(&output_dir.join("ensemble_dispersion.tsv"), &report)?;
+            write_ensemble_samples(&output_dir.join("ensemble_samples.tsv"), &report)?;
+            Some(report)
+        },
+        None => None,
+    };
 
     {
         let mut writer = BufWriter::new(fs::File::create(output_dir.join("nodes.tsv"))?);
@@ -412,9 +596,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ),
         None => "null".to_string(),
     };
+    let ensemble_summary = ensemble
+        .as_ref()
+        .map_or_else(|| "null".to_string(), ensemble_json);
     let reference_q = &reference_arm.inferred.modularity;
     let summary = format!(
-        "{{\"schema_version\":1,\"programme\":\"V888-GROWTH-VG-3D\",\"source_nodes\":{},\"source_pairs\":{},\"selection\":\"{policy_name}\",\"seed\":{seed},\"nodes\":{},\"pairs\":{},\"bfs_component_starts\":{bfs_starts},\"block_labels\":{},\"block_constraint_vacuous\":{},\"louvain_max_levels\":{},\"louvain_max_passes_per_level\":{},\"reference_communities\":{},\"reference_q_numerator\":{},\"reference_q_denominator\":{},\"reference_louvain_hit_bound\":{},\"annotation\":{annotation_json},\"biological_module_claim\":false,\"developmental_causality_claim\":false,\"topology_advantage_claim\":false,\"deltas\":[{}]}}\n",
+        "{{\"schema_version\":1,\"programme\":\"V888-GROWTH-VG-3D\",\"source_nodes\":{},\"source_pairs\":{},\"selection\":\"{policy_name}\",\"seed\":{seed},\"nodes\":{},\"pairs\":{},\"bfs_component_starts\":{bfs_starts},\"block_labels\":{},\"block_constraint_vacuous\":{},\"louvain_max_levels\":{},\"louvain_max_passes_per_level\":{},\"reference_communities\":{},\"reference_q_numerator\":{},\"reference_q_denominator\":{},\"reference_louvain_hit_bound\":{},\"annotation\":{annotation_json},\"ensemble\":{ensemble_summary},\"biological_module_claim\":false,\"developmental_causality_claim\":false,\"topology_advantage_claim\":false,\"deltas\":[{}]}}\n",
         graph.node_count(),
         graph.directed_pair_count(),
         selected.len(),
@@ -432,14 +619,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     fs::write(output_dir.join("summary.json"), &summary)?;
 
     eprintln!(
-        "nodes={} pairs={} reference_communities={} reference_q={} annotation_labels={} deltas={}",
+        "nodes={} pairs={} reference_communities={} reference_q={} annotation_labels={} deltas={} ensemble_seeds={}",
         selected.len(),
         control_bundle.reference_edges.len(),
         reference_arm.inferred.community_sizes.len(),
         opt_f64(reference_q.q),
         join.as_ref()
             .map_or_else(|| "none".to_string(), |join| join.names.len().to_string()),
-        rows.len()
+        rows.len(),
+        ensemble.as_ref().map_or_else(
+            || "none".to_string(),
+            |report| report.seeds.len().to_string()
+        )
     );
     Ok(())
 }
