@@ -753,7 +753,7 @@ pascal_vector_projection_program_2026_10_06:
     PVP1_SVE_scalable:
       status: implementation_PR_open_exact_head_CI_in_progress
       pull_request: 1540
-      exact_head: 2dc982fe9824aa0389a3498f39e5eb8d8a069b7b
+      exact_head: 110e7bef528dc25e0d18af9a204834ef54cb60dd
       prerequisite: PVP1_stable_SIMD_merged_green
       scope:
         - SVE_u64_scalable_row_XOR
