@@ -121,8 +121,16 @@ pub fn binomial(n: u64, k: u64) -> Option<u128> {
 /// Uses [`binomial`] when the exact coefficient fits `u128`, avoiding the
 /// subtraction of large, nearly equal log-factorials. The subsequent `f64`
 /// conversion and logarithm are rounded; no bitwise reproducibility is promised.
-/// Coefficients larger than `u128` retain the log-gamma fallback, whose
-/// cancellation error is not bounded by this API. No heap allocation is used.
+///
+/// Larger coefficients are evaluated without subtracting `ln n!` from
+/// `ln (n−k)!`: with `j = min(k, n−k)` and `m = n − j`, the difference
+/// `ln Γ(n+1) − ln Γ(m+1)` is expanded with Stirling's series as
+/// `j·ln n + m·(ln1p(j/m) − j/m) + ½·ln1p(j/m)` plus the difference of the
+/// series tails, and `ln j!` is then subtracted. Each term is at most of the
+/// size of the result, so the error stays a small multiple of the rounding
+/// unit relative to `ln C(n, k)` instead of scaling with `ln n!` (which made,
+/// for example, `ln C(u64::MAX, 40)` evaluate to `0` instead of `≈ 1664.14`).
+/// No heap allocation is used.
 ///
 /// # Examples
 ///
@@ -151,7 +159,37 @@ pub fn ln_binomial(n: u64, k: u64) -> f64 {
         }
         return (count as f64).ln();
     }
-    ln_factorial(n) - ln_factorial(k) - ln_factorial(n - k)
+    ln_binomial_beyond_u128(n, k.min(n - k))
+}
+
+/// Tail `ln Γ(x+1) − [(x+½)·ln x − x + ½·ln 2π]` of Stirling's series.
+///
+/// Five terms; for `x ≥ 20` the first omitted term is below `1e-19`.
+fn stirling_tail(x: f64) -> f64 {
+    let r = x.recip();
+    let r2 = r * r;
+    r * (1.0 / 12.0 - r2 * (1.0 / 360.0 - r2 * (1.0 / 1260.0 - r2 * (1.0 / 1680.0 - r2 / 1188.0))))
+}
+
+/// `ln C(n, j)` for `j ≤ n − j` when the exact coefficient exceeds `u128`.
+fn ln_binomial_beyond_u128(n: u64, j: u64) -> f64 {
+    let m = n - j;
+    if m < 20
+    {
+        // Unreachable in practice (C(n, j) > u128::MAX needs n ≥ 130), kept so
+        // the Stirling tail is never used outside its accurate range.
+        return ln_factorial(n) - ln_factorial(j) - ln_factorial(m);
+    }
+    let jf = j as f64;
+    let mf = m as f64;
+    let t = jf / mf; // j/m ∈ (0, 1]
+    let l = t.ln_1p(); // ln(n/m), computed without forming n/m
+    // ln Γ(n+1) − ln Γ(m+1) = (m+½)·ln(n/m) + j·ln n − j + tail(n) − tail(m).
+    let shifted = jf * (n as f64).ln()
+        + mf * (l - t)
+        + 0.5 * l
+        + (stirling_tail(n as f64) - stirling_tail(mf));
+    shifted - ln_factorial(j)
 }
 
 /// Exact number of ordered `k`-arrangements `P(n, k) = n!/(n−k)!` as `u128`;
@@ -309,6 +347,72 @@ mod tests {
         // ln(math.comb(1000, 500)), independently evaluated with Decimal precision 80.
         let expected = 689.467_261_567_851_2;
         assert!((ln_binomial(1_000, 500) - expected).abs() < 1e-9);
+    }
+
+    /// Regression: beyond `u128`, `ln C(n, k)` was `ln n! − ln k! − ln (n−k)!`,
+    /// whose rounding error scales with `ln n!`. References are
+    /// `mpmath.log(mpmath.binomial(n, k))` at 50 significant digits.
+    #[test]
+    fn ln_binomial_beyond_u128_is_relatively_accurate() {
+        let cases: [(u64, u64, f64); 9] = [
+            (1_000_000_000_000_000, 50, 1578.46105279376),
+            (1_000_000_000_000, 50, 1233.0732888434293),
+            (u64::MAX, 40, 1664.1361425187026),
+            (u64::MAX, 1 << 63, 1.2786308645202655e+19),
+            (1_000_000_000_000_000, 500, 14658.057738995061),
+            (1_000_000_000_000_000_000, 1_000, 35534.40349540466),
+            (1_000_000, 500_000, 693140.0470130637),
+            (200, 100, 135.7532360812785),
+            (1_000_000_000, 100_000_000, 325082963.3148496),
+        ];
+        for (n, k, expected) in cases
+        {
+            assert_eq!(
+                binomial(n, k),
+                None,
+                "case ({n}, {k}) must use the fallback"
+            );
+            for kk in [k, n - k]
+            {
+                let got = ln_binomial(n, kk);
+                let rel = ((got - expected) / expected).abs();
+                assert!(
+                    rel < 1e-13,
+                    "ln C({n}, {kk}) = {got}, expected {expected}, rel {rel:e}"
+                );
+            }
+        }
+    }
+
+    /// Regression: the Hypergeometric law builds its pmf from three `ln C`
+    /// terms, so the old cancellation distorted it for large populations
+    /// (the first case returned 2980.96, which is not a probability). Reference:
+    /// `C(K,k)·C(N−K,n−k)/C(N,n)` in mpmath at 50 digits.
+    #[test]
+    fn hypergeometric_pmf_with_huge_population() {
+        use crate::discrete::{DiscreteDistribution, Hypergeometric};
+        let cases: [(u64, u64, u64, u64, f64); 2] = [
+            (
+                1_000_000_000_000_000,
+                500_000_000_000_000,
+                100,
+                50,
+                0.07958923738718274,
+            ),
+            (
+                1_000_000_000_000,
+                300_000_000_000,
+                60,
+                20,
+                0.09305760249639095,
+            ),
+        ];
+        for (population, successes, draws, k, expected) in cases
+        {
+            let got = Hypergeometric::new(population, successes, draws).pmf(k);
+            let rel = ((got - expected) / expected).abs();
+            assert!(rel < 1e-11, "pmf = {got}, expected {expected}, rel {rel:e}");
+        }
     }
 
     #[test]
