@@ -70,13 +70,13 @@ pub enum PvpError {
 
 impl fmt::Display for PvpError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self 
+        match self
         {
             Self::ZeroAddresses => write!(f, "PVP address count must be nonzero"),
             Self::AddressesNotPowerOfTwo { addresses } =>
             {
                 write!(f, "PVP address count {addresses} is not a power of two")
-            }
+            },
             Self::ZeroGates => write!(f, "PVP gate count must be nonzero"),
             Self::SizeOverflow => write!(f, "PVP layout/storage size overflow"),
             Self::StorageLengthMismatch {
@@ -123,15 +123,15 @@ pub struct PvpLayoutV1 {
 impl PvpLayoutV1 {
     /// Construct a checked PVP layout.
     pub fn new(addresses: usize, gates: usize) -> Result<Self, PvpError> {
-        if addresses == 0 
+        if addresses == 0
         {
             return Err(PvpError::ZeroAddresses);
         }
-        if !addresses.is_power_of_two() 
+        if !addresses.is_power_of_two()
         {
             return Err(PvpError::AddressesNotPowerOfTwo { addresses });
         }
-        if gates == 0 
+        if gates == 0
         {
             return Err(PvpError::ZeroGates);
         }
@@ -234,7 +234,7 @@ impl PvpLayoutV1 {
     }
 
     fn word_index(self, address: usize, gate_word: usize) -> Result<usize, PvpError> {
-        if address >= self.addresses 
+        if address >= self.addresses
         {
             return Err(PvpError::AddressOutOfRange {
                 address,
@@ -268,7 +268,7 @@ impl PvpBitplanesV1 {
     ///
     /// Canonical tail padding must be zero.
     pub fn from_words(layout: PvpLayoutV1, words: Vec<u64>) -> Result<Self, PvpError> {
-        if words.len() != layout.storage_words() 
+        if words.len() != layout.storage_words()
         {
             return Err(PvpError::StorageLengthMismatch {
                 expected_words: layout.storage_words(),
@@ -291,15 +291,15 @@ impl PvpBitplanesV1 {
         validate_gate_major_storage(layout, gate_major)?;
 
         let mut output = Self::zeroed(layout);
-        for gate in 0..layout.gates() 
+        for gate in 0..layout.gates()
         {
             let source_base = gate
                 .checked_mul(layout.address_words_per_gate())
                 .ok_or(PvpError::SizeOverflow)?;
-            for address in 0..layout.addresses() 
+            for address in 0..layout.addresses()
             {
                 let source_word = gate_major[source_base + address / PVP_WORD_BITS];
-                if source_word & (1_u64 << (address % PVP_WORD_BITS)) != 0 
+                if source_word & (1_u64 << (address % PVP_WORD_BITS)) != 0
                 {
                     let target_word = layout.word_index(address, gate / PVP_WORD_BITS)?;
                     output.words[target_word] |= 1_u64 << (gate % PVP_WORD_BITS);
@@ -315,13 +315,12 @@ impl PvpBitplanesV1 {
         self.validate_padding_zero()?;
         let mut output = vec![0_u64; self.layout.gate_major_storage_words()?];
 
-        for address in 0..self.layout.addresses() 
-
+        for address in 0..self.layout.addresses()
         {
             let row_base = address
                 .checked_mul(self.layout.gate_words_per_address())
                 .ok_or(PvpError::SizeOverflow)?;
-            for gate in 0..self.layout.gates() 
+            for gate in 0..self.layout.gates()
             {
                 if self.words[row_base + gate / PVP_WORD_BITS] & (1_u64 << (gate % PVP_WORD_BITS))
                     != 0
@@ -346,7 +345,7 @@ impl PvpBitplanesV1 {
 
     /// Read one logical bit.
     pub fn get(&self, address: usize, gate: usize) -> Result<bool, PvpError> {
-        if gate >= self.layout.gates() 
+        if gate >= self.layout.gates()
         {
             return Err(PvpError::GateOutOfRange {
                 gate,
@@ -359,18 +358,16 @@ impl PvpBitplanesV1 {
 
     /// Set one logical bit.
     pub fn set(&mut self, address: usize, gate: usize, value: bool) -> Result<(), PvpError> {
-        if gate >= self.layout.gates() 
+        if gate >= self.layout.gates()
         {
             return Err(PvpError::GateOutOfRange {
                 gate,
                 gates: self.layout.gates(),
             });
         }
-        let word = self
-            .layout
-            .word_index(address, gate / PVP_WORD_BITS)?;
+        let word = self.layout.word_index(address, gate / PVP_WORD_BITS)?;
         let mask = 1_u64 << (gate % PVP_WORD_BITS);
-        if value 
+        if value
         {
             self.words[word] |= mask;
         }
@@ -389,16 +386,16 @@ impl PvpBitplanesV1 {
 
     fn validate_padding_zero(&self) -> Result<(), PvpError> {
         let tail = self.layout.gates() % PVP_WORD_BITS;
-        if tail == 0 
+        if tail == 0
         {
             return Ok(());
         }
         let padding_mask = !((1_u64 << tail) - 1);
         let last = self.layout.gate_words_per_address() - 1;
-        for address in 0..self.layout.addresses() 
+        for address in 0..self.layout.addresses()
         {
             let index = self.layout.word_index(address, last)?;
-            if self.words[index] & padding_mask != 0 
+            if self.words[index] & padding_mask != 0
             {
                 return Err(PvpError::NonZeroPadding {
                     major_index: address,
@@ -445,13 +442,13 @@ pub fn pascal_subset_zeta_scalar_in_place(
     let words_per_address = layout.gate_words_per_address();
 
     let mut stride = 1_usize;
-    while stride < layout.addresses() 
+    while stride < layout.addresses()
     {
         let block = stride.checked_mul(2).ok_or(PvpError::SizeOverflow)?;
         let mut block_start = 0_usize;
-        while block_start < layout.addresses() 
+        while block_start < layout.addresses()
         {
-            for offset in 0..stride 
+            for offset in 0..stride
             {
                 let source_address = block_start + offset;
                 let target_address = source_address + stride;
@@ -461,7 +458,7 @@ pub fn pascal_subset_zeta_scalar_in_place(
                 let target_base = target_address
                     .checked_mul(words_per_address)
                     .ok_or(PvpError::SizeOverflow)?;
-                for word in 0..words_per_address 
+                for word in 0..words_per_address
                 {
                     bitplanes.words[target_base + word] ^= bitplanes.words[source_base + word];
                 }
@@ -501,23 +498,22 @@ pub fn direct_subset_zeta_oracle_v1(
     validate_gate_major_storage(layout, gate_major)?;
     let mut output = PvpBitplanesV1::zeroed(layout);
 
-    for gate in 0..layout.gates() 
-
+    for gate in 0..layout.gates()
     {
-        for address in 0..layout.addresses() 
+        for address in 0..layout.addresses()
         {
             let mut parity = false;
             let mut submask = address;
             loop
             {
                 parity ^= gate_major_bit(layout, gate_major, gate, submask)?;
-                if submask == 0 
+                if submask == 0
                 {
                     break;
                 }
                 submask = (submask - 1) & address;
             }
-            if parity 
+            if parity
             {
                 output.set(address, gate, true)?;
             }
@@ -529,7 +525,7 @@ pub fn direct_subset_zeta_oracle_v1(
 
 fn validate_gate_major_storage(layout: PvpLayoutV1, gate_major: &[u64]) -> Result<(), PvpError> {
     let expected_words = layout.gate_major_storage_words()?;
-    if gate_major.len() != expected_words 
+    if gate_major.len() != expected_words
     {
         return Err(PvpError::StorageLengthMismatch {
             expected_words,
@@ -538,20 +534,20 @@ fn validate_gate_major_storage(layout: PvpLayoutV1, gate_major: &[u64]) -> Resul
     }
 
     let tail = layout.addresses() % PVP_WORD_BITS;
-    if tail == 0 
+    if tail == 0
     {
         return Ok(());
     }
 
     let padding_mask = !((1_u64 << tail) - 1);
     let last = layout.address_words_per_gate() - 1;
-    for gate in 0..layout.gates() 
+    for gate in 0..layout.gates()
     {
         let index = gate
             .checked_mul(layout.address_words_per_gate())
             .and_then(|base| base.checked_add(last))
             .ok_or(PvpError::SizeOverflow)?;
-        if gate_major[index] & padding_mask != 0 
+        if gate_major[index] & padding_mask != 0
         {
             return Err(PvpError::NonZeroPadding { major_index: gate });
         }
@@ -565,14 +561,14 @@ fn gate_major_bit(
     gate: usize,
     address: usize,
 ) -> Result<bool, PvpError> {
-    if gate >= layout.gates() 
+    if gate >= layout.gates()
     {
         return Err(PvpError::GateOutOfRange {
             gate,
             gates: layout.gates(),
         });
     }
-    if address >= layout.addresses() 
+    if address >= layout.addresses()
     {
         return Err(PvpError::AddressOutOfRange {
             address,
@@ -593,12 +589,12 @@ mod tests {
 
     fn fixture_gate_major(layout: PvpLayoutV1) -> Vec<u64> {
         let mut words = vec![0_u64; layout.gate_major_storage_words().unwrap()];
-        for gate in 0..layout.gates() 
+        for gate in 0..layout.gates()
         {
-            for address in 0..layout.addresses() 
+            for address in 0..layout.addresses()
             {
                 let bit = ((gate * 17 + address * 13 + (gate ^ address)) % 11) < 5;
-                if bit 
+                if bit
                 {
                     let index = gate * layout.address_words_per_gate() + address / PVP_WORD_BITS;
                     words[index] |= 1_u64 << (address % PVP_WORD_BITS);
@@ -643,10 +639,9 @@ mod tests {
         let pvp = PvpBitplanesV1::from_gate_major_words(layout, &source).unwrap();
         assert_eq!(pvp.to_gate_major_words().unwrap(), source);
 
-        for gate in 0..layout.gates() 
-
+        for gate in 0..layout.gates()
         {
-            for address in 0..layout.addresses() 
+            for address in 0..layout.addresses()
             {
                 assert_eq!(
                     pvp.get(address, gate).unwrap(),
