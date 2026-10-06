@@ -733,9 +733,10 @@ pascal_vector_projection_program_2026_10_06:
     NNIS: optional_portable_runtime_carrier_and_end_to_end_hardware_qualification
   implementation_state:
     PVP1_stable_SIMD:
-      status: implementation_PR_open_exact_head_CI_pending
+      status: merged_qualified_stable_SIMD
       pull_request: 1538
       exact_head: 2b61f50f930ffddbe81dbb474174e482e6505308
+      merge_sha: 1405a81fcd1ac3b22ca2cd8baffd22a9af18c506
       scope:
         - scalar_reference_preserved
         - AVX2_u64x4
@@ -748,9 +749,9 @@ pascal_vector_projection_program_2026_10_06:
         - SVE_deferred_to_separate_aarch64_nightly_slice
         - WGPU_deferred_to_FLAT_PVP_track
         - no_performance_claim
-      promotion: blocked_until_all_required_exact_head_CI_is_green
+      promotion: qualified_exact_stable_SIMD_candidates
     PVP1_SVE_scalable:
-      status: frozen_next_slice_not_opened
+      status: implementation_starting_from_stable_SIMD_merge
       prerequisite: PVP1_stable_SIMD_merged_green
       scope:
         - SVE_u64_scalable_row_XOR
