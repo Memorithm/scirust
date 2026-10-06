@@ -15,6 +15,24 @@
 //! | [`BarycentricLagrange`] | global polynomial | 2 | polynomial |
 //! | [`NearestNeighbor`] | piecewise constant | 1 | nearest endpoint |
 //!
+//! ## Calculus
+//!
+//! The piecewise methods ([`LinearInterp`], [`CubicSpline`], [`PchipInterp`],
+//! [`AkimaSpline`]) also expose `derivative(x)` and an exact closed-form
+//! `integrate(a, b)`; the cubic ones add `second_derivative(x)`. Both follow
+//! the same boundary-piece extrapolation as `eval`.
+//!
+//! ```
+//! use scirust_interp::CubicSpline;
+//!
+//! // A clamped spline with exact end slopes reproduces x³ on [0, 2].
+//! let xs = [0.0, 0.5, 1.0, 1.5, 2.0];
+//! let ys: Vec<f64> = xs.iter().map(|x| x * x * x).collect();
+//! let s = CubicSpline::clamped(&xs, &ys, 0.0, 12.0).unwrap();
+//! assert!((s.derivative(1.2) - 3.0 * 1.2 * 1.2).abs() < 1e-9);
+//! assert!((s.integrate(0.0, 2.0) - 4.0).abs() < 1e-9);
+//! ```
+//!
 //! ## Guarantees
 //!
 //! - **Deterministic**: no global state, no RNG — identical inputs give
@@ -439,5 +457,180 @@ mod tests {
         assert!(!format!("{e}").is_empty());
         // Exercise the std::error::Error impl.
         let _: &dyn std::error::Error = &e;
+    }
+
+    // ---------------------------------------------------------------- //
+    //  Calculus: derivatives and exact definite integrals.             //
+    // ---------------------------------------------------------------- //
+
+    /// Antiderivative of the reference cubic.
+    fn cubic_anti(x: f64) -> f64 {
+        0.5 * x.powi(4) - x.powi(3) + 0.5 * x * x - 5.0 * x
+    }
+
+    /// A named interpolant paired with its exact integral, for oracle tests.
+    type Case<'a> = (&'a str, &'a dyn Interpolator, &'a dyn Fn(f64, f64) -> f64);
+
+    /// Composite Simpson's rule on `eval`, used as an independent oracle.
+    fn simpson(f: impl Fn(f64) -> f64, a: f64, b: f64, n: usize) -> f64 {
+        let h = (b - a) / n as f64;
+        let mut s = f(a) + f(b);
+        for k in 1..n
+        {
+            let w = if k % 2 == 1 { 4.0 } else { 2.0 };
+            s += w * f(a + h * k as f64);
+        }
+        s * h / 3.0
+    }
+
+    #[test]
+    fn clamped_spline_calculus_reproduces_cubic() {
+        let xs = [0.0, 1.0, 2.0, 3.0, 4.0];
+        let ys: Vec<f64> = xs.iter().map(|&x| cubic(x)).collect();
+        let s = CubicSpline::clamped(&xs, &ys, cubic_prime(0.0), cubic_prime(4.0)).unwrap();
+        for k in 0..=80
+        {
+            let x = -0.5 + 5.0 * f64::from(k) / 80.0;
+            assert!((s.derivative(x) - cubic_prime(x)).abs() < 1e-9, "s'({x})");
+            assert!(
+                (s.second_derivative(x) - (12.0 * x - 6.0)).abs() < 1e-8,
+                "s''({x})"
+            );
+        }
+        for &(a, b) in &[(0.0, 4.0), (0.3, 2.7), (1.0, 1.5), (-1.0, 5.0), (3.2, 0.4)]
+        {
+            let want = cubic_anti(b) - cubic_anti(a);
+            assert!(
+                (s.integrate(a, b) - want).abs() < 1e-9,
+                "∫[{a},{b}] got {} want {want}",
+                s.integrate(a, b)
+            );
+        }
+    }
+
+    #[test]
+    fn spline_second_derivative_matches_moments() {
+        let xs = [0.0, 1.0, 2.5, 4.0, 5.5, 7.0];
+        let ys = [1.0, -2.0, 3.5, 0.25, 6.0, -1.5];
+        let s = CubicSpline::natural(&xs, &ys).unwrap();
+        for (k, &x) in xs.iter().enumerate()
+        {
+            assert!((s.second_derivative(x) - s.moments()[k]).abs() < 1e-10);
+        }
+        assert!(s.second_derivative(xs[0]).abs() < 1e-12);
+        assert!(s.second_derivative(xs[5]).abs() < 1e-12);
+    }
+
+    #[test]
+    fn linear_calculus_is_exact() {
+        let affine = |x: f64| 3.0 * x - 7.0;
+        let xs = [-2.0, 0.0, 1.0, 4.0, 9.0];
+        let ys: Vec<f64> = xs.iter().map(|&x| affine(x)).collect();
+        let lin = LinearInterp::new(&xs, &ys).unwrap();
+        for &x in &[-5.0, -2.0, 0.5, 4.0, 12.0]
+        {
+            assert!((lin.derivative(x) - 3.0).abs() < 1e-12);
+        }
+        let anti = |x: f64| 1.5 * x * x - 7.0 * x;
+        for &(a, b) in &[(-2.0, 9.0), (-6.0, 11.0), (0.5, 3.25), (9.0, -2.0)]
+        {
+            assert!((lin.integrate(a, b) - (anti(b) - anti(a))).abs() < 1e-10);
+        }
+        // Kinked data: trapezoid areas, slope switches at the node.
+        let k = LinearInterp::new(&[0.0, 1.0, 3.0], &[0.0, 2.0, 0.0]).unwrap();
+        assert!((k.integrate(0.0, 3.0) - 3.0).abs() < 1e-12);
+        assert!((k.derivative(0.5) - 2.0).abs() < 1e-12);
+        assert!((k.derivative(1.0) + 1.0).abs() < 1e-12);
+        assert!(k.derivative(f64::NAN).is_nan());
+    }
+
+    #[test]
+    fn hermite_methods_derivative_matches_node_slopes_and_fd() {
+        let xs = [0.0, 1.0, 2.5, 4.0, 5.5, 7.0];
+        let ys = [1.0, -2.0, 3.5, 0.25, 6.0, -1.5];
+        let p = PchipInterp::new(&xs, &ys).unwrap();
+        let a = AkimaSpline::new(&xs, &ys).unwrap();
+        let eps = 1e-6;
+        for k in 0..=70
+        {
+            // Avoid the nodes themselves, where the second derivative jumps.
+            let x = -0.45 + 7.9 * f64::from(k) / 70.0 + 1e-3;
+            let fd_p = (p.eval(x + eps) - p.eval(x - eps)) / (2.0 * eps);
+            let fd_a = (a.eval(x + eps) - a.eval(x - eps)) / (2.0 * eps);
+            assert!((p.derivative(x) - fd_p).abs() < 1e-6, "pchip'({x})");
+            assert!((a.derivative(x) - fd_a).abs() < 1e-6, "akima'({x})");
+            let fd2 = (p.derivative(x + eps) - p.derivative(x - eps)) / (2.0 * eps);
+            assert!((p.second_derivative(x) - fd2).abs() < 1e-4, "pchip''({x})");
+        }
+        // C¹: left and right limits of the derivative agree at interior nodes.
+        for &x in &xs[1..5]
+        {
+            let l = p.derivative(x - 1e-12);
+            let r = p.derivative(x);
+            assert!((l - r).abs() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn piecewise_integrals_match_simpson_oracle() {
+        let xs = [0.0, 1.0, 2.5, 4.0, 5.5, 7.0];
+        let ys = [1.0, -2.0, 3.5, 0.25, 6.0, -1.5];
+        let lin = LinearInterp::new(&xs, &ys).unwrap();
+        let nat = CubicSpline::natural(&xs, &ys).unwrap();
+        let p = PchipInterp::new(&xs, &ys).unwrap();
+        let a = AkimaSpline::new(&xs, &ys).unwrap();
+        let methods: [Case<'_>; 4] = [
+            ("linear", &lin, &|u, v| lin.integrate(u, v)),
+            ("natural", &nat, &|u, v| nat.integrate(u, v)),
+            ("pchip", &p, &|u, v| p.integrate(u, v)),
+            ("akima", &a, &|u, v| a.integrate(u, v)),
+        ];
+        let bounds = [(0.0, 7.0), (0.4, 6.1), (2.5, 5.5), (-1.0, 0.3), (6.2, 8.5)];
+        for (name, f, int) in methods
+        {
+            for &(u, v) in &bounds
+            {
+                // Split at the nodes so Simpson is exact on every cubic piece.
+                let mut cuts = vec![u];
+                cuts.extend(xs.iter().copied().filter(|&x| x > u && x < v));
+                cuts.push(v);
+                let want: f64 = cuts
+                    .windows(2)
+                    .map(|w| simpson(|x| f.eval(x), w[0], w[1], 2))
+                    .sum();
+                let got = int(u, v);
+                assert!(
+                    (got - want).abs() < 1e-9,
+                    "{name} ∫[{u},{v}] {got} vs {want}"
+                );
+                // Reversal antisymmetry.
+                assert!((int(v, u) + got).abs() < 1e-12);
+            }
+            // Additivity across an arbitrary interior split point.
+            let whole = int(-0.7, 7.9);
+            let parts = int(-0.7, 3.3) + int(3.3, 7.9);
+            assert!((whole - parts).abs() < 1e-10, "{name} additivity");
+            assert_eq!(int(2.0, 2.0), 0.0);
+            assert!(int(0.0, f64::INFINITY).is_nan());
+            assert!(int(f64::NAN, 1.0).is_nan());
+        }
+    }
+
+    #[test]
+    fn two_node_calculus() {
+        let xs = [1.0, 3.0];
+        let ys = [2.0, 6.0];
+        let lin = LinearInterp::new(&xs, &ys).unwrap();
+        let p = PchipInterp::new(&xs, &ys).unwrap();
+        let s = CubicSpline::natural(&xs, &ys).unwrap();
+        for (d, i) in [
+            (lin.derivative(2.0), lin.integrate(1.0, 3.0)),
+            (p.derivative(2.0), p.integrate(1.0, 3.0)),
+            (s.derivative(2.0), s.integrate(1.0, 3.0)),
+        ]
+        {
+            assert!((d - 2.0).abs() < 1e-12);
+            assert!((i - 8.0).abs() < 1e-12);
+        }
     }
 }
