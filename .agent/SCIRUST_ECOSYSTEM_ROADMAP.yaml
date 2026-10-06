@@ -750,9 +750,10 @@ pascal_vector_projection_program_2026_10_06:
         - no_performance_claim
       promotion: qualified_exact_stable_SIMD_candidates
     PVP1_SVE_scalable:
-      status: implementation_PR_open_exact_head_CI_in_progress
+      status: merged_qualified_SVE_execution_candidate
       pull_request: 1540
       exact_head: 110e7bef528dc25e0d18af9a204834ef54cb60dd
+      merge_sha: a89282f46fc7ace3a5939a9d98547e0338cba735
       prerequisite: PVP1_stable_SIMD_merged_green
       scope:
         - SVE_u64_scalable_row_XOR
@@ -771,7 +772,7 @@ pascal_vector_projection_program_2026_10_06:
         - treating_aarch64_cross_compile_as_SVE_execution_evidence
         - changing_PVP_layout_or_stage_order_to_fit_SVE
         - using_vendor_GPU_software_for_CPU_SVE_qualification
-      promotion: blocked
+      promotion: correctness_qualified_performance_still_requires_native_SVE
     PVP3_same_host_benchmark_preregistration:
       status: frozen_not_executed
       prerequisite:
