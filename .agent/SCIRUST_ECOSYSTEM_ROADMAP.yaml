@@ -1,7 +1,7 @@
 schema_version: 1
 kind: scirust_ecosystem_agent_roadmap
 status: active
-last_updated: "2026-09-16"
+last_updated: "2026-10-06"
 repository: Memorithm/scirust
 intended_consumer: autonomous_coding_agent
 visibility_note: >-
@@ -773,6 +773,37 @@ pascal_vector_projection_program_2026_10_06:
         - changing_PVP_layout_or_stage_order_to_fit_SVE
         - using_vendor_GPU_software_for_CPU_SVE_qualification
       promotion: correctness_qualified_performance_still_requires_native_SVE
+    ANF_bank_semantic_qualification:
+      status: backend_qualification_passed_waiting_final_global_Miri
+      pull_request: 1544
+      exact_head: d4fe24dfa8ce91baa226f5e7281ff60d00b266b0
+      merge_sha: null
+      exact_head_CI: {run_id: 37524685785, successful_checks: 32, pending: numeric_a_Miri, failures: 0}
+      ARM_qualification_job: {job_id: 112478577039, conclusion: success, NEON_cases: 24, SVE_cases: 24, execution: QEMU}
+      local_x86_codegen_diagnostic:
+        source_sha256: 5c9742e2bce4e145925c56b98a2c9c41968153d6c48393e42d9b4c1edba2f60b
+        compiler: Rust_1_89_0_LLVM_20_1_7
+        target: x86_64_unknown_linux_gnu
+        optimization_level: 3
+        observation: AVX2_row_XOR_emits_YMM_and_AVX512_row_XOR_emits_ZMM_instructions
+        reproducible_command: "rustc --edition 2021 --crate-type lib --crate-name scirust_pvp_codegen -C opt-level=3 --emit asm scirust-simd/src/pvp.rs"
+        boundary: compilation_observation_only_no_native_latency_or_register_spill_claim
+      preregistration_commit: 515a088554f34728e671809e7c4558458e582c58
+      source_FLAT_pull_request: 341
+      source_FLAT_merge: 50c0230cc645bd44f1520e2c7194878a4b13009c
+      protocol: docs/PVP_ANF_BANK_QUALIFICATION_PROTOCOL.md
+      corpus: {geometries: 8, bank_families: 3, cases_per_backend: 24, maximum_K: 2048, maximum_G: 2048}
+      scope:
+        - explicit_ANF_coefficients_to_independent_direct_monomial_truth_oracle
+        - Scalar_AVX2_AVX512_NEON_and_SVE_when_runtime_available
+        - complete_word_padding_accounting_and_coefficient_recovery
+        - auto_dispatch_on_every_case_and_unavailable_backend_no_mutation
+        - mandatory_NEON_and_SVE_execution_under_QEMU
+      performance_claim: none
+      boundary:
+        - QEMU_execution_is_not_native_ARM_timing
+        - no_model_quality_SML_internalization_or_register_spill_claim
+        - no_FLAT_binary_or_runtime_dependency
     PVP3_same_host_benchmark_preregistration:
       status: frozen_not_executed
       prerequisite:
