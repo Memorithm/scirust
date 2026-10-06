@@ -710,8 +710,8 @@ unsafe fn xor_rows_avx512(
     let mut i = 0_usize;
     while i + 8 <= len
     {
-        let source = _mm512_loadu_si512(base.add(source_base + i).cast::<i32>());
-        let target = _mm512_loadu_si512(base.add(target_base + i).cast::<i32>());
+        let source = _mm512_loadu_si512(base.add(source_base + i).cast::<__m512i>());
+        let target = _mm512_loadu_si512(base.add(target_base + i).cast::<__m512i>());
         _mm512_storeu_si512(
             base.add(target_base + i).cast::<__m512i>(),
             _mm512_xor_si512(target, source),
