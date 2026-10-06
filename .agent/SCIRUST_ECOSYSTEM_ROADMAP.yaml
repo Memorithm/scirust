@@ -774,11 +774,11 @@ pascal_vector_projection_program_2026_10_06:
         - using_vendor_GPU_software_for_CPU_SVE_qualification
       promotion: correctness_qualified_performance_still_requires_native_SVE
     ANF_bank_semantic_qualification:
-      status: backend_qualification_passed_waiting_final_global_Miri
+      status: merged_exact_head_CI_qualified
       pull_request: 1544
       exact_head: d4fe24dfa8ce91baa226f5e7281ff60d00b266b0
-      merge_sha: null
-      exact_head_CI: {run_id: 37524685785, successful_checks: 32, pending: numeric_a_Miri, failures: 0}
+      merge_sha: 348f9287496153bce0d465199c9d3a385cf6ebd7
+      exact_head_CI: {run_id: 37524685785, successful_checks: 34, optional_benchmark_skipped: 1, failures: 0}
       ARM_qualification_job: {job_id: 112478577039, conclusion: success, NEON_cases: 24, SVE_cases: 24, execution: QEMU}
       local_x86_codegen_diagnostic:
         source_sha256: 5c9742e2bce4e145925c56b98a2c9c41968153d6c48393e42d9b4c1edba2f60b
