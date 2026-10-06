@@ -700,6 +700,12 @@ v888_executable_graph_handoff_2026_10_04:
     - dedicated_Thor_source_reproduction_green
     - public_validator_matches_frozen_graph_size_hash_and_counts
 pascal_vector_projection_program_2026_10_06:
+  status: active_shared_primitive_research
+  ownership:
+    SciRust: reusable_bitplane_layout_transpose_pack_unpack_CPU_SIMD_dispatch_capability_oracles
+    SML_GENIUS: Pascal_ANF_model_semantics_and_final_model_internalization
+    FLAT_ATTENTION: specialized_WGPU_kernel_IR_and_GPU_qualification
+    NNIS: optional_portable_runtime_carrier_and_end_to_end_hardware_qualification
   implementation_state:
     PVP0:
       status: merged_qualified_scalar_reference
@@ -725,13 +731,6 @@ pascal_vector_projection_program_2026_10_06:
         - deterministic_fingerprint
         - miri_unsafe_regressions
       promotion: qualified_shared_scalar_reference
-  status: active_shared_primitive_research
-  ownership:
-    SciRust: reusable_bitplane_layout_transpose_pack_unpack_CPU_SIMD_dispatch_capability_oracles
-    SML_GENIUS: Pascal_ANF_model_semantics_and_final_model_internalization
-    FLAT_ATTENTION: specialized_WGPU_kernel_IR_and_GPU_qualification
-    NNIS: optional_portable_runtime_carrier_and_end_to_end_hardware_qualification
-  implementation_state:
     PVP1_stable_SIMD:
       status: merged_qualified_stable_SIMD
       pull_request: 1538
