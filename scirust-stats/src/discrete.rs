@@ -19,9 +19,13 @@
 use crate::comb::{ln_binomial, ln_factorial};
 use crate::rng::SplitMix64;
 use scirust_special::{
-    ln_beta, ln_binomial_pmf, ln_gamma, ln_poisson_pmf, regularized_gamma_p, regularized_gamma_q,
-    regularized_incomplete_beta, riemann_zeta, riemann_zeta_tail,
+    binom_deviance, ln_beta, ln_binomial_pmf, ln_gamma, ln_poisson_pmf, regularized_gamma_p,
+    regularized_gamma_q, regularized_incomplete_beta, riemann_zeta, riemann_zeta_tail,
+    stirling_error,
 };
+
+/// `ln(2π)`, the constant of Stirling's formula.
+const LN_2PI: f64 = 1.837_877_066_409_345_5;
 
 /// A univariate distribution on the non-negative integers.
 ///
@@ -515,12 +519,30 @@ impl NegativeBinomial {
 
 impl DiscreteDistribution for NegativeBinomial {
     fn ln_pmf(&self, k: u64) -> f64 {
-        // ln C(k + r − 1, k) generalized to real r via ln Γ.
+        let (r, p) = (self.r, self.p);
+        if p == 1.0
+        {
+            // All mass at k = 0.
+            return if k == 0 { 0.0 } else { f64::NEG_INFINITY };
+        }
+        if k == 0
+        {
+            return r * p.ln();
+        }
+        // pmf(k) = r/(r+k) · C(r+k, r)·p^r·q^k, the binomial term written in
+        // Loader's saddle-point form (as R's `dnbinom`). Summing
+        // `ln Γ(k+r) − ln Γ(r) − ln k! + r·ln p + k·ln q` directly cancels
+        // terms of size ~k·ln k and loses every digit once k or r nears 1e15.
         let kf = k as f64;
-        let ln_coeff = ln_gamma(kf + self.r) - ln_gamma(self.r) - ln_factorial(k);
-        // Guard k = 0 so p = 1 avoids 0·ln(0).
-        let t_fail = if k == 0 { 0.0 } else { kf * (-self.p).ln_1p() };
-        ln_coeff + self.r * self.p.ln() + t_fail
+        let n = r + kf;
+        let q = 1.0 - p;
+        let lc = stirling_error(n)
+            - stirling_error(r)
+            - stirling_error(kf)
+            - binom_deviance(r, n * p)
+            - binom_deviance(kf, n * q);
+        // ln(r/n) − ½·ln(2π·r·k/n).
+        (r / n).ln() + lc - 0.5 * (LN_2PI + r.ln() + kf.ln() - n.ln())
     }
     fn cdf(&self, k: u64) -> f64 {
         // P(X ≤ k) = I_p(r, k + 1).
@@ -1069,20 +1091,47 @@ impl Multinomial {
         {
             return f64::NEG_INFINITY;
         }
-        let mut acc = ln_factorial(self.n);
+        if counts
+            .iter()
+            .zip(&self.probs)
+            .any(|(&k, &p)| k > 0 && p == 0.0)
+        {
+            return f64::NEG_INFINITY;
+        }
+        if let Some(j) = counts.iter().position(|&k| k == self.n)
+        {
+            // One category holds every trial (also covers n = 0).
+            return if self.n == 0
+            {
+                0.0
+            }
+            else
+            {
+                self.n as f64 * self.probs[j].ln()
+            };
+        }
+        // Loader's saddle-point form, the multivariate analogue of the
+        // binomial pmf. With δ the Stirling remainder, D₀ the binomial
+        // deviance and P₀ the total probability of the empty categories,
+        // `ln n! − Σ ln kᵢ! + Σ kᵢ ln pᵢ` equals
+        // `δ(n) − Σ_{kᵢ>0}[δ(kᵢ) + D₀(kᵢ, n·pᵢ) + ½ln kᵢ] + ½ln n
+        //  − (m₊ − 1)·½ln 2π − n·P₀`, where m₊ counts the non-empty
+        // categories. Every term stays small near the mode, whereas the
+        // factorial sum cancels values of size ~n·ln n.
+        let n = self.n as f64;
+        let mut acc = stirling_error(n) + 0.5 * n.ln() + 0.5 * LN_2PI;
+        let mut empty_mass = 0.0;
         for (&k, &p) in counts.iter().zip(&self.probs)
         {
-            acc -= ln_factorial(k);
-            if k > 0
+            if k == 0
             {
-                if p == 0.0
-                {
-                    return f64::NEG_INFINITY;
-                }
-                acc += k as f64 * p.ln();
+                empty_mass += p;
+                continue;
             }
+            let kf = k as f64;
+            acc -= stirling_error(kf) + binom_deviance(kf, n * p) + 0.5 * (kf.ln() + LN_2PI);
         }
-        acc
+        acc - n * empty_mass
     }
     /// Probability mass `P(counts)`.
     pub fn pmf(&self, counts: &[u64]) -> f64 {
@@ -2823,5 +2872,126 @@ mod tests {
         assert_eq!(g.isf(0.5), 1);
         assert_eq!(g.isf(0.999), 1);
         assert_eq!(Geometric::new(0.3).sf(0), 1.0);
+    }
+
+    // Oracle values: mpmath 1.4.1 at 50 digits from
+    // `loggamma(k+r) − loggamma(r) − loggamma(k+1) + r·log(p) + k·log1p(−p)`
+    // and `loggamma(n+1) − Σ loggamma(kᵢ+1) + Σ kᵢ·log(pᵢ)`, with every f64
+    // input taken at its exact binary value.
+    fn assert_ln_close(got: f64, want: f64, what: &str) {
+        let err = (got - want).abs() / want.abs().max(1.0);
+        assert!(err < 1e-12, "{what}: got {got}, want {want} (rel {err:e})");
+    }
+
+    #[test]
+    fn negative_binomial_ln_pmf_keeps_precision_at_huge_counts() {
+        // The ln Γ sum used to return −24.347 (pmf ~9e4 times too large).
+        let nb = NegativeBinomial::new(2.5, 1e-15);
+        assert_ln_close(
+            nb.ln_pmf(2_000_000_000_000_000),
+            -35.783_738_494_543_686,
+            "r=2.5",
+        );
+        // Used to return −14.5 (pmf ~57 times too large).
+        let nb = NegativeBinomial::new(1e15, 0.5);
+        assert_ln_close(
+            nb.ln_pmf(1_000_000_000_000_000),
+            -18.534_900_320_939_99,
+            "r=1e15",
+        );
+        // Used to return −45.03 (pmf ~13 times too small).
+        let nb = NegativeBinomial::new(1e-3, 1e-15);
+        assert_ln_close(
+            nb.ln_pmf(1_000_000_000_000_000),
+            -42.445_955_280_294_54,
+            "r=1e-3",
+        );
+        // Used to be 8.4 off in the log.
+        let nb = NegativeBinomial::new(1e15, 0.999_999);
+        assert_ln_close(nb.ln_pmf(3), -1_000_000_439.651_051, "k=3");
+        assert_ln_close(
+            NegativeBinomial::new(0.5, 1e-12).ln_pmf(100_000_000_000),
+            -27.152_093_512_357_525,
+            "r=0.5",
+        );
+    }
+
+    #[test]
+    fn negative_binomial_ln_pmf_small_arguments_and_endpoints() {
+        assert_ln_close(
+            NegativeBinomial::new(4.0, 0.3).ln_pmf(7),
+            -2.525_124_082_092_825,
+            "k=7",
+        );
+        assert_ln_close(
+            NegativeBinomial::new(3.0, 0.2).ln_pmf(0),
+            -4.828_313_737_302_301,
+            "k=0",
+        );
+        let degenerate = NegativeBinomial::new(2.0, 1.0);
+        assert_eq!(degenerate.ln_pmf(0), 0.0);
+        assert_eq!(degenerate.ln_pmf(5), f64::NEG_INFINITY);
+        // The pmf still sums to one.
+        let nb = NegativeBinomial::new(0.7, 0.4);
+        let total: f64 = (0..400).map(|k| nb.pmf(k)).sum();
+        assert!((total - 1.0).abs() < 1e-12, "sum = {total}");
+    }
+
+    #[test]
+    fn multinomial_ln_pmf_keeps_precision_at_huge_n() {
+        // The ln n! − Σ ln kᵢ! sum used to return −20.625 (pmf ~23 times too small).
+        let half = 500_000_000_000_000;
+        let m = Multinomial::new(2 * half, &[0.5, 0.5]);
+        assert_ln_close(
+            m.ln_pmf(&[half, half]),
+            -17.495_179_550_100_07,
+            "two halves",
+        );
+        let m = Multinomial::new(1_000_000_000_000_000, &[0.2, 0.3, 0.5]);
+        assert_ln_close(
+            m.ln_pmf(&[
+                200_000_000_000_000,
+                300_000_000_000_000,
+                500_000_000_000_000,
+            ]),
+            -34.623_374_512_660_04,
+            "three categories",
+        );
+    }
+
+    #[test]
+    fn multinomial_ln_pmf_empty_categories_and_endpoints() {
+        let m = Multinomial::new(1_000_000, &[0.1, 0.4, 0.5]);
+        assert_ln_close(
+            m.ln_pmf(&[0, 400_000, 600_000]),
+            -109_400.047_212_271,
+            "empty category",
+        );
+        let m = Multinomial::new(10, &[0.2, 0.3, 0.5]);
+        assert_ln_close(m.ln_pmf(&[2, 3, 5]), -2.464_515_960_140_266_3, "n=10");
+        // Probabilities sum to one over all compositions of n = 6.
+        let mut total = 0.0;
+        for a in 0..=6_u64
+        {
+            for b in 0..=6 - a
+            {
+                total += m_six().pmf(&[a, b, 6 - a - b]);
+            }
+        }
+        assert!((total - 1.0).abs() < 1e-13, "sum = {total}");
+        let m = Multinomial::new(1_000_000_000_000_000, &[0.999, 0.001]);
+        assert_ln_close(
+            m.ln_pmf(&[1_000_000_000_000_000, 0]),
+            -1_000_500_333_583.534_4,
+            "all in one",
+        );
+        assert_eq!(Multinomial::new(0, &[0.5, 0.5]).ln_pmf(&[0, 0]), 0.0);
+        let zero_p = Multinomial::new(4, &[0.0, 1.0]);
+        assert_eq!(zero_p.ln_pmf(&[1, 3]), f64::NEG_INFINITY);
+        assert_eq!(zero_p.ln_pmf(&[0, 4]), 0.0);
+    }
+
+    fn m_six() -> Multinomial {
+        Multinomial::new(6, &[0.15, 0.6, 0.25])
     }
 }
