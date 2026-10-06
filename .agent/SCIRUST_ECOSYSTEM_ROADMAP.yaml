@@ -735,7 +735,7 @@ pascal_vector_projection_program_2026_10_06:
     PVP1_stable_SIMD:
       status: implementation_PR_open_exact_head_CI_pending
       pull_request: 1538
-      exact_head: 87442b261ca0a9f6da00260b98c6d01dbbc1b3c4
+      exact_head: 2b61f50f930ffddbe81dbb474174e482e6505308
       scope:
         - scalar_reference_preserved
         - AVX2_u64x4
