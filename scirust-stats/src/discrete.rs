@@ -1376,6 +1376,12 @@ impl DirichletMultinomial {
 /// citation counts, species-per-genus). The tail decays as a power law
 /// `k^(−(α+1))`, so the mean is finite only for `α > 1` and the variance only
 /// for `α > 2`; the survival function has the closed form `sf(k) = k·B(k, α+1)`.
+///
+/// Tails are evaluated from `ln sf(k) = −Σ_{j=1}^{k} ln(1 + α/j)` (the product
+/// form `sf(k) = Π_{j≤k} j/(j+α)`), summed directly for `k ≤ 32` and continued
+/// by a Stirling series for `ln Γ(x+α) − ln Γ(x)` beyond, so neither `sf` far
+/// in the power-law tail nor `cdf = −expm1(ln sf)` at small `α` loses
+/// precision to the cancellation of large `ln Γ` values.
 #[derive(Debug, Clone, Copy)]
 pub struct YuleSimon {
     alpha: f64,
@@ -1390,6 +1396,65 @@ impl YuleSimon {
         );
         Self { alpha }
     }
+
+    /// `ln sf(k) = ln P(X > k)` for `k ≥ 1`, i.e. `−Σ_{j=1}^{k} ln(1 + α/j)`.
+    ///
+    /// The first `YULE_SIMON_DIRECT_TERMS` factors are summed with `ln_1p`;
+    /// the rest of the product is `Γ(k+1)Γ(m+1+α) / (Γ(k+1+α)Γ(m+1))`, taken
+    /// from `ln_gamma_shift_diff`, which never forms a full `ln Γ` value.
+    fn ln_sf_pos(&self, k: u64) -> f64 {
+        let a = self.alpha;
+        let m = k.min(YULE_SIMON_DIRECT_TERMS);
+        let mut s = 0.0;
+        for j in 1..=m
+        {
+            s -= (a / j as f64).ln_1p();
+        }
+        if k > m
+        {
+            s -= ln_gamma_shift_diff(k as f64 + 1.0, m as f64 + 1.0, a);
+        }
+        s
+    }
+}
+
+/// Number of leading factors of the Yule–Simon product `Π j/(j+α)` that are
+/// summed term by term before switching to the Stirling form.
+const YULE_SIMON_DIRECT_TERMS: u64 = 32;
+
+/// `[ln Γ(x₂+a) − ln Γ(x₂)] − [ln Γ(x₁+a) − ln Γ(x₁)]` for `x₂ ≥ x₁ ≥ 33` and
+/// `a ≥ 0`, without forming any `ln Γ` value.
+///
+/// From Stirling's series `ln Γ(z) = (z−½)ln z − z + ½ln 2π + C(z)` with
+/// `C(z) = Σ B₂ₙ / (2n(2n−1) z^(2n−1))`, one shift is
+/// `ln Γ(x+a) − ln Γ(x) = (x−½)·ln_1p(a/x) + a·(ln(x+a) − 1) + C(x+a) − C(x)`.
+/// In the difference of two shifts the `a·ln(x+a)` terms, which are large
+/// when `a` is large, combine into `a·ln_1p((x₂−x₁)/(x₁+a))`, and each
+/// correction difference is `cₙ x^(−p)·expm1(−p·ln_1p(a/x))`. The result
+/// therefore keeps its relative precision for tiny `a`, for huge `a`, and for
+/// `x₂` up to `u64::MAX`. Five correction terms leave a truncation error below
+/// `1e-19` at `x = 33`.
+fn ln_gamma_shift_diff(x2: f64, x1: f64, a: f64) -> f64 {
+    debug_assert!(x2 >= x1 && x1 >= 33.0 && a >= 0.0);
+    // (cₙ, power p = 2n − 1) for B₂ … B₁₀.
+    const C: [(f64, i32); 5] = [
+        (1.0 / 12.0, 1),
+        (-1.0 / 360.0, 3),
+        (1.0 / 1260.0, 5),
+        (-1.0 / 1680.0, 7),
+        (1.0 / 1188.0, 9),
+    ];
+    // (x−½)·ln_1p(a/x) + C(x+a) − C(x) for one shift.
+    let part = |x: f64| {
+        let r = (a / x).ln_1p();
+        let mut corr = 0.0;
+        for &(c, p) in C.iter().rev()
+        {
+            corr += c * x.powi(-p) * (-(p as f64) * r).exp_m1();
+        }
+        (x - 0.5) * r + corr
+    };
+    part(x2) - part(x1) + a * ((x2 - x1) / (x1 + a)).ln_1p()
 }
 
 impl DiscreteDistribution for YuleSimon {
@@ -1398,7 +1463,8 @@ impl DiscreteDistribution for YuleSimon {
         {
             return f64::NEG_INFINITY;
         }
-        self.alpha.ln() + ln_beta(k as f64, self.alpha + 1.0)
+        // pmf(k) = α·B(k, α+1) = (α/k)·sf(k): reuses the cancellation-free tail.
+        self.alpha.ln() - (k as f64).ln() + self.ln_sf_pos(k)
     }
     fn sf(&self, k: u64) -> f64 {
         // P(X > k) = k·B(k, α+1); at k = 0 the whole mass (support k ≥ 1) is above.
@@ -1406,10 +1472,39 @@ impl DiscreteDistribution for YuleSimon {
         {
             return 1.0;
         }
-        ((k as f64).ln() + ln_beta(k as f64, self.alpha + 1.0)).exp()
+        // ln sf ≤ 0; the clamp only guards against a last-ulp libm overshoot.
+        self.ln_sf_pos(k).exp().min(1.0)
     }
     fn cdf(&self, k: u64) -> f64 {
-        1.0 - self.sf(k)
+        if k == 0
+        {
+            return 0.0;
+        }
+        // 1 − sf without cancellation when sf ≈ 1 (small α or small k).
+        (-self.ln_sf_pos(k).exp_m1()).min(1.0)
+    }
+    fn logsf(&self, k: u64) -> f64 {
+        if k == 0
+        {
+            return 0.0;
+        }
+        // Stays finite where sf itself underflows (large α or far tail).
+        self.ln_sf_pos(k)
+    }
+    fn logcdf(&self, k: u64) -> f64 {
+        if k == 0
+        {
+            return f64::NEG_INFINITY;
+        }
+        let l = self.ln_sf_pos(k);
+        if l < -std::f64::consts::LN_2
+        {
+            (-l.exp()).ln_1p()
+        }
+        else
+        {
+            (-l.exp_m1()).ln()
+        }
     }
     fn mean(&self) -> f64 {
         if self.alpha > 1.0
@@ -1826,6 +1921,11 @@ mod tests {
 
     fn close(a: f64, b: f64, tol: f64) -> bool {
         (a - b).abs() <= tol * (1.0 + b.abs())
+    }
+
+    /// Purely relative comparison, for tail values far below 1.
+    fn rel_close(a: f64, b: f64, tol: f64) -> bool {
+        (a - b).abs() <= tol * b.abs()
     }
 
     // Oracle values: SciPy 1.17.1 (binom, poisson, hypergeom, geom) and exact
@@ -2372,6 +2472,90 @@ mod tests {
         let y3 = YuleSimon::new(0.8);
         assert_eq!(y3.mean(), f64::INFINITY);
         assert!(close(y3.pmf(1), 0.444_444_444_444_444_5, 1e-12));
+    }
+
+    #[test]
+    fn yule_simon_lower_tail_small_alpha() {
+        // cdf = 1 − sf used to cancel when sf ≈ 1. References from mpmath
+        // 1.4.1 (60 digits): cdf(k) = −expm1(lnΓ(k+1) + lnΓ(α+1) − lnΓ(k+α+1)).
+        let y = YuleSimon::new(1e-10);
+        // Was 1.0000178e-10 (relative error 1.8e-5).
+        assert!(rel_close(y.cdf(1), 9.999_999_999_000_001e-11, 1e-13));
+        assert!(rel_close(y.cdf(10), 2.928_968_253_461_823e-10, 1e-13));
+        assert!(rel_close(y.cdf(1000), 7.485_470_857_666_534e-10, 1e-13));
+        assert!(rel_close(y.logcdf(1), -23.025_850_930_040_455, 1e-14));
+        let y = YuleSimon::new(1e-12);
+        // Was 1.7e-13 (84× too small).
+        assert!(rel_close(
+            y.cdf(1_000_000),
+            1.439_272_672_276_132_6e-11,
+            1e-12
+        ));
+        // Was 0.768 instead of 3.5e-11.
+        assert!(rel_close(
+            y.cdf(1_000_000_000_000_000),
+            3.511_599_205_919_483e-11,
+            1e-12
+        ));
+        // Smallest k with cdf(k) ≥ 1e-11 (cdf(12366) = 9.999962e-12,
+        // cdf(12367) = 1.0000043e-11). Was 4092.
+        assert_eq!(y.quantile(1e-11), 12_367);
+        // α far below the f64 epsilon: cdf(5) = α·H₅ to relative order α.
+        let y = YuleSimon::new(1e-300);
+        assert!(rel_close(y.cdf(5), 1e-300 * 137.0 / 60.0, 1e-14));
+        // At the top of the u64 range the old sf exceeded 1 and cdf was negative.
+        let y = YuleSimon::new(1e-3);
+        let k = u64::MAX;
+        assert!(rel_close(y.cdf(k), 0.043_943_065_850_278_68, 1e-12));
+        assert!(rel_close(y.sf(k), 0.956_056_934_149_721_3, 1e-13));
+    }
+
+    #[test]
+    fn yule_simon_power_law_tail() {
+        // sf(k) ~ Γ(α+1)·k^(−α) far in the tail; the old ln-gamma difference
+        // lost all digits at k = 1e15 (sf was 2.57e-41, pmf similarly off).
+        let y = YuleSimon::new(2.5);
+        let k = 1_000_000_000_000_000;
+        assert!(rel_close(y.sf(k), 1.050_935_853_074_607e-37, 1e-11));
+        assert!(rel_close(y.pmf(k), 2.627_339_632_686_517_6e-52, 1e-11));
+        assert!(rel_close(y.logsf(k), -85.145_967_384_929_65, 1e-13));
+        // isf(1e-37) is 1_020_071_193_429_162 per mpmath; sf changes by only
+        // 2.4e-15 relative per step there, so compare k to a relative 1e-9.
+        // The old value was 5.59e14.
+        let k = y.isf(1e-37) as f64;
+        assert!(rel_close(k, 1_020_071_193_429_162.0, 1e-9), "isf = {k}");
+        let y = YuleSimon::new(0.7);
+        assert!(rel_close(
+            y.sf(1_000_000_000),
+            4.553_981_326_143_692_6e-7,
+            1e-11
+        ));
+        assert!(rel_close(y.cdf(40), 0.932_305_570_568_456_9, 1e-13));
+        assert!(rel_close(y.pmf(40), 0.001_184_652_515_052_004_7, 1e-12));
+    }
+
+    #[test]
+    fn yule_simon_large_alpha_and_branch_switch() {
+        // logsf stays finite after sf underflows: ln sf(100) = −787.6 at α = 1e5.
+        let y = YuleSimon::new(1e5);
+        assert!(y.sf(100) < f64::MIN_POSITIVE);
+        assert!(rel_close(y.logsf(100), -787.603_654_032_455_1, 1e-13));
+        assert!(rel_close(y.sf(40), 8.092_530_298_335_503e-153, 1e-12));
+        // Extreme α: no NaN, the whole mass sits at k = 1.
+        let y = YuleSimon::new(1e306);
+        assert!(y.sf(40) < f64::MIN_POSITIVE);
+        assert!(rel_close(y.cdf(40), 1.0, 1e-14));
+        assert!(y.logsf(40).is_finite());
+        // The direct sum (k ≤ 32) and the Stirling continuation (k ≥ 33)
+        // agree with mpmath on both sides of the switch, and the pmf matches
+        // the drop in sf across it.
+        let y = YuleSimon::new(2.5);
+        assert!(rel_close(y.sf(32), 5.024_586_513_153_711e-4, 1e-13));
+        assert!(rel_close(y.sf(33), 4.670_742_392_509_083_8e-4, 1e-13));
+        assert!(rel_close(y.pmf(33), 3.538_441_206_446_276e-5, 1e-12));
+        assert!(rel_close(y.sf(32) - y.sf(33), y.pmf(33), 1e-11));
+        let mass: f64 = (1..=40).map(|k| y.pmf(k)).sum::<f64>() + y.sf(40);
+        assert!(rel_close(mass, 1.0, 1e-13));
     }
 
     #[test]
