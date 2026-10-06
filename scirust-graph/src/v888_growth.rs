@@ -25,6 +25,12 @@ pub use crate::v888_growth_controls::{
     v888_growth_edge_count_control, v888_growth_matched_controls, v888_growth_rewire_control,
     v888_growth_select_subset, v888_growth_unit_reference,
 };
+pub use crate::v888_growth_ensemble::{
+    V888_GROWTH_ENSEMBLE_MAX_SEEDS, V888GrowthDispersion, V888GrowthEnsembleArmSummary,
+    V888GrowthEnsembleDescriptor, V888GrowthEnsembleError, V888GrowthEnsembleReport,
+    V888GrowthEnsembleSample, V888GrowthEnsembleValues, v888_growth_control_ensemble,
+    v888_growth_dispersion,
+};
 pub use crate::v888_growth_metrics::{
     V888GrowthBetweenness, V888GrowthDistanceProfile, V888GrowthHarmonicCloseness,
     V888GrowthMetricBundle, V888GrowthMetricDelta, V888GrowthMetricsError,
