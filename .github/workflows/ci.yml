@@ -457,6 +457,14 @@ jobs:
           cargo +nightly-2026-07-02 test -p scirust-simd --lib --release --locked \
             --features nightly-simd --target aarch64-unknown-linux-gnu \
             pvp::tests::auto_dispatch_prefers_sve_on_sve_runtime -- --ignored --exact --nocapture
+      - name: Execute explicit ANF banks on NEON and SVE under qemu-aarch64
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER: qemu-aarch64 -cpu max,sve=on,sve256=on -L /usr/aarch64-linux-gnu
+        run: |
+          cargo +nightly-2026-07-02 test -p scirust-simd --lib --release --locked \
+            --features nightly-simd --target aarch64-unknown-linux-gnu \
+            pvp::anf_bank_tests -- --include-ignored --nocapture
 
   deny:
     name: License & Security Audit

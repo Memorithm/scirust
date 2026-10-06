@@ -73,6 +73,12 @@ Existing optional CUDA facilities in SciRust remain separate from PVP.
 
 ## SML boundary
 
+The explicit ANF-bank functional corpus is frozen in
+[`PVP_ANF_BANK_QUALIFICATION_PROTOCOL.md`](PVP_ANF_BANK_QUALIFICATION_PROTOCOL.md).
+It qualifies the existing CPU candidates and auto dispatch against a direct
+monomial oracle, with mandatory NEON/SVE execution in the dedicated QEMU gate.
+It does not replace same-host physical benchmarks or the later SML-owned study.
+
 SciRust is not part of the required final SML runtime. SML may internalize a
 qualified minimal primitive after versioned equivalence and destination
 qualification. The future SML-HARNESS is also outside SciRust ownership.
