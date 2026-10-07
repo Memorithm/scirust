@@ -280,7 +280,9 @@ pub fn welch_psd(
 /// Spectral centroid: weighted mean of frequencies.
 /// Higher values → brighter/higher-frequency content.
 ///
-/// `spectrum` is the positive half-spectrum. `sample_rate` in Hz.
+/// `spectrum` is the positive half-spectrum. `sample_rate` in Hz. The result
+/// does not depend on the signal's amplitude or units; a spectrum with no
+/// energy outside DC returns `0`.
 pub fn spectral_centroid(spectrum: &[Complex], sample_rate: f64) -> f64 {
     if spectrum.len() <= 1
     {
@@ -296,7 +298,7 @@ pub fn spectral_centroid(spectrum: &[Complex], sample_rate: f64) -> f64 {
         numer += freq * mag;
         denom += mag;
     }
-    if denom < f64::EPSILON
+    if denom <= 0.0
     {
         return 0.0;
     }
@@ -321,7 +323,7 @@ pub fn spectral_spread(spectrum: &[Complex], sample_rate: f64) -> f64 {
         numer += diff * diff * mag;
         denom += mag;
     }
-    if denom < f64::EPSILON
+    if denom <= 0.0
     {
         return 0.0;
     }
@@ -362,7 +364,7 @@ pub fn psd_centroid(psd: &[f64], sample_rate: f64) -> f64 {
         numer += freq * p;
         denom += p;
     }
-    if denom < f64::EPSILON
+    if denom <= 0.0
     {
         return 0.0;
     }
@@ -389,7 +391,7 @@ pub fn psd_spread(psd: &[f64], sample_rate: f64) -> f64 {
         numer += diff * diff * p;
         denom += p;
     }
-    if denom < f64::EPSILON
+    if denom <= 0.0
     {
         return 0.0;
     }
@@ -423,14 +425,21 @@ pub fn psd_spread(psd: &[f64], sample_rate: f64) -> f64 {
 /// everywhere non-zero (noise, mixtures, real measurements); it does not rank
 /// synthetic signals with exact spectral holes against each other.
 ///
-/// Both this and [`spectral_flatness`] guard the logarithm with an
-/// `f64::EPSILON` floor, and **the floor bites at different signals in the two
-/// domains**, which is a third reason not to compare their values. Power is
-/// magnitude squared, so a bin whose magnitude is a merely-tiny `1e-13`
-/// survives the magnitude-domain floor and becomes `~1e-29` in the power
-/// domain, well underneath it. Measured on an exactly-on-bin 64 Hz tone over
-/// 1024 samples: this function returns `0`, while [`spectral_flatness`]
-/// returns `1.16e-13`. Both are "maximally tonal"; only one says so exactly.
+/// Both this and [`spectral_flatness`] treat a bin as empty when it is at most
+/// `f64::EPSILON` times the arithmetic mean of the values being averaged. The
+/// floor is **relative**, so scaling the signal (changing its units) does not
+/// change the answer: a record in microstrain or microvolts gets the same
+/// flatness as the same record in strain or volts. An all-zero input returns
+/// `0`.
+///
+/// **The floor bites at different signals in the two domains**, which is a
+/// third reason not to compare their values. Power is magnitude squared, so
+/// the leakage bins of an exactly-on-bin tone, at a relative magnitude around
+/// `1e-13`, survive the magnitude-domain floor while their relative power,
+/// around `1e-29`, falls well underneath it. Measured on an exactly-on-bin
+/// 64 Hz tone over 1024 samples: this function returns `0`, while
+/// [`spectral_flatness`] returns about `1.16e-13`. Both are "maximally tonal";
+/// only one says so exactly.
 pub fn psd_flatness(psd: &[f64]) -> f64 {
     let n = psd.len();
     if n == 0
@@ -438,22 +447,16 @@ pub fn psd_flatness(psd: &[f64]) -> f64 {
         return 0.0;
     }
     let am: f64 = psd.iter().sum::<f64>() / n as f64;
-    if am < f64::EPSILON
+    if am <= 0.0
     {
         return 0.0;
     }
+    // Relative, not absolute: a bin is empty when it is rounding noise
+    // *compared with this spectrum*, so the answer does not depend on units.
+    let floor = am * f64::EPSILON;
     let sum_log: f64 = psd
         .iter()
-        .map(|&p| {
-            if p > f64::EPSILON
-            {
-                p.ln()
-            }
-            else
-            {
-                f64::NEG_INFINITY
-            }
-        })
+        .map(|&p| if p > floor { p.ln() } else { f64::NEG_INFINITY })
         .sum();
     let gm = if sum_log.is_finite()
     {
@@ -468,6 +471,9 @@ pub fn psd_flatness(psd: &[f64]) -> f64 {
 
 /// Spectral entropy (normalized, 0..1).
 /// 0 = pure tone, 1 = white noise.
+///
+/// Depends only on the shape of the power spectrum, not on its scale; an
+/// all-zero spectrum returns `0`.
 pub fn spectral_entropy(spectrum: &[Complex]) -> f64 {
     let n = spectrum.len();
     if n <= 1
@@ -475,7 +481,7 @@ pub fn spectral_entropy(spectrum: &[Complex]) -> f64 {
         return 0.0;
     }
     let total: f64 = spectrum.iter().map(|c| c.mag_sq()).sum();
-    if total < f64::EPSILON
+    if total <= 0.0
     {
         return 0.0;
     }
@@ -539,6 +545,12 @@ pub fn band_power(spectrum: &[Complex], sample_rate: f64, low_hz: f64, high_hz: 
 
 /// Spectral flatness: geometric mean / arithmetic mean of the spectrum.
 /// 1.0 = white noise (flat), close to 0 = tonal.
+///
+/// Computed over **magnitudes**; see [`psd_flatness`] for the power-domain
+/// version and why the two must not be compared. A bin at most
+/// `f64::EPSILON` times the mean magnitude counts as empty, a relative floor
+/// that keeps the result independent of the signal's units. An all-zero
+/// spectrum returns `0`.
 pub fn spectral_flatness(spectrum: &[Complex]) -> f64 {
     let mags: Vec<f64> = spectrum.iter().map(|c| c.mag()).collect();
     let n = mags.len();
@@ -547,23 +559,16 @@ pub fn spectral_flatness(spectrum: &[Complex]) -> f64 {
         return 0.0;
     }
     let am: f64 = mags.iter().sum::<f64>() / n as f64;
-    if am < f64::EPSILON
+    if am <= 0.0
     {
         return 0.0;
     }
+    // Relative floor, as in `psd_flatness`: scale-invariant by construction.
+    let floor = am * f64::EPSILON;
     let gm: f64 = {
         let sum_log: f64 = mags
             .iter()
-            .map(|&m| {
-                if m > f64::EPSILON
-                {
-                    m.ln()
-                }
-                else
-                {
-                    f64::NEG_INFINITY
-                }
-            })
+            .map(|&m| if m > floor { m.ln() } else { f64::NEG_INFINITY })
             .sum();
         if sum_log.is_finite()
         {
@@ -1197,5 +1202,107 @@ mod tests {
         // Single-bin (DC only) is also degenerate and must return 0.0.
         let dc = vec![Complex::new(1.0, 0.0)];
         assert_eq!(band_power(&dc, 8.0, 1.0, 2.0), 0.0);
+    }
+}
+
+#[cfg(test)]
+mod scale_invariance_tests {
+    use super::*;
+    use crate::fft::fft_real;
+
+    /// A deterministic broadband record with no empty bins.
+    fn broadband(n: usize) -> Vec<f64> {
+        (0..n).map(|i| ((i * 37) % 11) as f64 - 5.0).collect()
+    }
+
+    fn scaled(x: &[f64], c: f64) -> Vec<f64> {
+        x.iter().map(|v| v * c).collect()
+    }
+
+    fn rel(a: f64, b: f64) -> f64 {
+        (a - b).abs() / b.abs().max(f64::MIN_POSITIVE)
+    }
+
+    #[test]
+    fn centroid_spread_flatness_and_entropy_do_not_depend_on_the_units() {
+        // Each of these statistics is a ratio in which the signal amplitude
+        // cancels: multiplying the record by c multiplies every magnitude by
+        // |c| and every power by c², and the answer must not move. They used
+        // to compare sums against an absolute `f64::EPSILON`, so a record in
+        // small units (strain, volts from a sensor, pascals) was reported as
+        // silent: centroid 0 Hz, spread 0 Hz, flatness 0, entropy 0.
+        let rate = 1024.0;
+        let base = broadband(1024);
+        let spec = fft_real(&base);
+        let p = psd(&spec, 1024);
+        for c in [1e-3, 1e-6, 1e-9, 1e-12, 1e-15, 1e3, 1e6]
+        {
+            let s = fft_real(&scaled(&base, c));
+            let q = psd(&s, 1024);
+            let pairs = [
+                (
+                    "spectral_centroid",
+                    spectral_centroid(&s, rate),
+                    spectral_centroid(&spec, rate),
+                ),
+                (
+                    "spectral_spread",
+                    spectral_spread(&s, rate),
+                    spectral_spread(&spec, rate),
+                ),
+                (
+                    "psd_centroid",
+                    psd_centroid(&q, rate),
+                    psd_centroid(&p, rate),
+                ),
+                ("psd_spread", psd_spread(&q, rate), psd_spread(&p, rate)),
+                ("psd_flatness", psd_flatness(&q), psd_flatness(&p)),
+                (
+                    "spectral_flatness",
+                    spectral_flatness(&s),
+                    spectral_flatness(&spec),
+                ),
+                (
+                    "spectral_entropy",
+                    spectral_entropy(&s),
+                    spectral_entropy(&spec),
+                ),
+            ];
+            for (name, got, want) in pairs
+            {
+                assert!(want > 0.0, "{name}: baseline must be non-degenerate");
+                assert!(
+                    rel(got, want) < 1e-12,
+                    "{name} at scale {c:e}: {got} vs {want} at unit scale"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_record_of_zeros_is_still_degenerate_at_every_scale() {
+        // The guards still catch the case they exist for: no energy at all.
+        let zeros = vec![Complex::zero(); 9];
+        assert_eq!(spectral_centroid(&zeros, 8.0), 0.0);
+        assert_eq!(spectral_spread(&zeros, 8.0), 0.0);
+        assert_eq!(spectral_flatness(&zeros), 0.0);
+        assert_eq!(spectral_entropy(&zeros), 0.0);
+        assert_eq!(psd_centroid(&[0.0; 9], 8.0), 0.0);
+        assert_eq!(psd_spread(&[0.0; 9], 8.0), 0.0);
+        assert_eq!(psd_flatness(&[0.0; 9]), 0.0);
+    }
+
+    #[test]
+    fn an_on_bin_tone_is_still_maximally_tonal_at_small_scale() {
+        // The relative floor keeps the documented saturation: the leakage
+        // bins of an exactly-on-bin tone are rounding noise at every scale.
+        let tone: Vec<f64> = (0..1024)
+            .map(|i| (std::f64::consts::TAU * 64.0 * i as f64 / 1024.0).sin())
+            .collect();
+        for c in [1.0, 1e-9]
+        {
+            let s = fft_real(&scaled(&tone, c));
+            assert_eq!(psd_flatness(&psd(&s, 1024)), 0.0, "scale {c:e}");
+        }
     }
 }
