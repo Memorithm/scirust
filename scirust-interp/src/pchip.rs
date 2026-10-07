@@ -116,7 +116,10 @@ fn compute_slopes(xs: &[f64], ys: &[f64]) -> Vec<f64> {
     {
         let dl = delta[k - 1];
         let dr = delta[k];
-        if dl * dr <= 0.0
+        // Compare signs rather than testing `dl * dr <= 0`: the product of
+        // two small secants (|dl|, |dr| ≲ 1e-162) underflows to zero and
+        // would wrongly flatten every interior node of small-scale data.
+        if sign(dl) * sign(dr) <= 0.0
         {
             // Sign change or a zero secant → local extremum → flat.
             d[k] = 0.0;
@@ -125,13 +128,27 @@ fn compute_slopes(xs: &[f64], ys: &[f64]) -> Vec<f64> {
         {
             let w1 = 2.0 * h[k] + h[k - 1];
             let w2 = h[k] + 2.0 * h[k - 1];
-            d[k] = (w1 + w2) / (w1 / dl + w2 / dr);
+            d[k] = weighted_harmonic_mean(w1, w2, dl, dr);
         }
     }
 
     d[0] = edge_slope(h[0], h[1], delta[0], delta[1]);
     d[n - 1] = edge_slope(h[n - 2], h[n - 3], delta[n - 2], delta[n - 3]);
     d
+}
+
+/// Weighted harmonic mean `(w1 + w2) / (w1 / a + w2 / b)` of two same-sign,
+/// non-zero slopes, evaluated without overflow or underflow.
+///
+/// Both slopes are divided by the larger magnitude `m` first, so one of the
+/// normalised slopes is `±1` and the product `a' * b'` cannot underflow
+/// beyond the smaller slope itself. The naive form overflows to infinity
+/// (and returns 0) once `w / a` exceeds `f64::MAX`, e.g. for slopes near
+/// `1e-308`.
+fn weighted_harmonic_mean(w1: f64, w2: f64, a: f64, b: f64) -> f64 {
+    let m = a.abs().max(b.abs());
+    let (an, bn) = (a / m, b / m);
+    m * ((w1 + w2) * (an * bn) / (w1 * bn + w2 * an))
 }
 
 /// Three-valued sign with `sign(0) == 0` (unlike `f64::signum`).
