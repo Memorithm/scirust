@@ -6,7 +6,8 @@
 //! probability in the platform traces back to one validated numeric base.
 
 use scirust_special::{
-    erfc, ln_beta, ln_gamma, regularized_gamma_p, regularized_gamma_q, regularized_incomplete_beta,
+    binom_deviance, erfc, ln_beta, ln_gamma, regularized_gamma_p, regularized_gamma_q,
+    regularized_incomplete_beta, stirling_error,
 };
 
 use crate::rng::SplitMix64;
@@ -454,6 +455,10 @@ impl Distribution for Uniform {
 //  Gamma & Chi-squared                                         //
 // ============================================================ //
 
+// Shapes at or above this use the saddle-point density in `Gamma::pdf`
+// (`k − 1 ≥ 1`, so the Stirling remainder `δ(k − 1)` stays finite).
+const GAMMA_PDF_SADDLE_MIN: f64 = 2.0;
+
 /// Gamma distribution with shape `k > 0` and scale `θ > 0`.
 #[derive(Debug, Clone, Copy)]
 pub struct Gamma {
@@ -478,7 +483,21 @@ impl Distribution for Gamma {
         }
         let k = self.shape;
         let t = self.scale;
-        ((k - 1.0) * x.ln() - x / t - k * t.ln() - ln_gamma(k)).exp()
+        if k < GAMMA_PDF_SADDLE_MIN
+        {
+            return ((k - 1.0) * x.ln() - x / t - k * t.ln() - ln_gamma(k)).exp();
+        }
+        // `y^(k−1)·e^(−y)/Γ(k)` with `y = x/θ` is the Poisson "pmf" at
+        // `k − 1` with rate `y`; Loader's saddle-point form of it (R's
+        // `dgamma`) avoids the `ε·k·ln k` cancellation of the direct
+        // exponent, which near the mode costs ~5e-5 relative at `k = 1e10`.
+        let y = x / t;
+        if y.is_infinite()
+        {
+            return 0.0;
+        }
+        let m = k - 1.0;
+        (-stirling_error(m) - binom_deviance(m, y) - 0.5 * (2.0 * PI * m).ln()).exp() / t
     }
     fn cdf(&self, x: f64) -> f64 {
         if x <= 0.0
