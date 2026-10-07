@@ -900,3 +900,17 @@ pascal_vector_projection_program_2026_10_06:
     - SciRust_must_not_absorb_FLAT_attention_or_GPU_kernel_ownership
     - SciRust_must_not_make_NNIS_required_by_SML
 
+
+
+pvp3_native_bench_harness_2026_10_07:
+  status: PR_open_exact_head_CI_pending
+  pull_request: 1566
+  exact_head: 7021c05e20cbb613a4b9a2fbe5e8789f5fdc46fc
+  scope:
+    - dependency_free_native_scalar_AVX2_AVX512_NEON_SVE_benchmark_example
+    - scalar_and_small_case_direct_oracle_before_timing
+    - versioned_JSON_median_p95_checksum_storage_accounting
+    - explicit_no_performance_claim_boundary
+  limitation:
+    - deterministic_harness_fixture_is_not_the_SML_PVP6_corpus
+    - cross_repository_fixture_adapter_and_native_Thor_measurement_remain_pending
