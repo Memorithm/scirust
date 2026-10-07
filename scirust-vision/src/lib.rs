@@ -499,9 +499,36 @@ impl BoundingBox {
     }
 }
 
+/// Orders two scores so that NaN compares after every non-NaN value.
+///
+/// Non-NaN values keep their usual `f64::total_cmp` order; NaN (of either
+/// sign) is ranked last and equal to any other NaN, so sorting never panics.
+fn cmp_nan_last(a: f64, b: f64) -> std::cmp::Ordering {
+    match (a.is_nan(), b.is_nan())
+    {
+        (true, true) => std::cmp::Ordering::Equal,
+        (true, false) => std::cmp::Ordering::Greater,
+        (false, true) => std::cmp::Ordering::Less,
+        (false, false) => a.total_cmp(&b),
+    }
+}
+
 /// Non-Maximum Suppression to remove overlapping detections.
+///
+/// Boxes are visited by decreasing `confidence`; each kept box suppresses any
+/// later box whose IoU with it is greater than `iou_threshold`. The surviving
+/// boxes are left in `boxes`, sorted by decreasing confidence.
+///
+/// A box whose confidence is NaN (for example a detector output that
+/// overflowed) is ranked after every box with a numeric confidence, so it never
+/// suppresses a scored box; it can still be suppressed by one. Boxes with equal
+/// confidence keep their input order.
 pub fn nms(boxes: &mut Vec<BoundingBox>, iou_threshold: f64) {
-    boxes.sort_by(|a, b| b.confidence.partial_cmp(&a.confidence).unwrap());
+    boxes.sort_by(|a, b| match (a.confidence.is_nan(), b.confidence.is_nan())
+    {
+        (false, false) => b.confidence.total_cmp(&a.confidence),
+        _ => cmp_nan_last(a.confidence, b.confidence),
+    });
     let mut keep = vec![true; boxes.len()];
 
     for i in 0..boxes.len()
@@ -528,6 +555,13 @@ pub fn nms(boxes: &mut Vec<BoundingBox>, iou_threshold: f64) {
 }
 
 /// Template matching using sum of squared differences (SSD).
+///
+/// Returns every placement `(x, y, ssd)` of `template` inside `image`, sorted
+/// by increasing SSD (best match first; ties keep row-major scan order). An
+/// empty vector is returned when the template is larger than the image.
+/// Placements whose SSD is NaN (a NaN pixel under the template) are ranked
+/// after every numeric SSD, so they never become the best match while a
+/// numeric one exists.
 pub fn template_match(image: &Image, template: &Image) -> Vec<(usize, usize, f64)> {
     let mut results = Vec::new();
     let tw = template.width;
@@ -555,11 +589,14 @@ pub fn template_match(image: &Image, template: &Image) -> Vec<(usize, usize, f64
         }
     }
 
-    results.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap());
+    results.sort_by(|a, b| cmp_nan_last(a.2, b.2));
     results
 }
 
 /// Match template and return best match location.
+///
+/// This is the first entry of [`template_match`]: the placement with the
+/// smallest SSD, or `None` when the template is larger than the image.
 pub fn match_template_best(image: &Image, template: &Image) -> Option<(usize, usize, f64)> {
     template_match(image, template).into_iter().next()
 }
@@ -1141,6 +1178,72 @@ mod tests {
         ];
         nms(&mut boxes, 0.5);
         assert_eq!(boxes.len(), 2); // overlapping pair + distant box
+    }
+
+    fn scored_box(x: f64, confidence: f64, name: &str) -> BoundingBox {
+        BoundingBox {
+            x,
+            y: 0.0,
+            width: 10.0,
+            height: 10.0,
+            confidence,
+            class_id: 0,
+            class_name: name.into(),
+        }
+    }
+
+    // Regression: `nms` sorted with `partial_cmp().unwrap()` and panicked as soon
+    // as one confidence was NaN.
+    #[test]
+    fn nms_ranks_nan_confidence_last_instead_of_panicking() {
+        let mut boxes = vec![
+            scored_box(0.0, f64::NAN, "nan"),
+            scored_box(1.0, 0.6, "low"),
+            scored_box(100.0, 0.9, "far"),
+            scored_box(2.0, 0.8, "high"),
+        ];
+        nms(&mut boxes, 0.5);
+        let names: Vec<&str> = boxes.iter().map(|b| b.class_name.as_str()).collect();
+        // "high" suppresses "low" and the overlapping NaN box; "far" survives.
+        assert_eq!(names, ["far", "high"]);
+
+        // A NaN box that overlaps nothing is kept, after the scored boxes.
+        let mut boxes = vec![
+            scored_box(500.0, -f64::NAN, "nan"),
+            scored_box(0.0, 0.1, "a"),
+        ];
+        nms(&mut boxes, 0.5);
+        let names: Vec<&str> = boxes.iter().map(|b| b.class_name.as_str()).collect();
+        assert_eq!(names, ["a", "nan"]);
+    }
+
+    #[test]
+    fn nms_keeps_input_order_for_equal_confidence() {
+        let mut boxes = vec![
+            scored_box(0.0, 0.5, "first"),
+            scored_box(1.0, 0.5, "second"),
+        ];
+        nms(&mut boxes, 0.5);
+        assert_eq!(boxes.len(), 1);
+        assert_eq!(boxes[0].class_name, "first");
+    }
+
+    // Regression: `template_match` sorted SSDs with `partial_cmp().unwrap()` and
+    // panicked when a NaN pixel made some SSD NaN.
+    #[test]
+    fn template_match_ranks_nan_ssd_last_instead_of_panicking() {
+        let mut image = Image::new(6, 6);
+        image.set(4, 4, 1.0);
+        image.set(0, 0, f64::NAN);
+        let template = Image::from_vec(2, 2, vec![1.0, 0.0, 0.0, 0.0]);
+        let results = template_match(&image, &template);
+        assert_eq!(results.len(), 25);
+        assert_eq!(results[0], (4, 4, 0.0));
+        assert!(results.last().unwrap().2.is_nan());
+        let first_nan = results.iter().position(|r| r.2.is_nan()).unwrap();
+        assert!(results[first_nan..].iter().all(|r| r.2.is_nan()));
+        assert!(results[..first_nan].windows(2).all(|w| w[0].2 <= w[1].2));
+        assert_eq!(match_template_best(&image, &template), Some((4, 4, 0.0)));
     }
 
     #[test]
