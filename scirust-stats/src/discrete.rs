@@ -2949,10 +2949,14 @@ mod tests {
         let b = Boltzmann::new(1e-6, 100);
         assert!(rel(b.mean(), 49.499_166_750_000_139, 1e-13));
         assert!(rel(b.variance(), 833.249_999_583_333_3, 1e-13));
-        // Large-rate branch unchanged.
+        // Large-rate branch unchanged. Its variance goes through `sinh`, and
+        // h(λ) − N²·h(λN) loses a factor ≈ 6.7 to cancellation here, so the
+        // few ulp of libm error that Miri deliberately injects into
+        // transcendental functions reach ≈ 1.1e-14 relative; 1e-13 keeps
+        // headroom (the bugs guarded against here were ≥ 3.8 % off).
         let b = Boltzmann::new(0.5, 4);
         assert!(rel(b.mean(), 0.915_423_511_538_135_7, 1e-14));
-        assert!(rel(b.variance(), 1.021_451_445_167_521_9, 1e-14));
+        assert!(rel(b.variance(), 1.021_451_445_167_521_9, 1e-13));
         let b = Boltzmann::new(1e-3, 5);
         assert!(rel(b.mean(), 1.998_000_000_866_666, 1e-14));
         assert!(rel(b.variance(), 1.999_997_400_002_583_3, 1e-14));
