@@ -745,70 +745,74 @@ pub fn ln_binomial_pmf(k: u64, n: u64, p: f64) -> f64 {
 //  Bessel functions                                            //
 // ============================================================ //
 
-// Above this |x|, the log-series for Y0/Y1 below loses accuracy to
-// cancellation (its terms grow before they shrink, the well-known reason
-// production libraries switch strategies past a moderate argument — Numerical
-// Recipes §6.5) faster than the asymptotic expansion's error shrinks;
-// empirically cross-checked against `scipy.special.yv` up to x = 40, both
-// sides agree to ~1e-9 relative in a neighborhood of this threshold.
-const BESSEL_Y_ASYMPTOTIC_THRESHOLD: f64 = 15.0;
+// At or below this |x|, `Jₙ` comes straight from its power series: the
+// series' terms shrink by at least a factor `x²/4 ≤ 1/4` per step, so it has
+// no cancellation, and — unlike Miller's recurrence, whose `2k/x` factors
+// overflow once `x` is tiny — it stays finite down to the smallest subnormal.
+const BESSEL_J_SERIES_MAX: f64 = 1.0;
 
-/// Bessel function of the first kind, integer order `n`, `Jₙ(x)`.
+// Below this `x`, `Y₀`/`Y₁` come from their log series (no significant
+// cancellation yet: the largest term is O(1) for `x < 2`).
+const BESSEL_Y_LOG_SERIES_MAX: f64 = 2.0;
+
+// From this `x` upward, `J₀`, `J₁`, `Y₀`, `Y₁` come from the Hankel asymptotic
+// expansion (DLMF 10.17.3–4). Its terms keep shrinking until `k ≈ 2x`, so at
+// `x ≥ 25` the smallest term is ~e⁻⁵⁰, far below `f64` resolution, and the
+// truncated series is accurate to rounding. Below it, the log series loses
+// digits to cancellation (its terms grow like `I₀(x)` before they shrink),
+// which is why the range between the two thresholds uses the Neumann series
+// over Miller-computed `J₂ₖ` instead.
+const BESSEL_ASYMPTOTIC_MIN: f64 = 25.0;
+
+/// `Jₙ(x)` for `0 < x ≤ BESSEL_J_SERIES_MAX` from the power series
+/// `Jₙ(x) = (x/2)ⁿ/n! · Σₖ (−x²/4)ᵏ / (k!·(n+1)ₖ)` (DLMF 10.2.2).
 ///
-/// Computed via Miller's algorithm (Numerical Recipes §6.5; Abramowitz &
-/// Stegun §9.1.27): the three-term recurrence `J_{k−1}(x) = (2k/x)·Jₖ(x) −
-/// J_{k+1}(x)` is numerically *unstable* run upward but *stable* run
-/// downward, so starting from an arbitrary seed at an order well above both
-/// `n` and `x` and recursing down to `0` washes out the seed's influence by
-/// the time the target order is reached; the whole downward-computed
-/// sequence is then pinned to the correct absolute scale via the closed-form
-/// identity `J₀(x) + 2·Σ_{k=1}^∞ J₂ₖ(x) = 1`. Unlike a direct power-series
-/// evaluation, this has no cancellation issues at any `x`, since the
-/// recurrence itself is unconditionally stable in the downward direction.
+/// The prefactor is built as a running product of factors `(x/2)/k < 1`, so
+/// it decreases monotonically and only underflows when the true value does
+/// (it then returns `0` early instead of looping over a huge order).
+fn bessel_j_series(n: i64, x: f64) -> f64 {
+    let h = 0.5 * x;
+    let mut prefactor = 1.0f64;
+    for k in 1..=n
+    {
+        prefactor *= h / k as f64;
+        if prefactor == 0.0
+        {
+            return 0.0;
+        }
+    }
+    let q = -h * h;
+    let mut term = 1.0f64;
+    let mut sum = 1.0f64;
+    for k in 1..MAX_ITERS as i64
+    {
+        term *= q / (k as f64 * (n + k) as f64);
+        sum += term;
+        if term.abs() <= 1e-17 * sum.abs()
+        {
+            break;
+        }
+    }
+    prefactor * sum
+}
+
+/// `Jₙ(x)` for `x > BESSEL_J_SERIES_MAX` via Miller's algorithm (Numerical
+/// Recipes §6.5; Abramowitz & Stegun §9.1.27): the three-term recurrence
+/// `J_{k−1}(x) = (2k/x)·Jₖ(x) − J_{k+1}(x)` is numerically *unstable* run
+/// upward but *stable* run downward, so starting from an arbitrary seed at an
+/// order well above both `n` and `x` and recursing down to `0` washes out the
+/// seed's influence by the time the target order is reached; the whole
+/// downward-computed sequence is then pinned to the correct absolute scale via
+/// the closed-form identity `J₀(x) + 2·Σ_{k=1}^∞ J₂ₖ(x) = 1`.
 ///
-/// `Jₙ(−x) = (−1)ⁿ Jₙ(x)` and `J₋ₙ(x) = (−1)ⁿ Jₙ(x)` (standard parity
-/// relations for integer order) handle negative `n`/`x`.
-pub fn bessel_j(n: i32, x: f64) -> f64 {
-    if x.is_nan()
-    {
-        return f64::NAN;
-    }
-    if n < 0
-    {
-        let sign = if n % 2 == 0 { 1.0 } else { -1.0 };
-        return sign * bessel_j(-n, x);
-    }
-    if x == 0.0
-    {
-        return if n == 0 { 1.0 } else { 0.0 };
-    }
-    if x < 0.0
-    {
-        let sign = if n % 2 == 0 { 1.0 } else { -1.0 };
-        return sign * bessel_j(n, -x);
-    }
-
-    let n = n as i64;
-    // Starting order comfortably above both n and x: Jₖ(x) decays roughly
-    // like (x/2)^k/k! once k >> x, so ~20 extra buffer orders (plus a
-    // sqrt(x)-scaled margin for the width of the transition region around
-    // k ≈ x) reduce the seed's influence at the target order to well below
-    // f64 precision.
-    let m_start_raw = (n.max(x.ceil() as i64) as f64 + 20.0 + (40.0 * x).sqrt()) as i64;
-    let m_start = if m_start_raw % 2 == 0
-    {
-        m_start_raw
-    }
-    else
-    {
-        m_start_raw + 1
-    };
-
+/// The cost is `O(max(n, x))`, which is why large `x` with `n ≤ x` goes
+/// through the Hankel expansion instead.
+fn bessel_j_miller(n: i64, x: f64) -> f64 {
+    let m_start = miller_start_order(n, x);
     let mut j_kp1 = 0.0f64;
     let mut j_k = 1.0e-30f64;
     let mut target_unnorm = 0.0f64;
     let mut sum = 0.0f64; // accumulates J0 + 2*(J2 + J4 + ...)
-
     let mut k = m_start;
     while k >= 1
     {
@@ -839,8 +843,188 @@ pub fn bessel_j(n: i32, x: f64) -> f64 {
     target_unnorm / sum
 }
 
+/// Even starting order for Miller's downward recurrence, comfortably above
+/// both `n` and `x`: Jₖ(x) decays roughly like (x/2)^k/k! once k >> x, so ~20
+/// extra buffer orders (plus a sqrt(x)-scaled margin for the width of the
+/// transition region around k ≈ x) reduce the seed's influence at the target
+/// order to well below f64 precision.
+fn miller_start_order(n: i64, x: f64) -> i64 {
+    let m_raw = (n.max(x.ceil() as i64) as f64 + 20.0 + (40.0 * x).sqrt()) as i64;
+    m_raw + (m_raw & 1)
+}
+
+/// Normalized `[J₀(x), J₁(x), …, J_m(x)]` for `1 < x < BESSEL_ASYMPTOTIC_MIN`
+/// from the same Miller sweep as [`bessel_j_miller`], keeping every order
+/// (used by the Neumann series for `Y₀`, `Y₁`).
+fn bessel_j_miller_sequence(x: f64) -> Vec<f64> {
+    let m = miller_start_order(0, x);
+    let mut seq = vec![0.0f64; m as usize + 1];
+    let mut j_kp1 = 0.0f64;
+    let mut j_k = 1.0e-30f64;
+    seq[m as usize] = j_k;
+    let mut sum = 0.0f64; // J0 + 2*(J2 + J4 + ...), unnormalized
+    let mut k = m;
+    while k >= 1
+    {
+        let j_km1 = (2.0 * k as f64 / x) * j_k - j_kp1;
+        j_kp1 = j_k;
+        j_k = j_km1;
+        let idx = (k - 1) as usize;
+        seq[idx] = j_k;
+        // The unnormalized sequence grows a lot between the (deliberately
+        // tiny) seed and the O(1) values near k ≈ x; rescale everything
+        // computed so far before it can overflow.
+        if j_k.abs() > 1e250
+        {
+            j_k *= 1e-250;
+            j_kp1 *= 1e-250;
+            sum *= 1e-250;
+            for v in &mut seq[idx..]
+            {
+                *v *= 1e-250;
+            }
+        }
+        if idx.is_multiple_of(2)
+        {
+            sum += if idx == 0 { 1.0 } else { 2.0 } * j_k;
+        }
+        k -= 1;
+    }
+    for v in &mut seq
+    {
+        *v /= sum;
+    }
+    seq
+}
+
+/// `(Jₙ(x), Yₙ(x))` from the Hankel asymptotic expansion (DLMF 10.17.3–4):
+/// `Jₙ = √(2/(πx))·(P·cos χ − Q·sin χ)`, `Yₙ = √(2/(πx))·(P·sin χ + Q·cos χ)`,
+/// `χ = x − (n/2 + 1/4)π`, with `P`, `Q` summed until their terms stop
+/// shrinking or drop below rounding.
+///
+/// The phase is not formed as `x − (n/2 + 1/4)π` (which, for large `x`,
+/// discards the low bits of `x` and costs ~`x·ε` absolute error); instead
+/// `cos χ`/`sin χ` are rebuilt from `sin x`, `cos x` (whose argument reduction
+/// is exact) and the exact constants `cos(π/4) = sin(π/4) = 1/√2`.
+fn bessel_hankel(n: i32, x: f64) -> (f64, f64) {
+    let nu = f64::from(n);
+    let mu = 4.0 * nu * nu;
+    let inv_8x = 1.0 / (8.0 * x);
+    let mut p = 1.0f64;
+    let mut q = 0.0f64;
+    let mut term = 1.0f64;
+    let mut prev = f64::INFINITY;
+    for k in 1..=100u32
+    {
+        let odd = f64::from(2 * k - 1);
+        term *= (mu - odd * odd) * inv_8x / f64::from(k);
+        let size = term.abs();
+        if size > prev
+        {
+            // Asymptotic series: stop at its smallest term.
+            break;
+        }
+        match k % 4
+        {
+            1 => q += term,
+            2 => p -= term,
+            3 => q -= term,
+            _ => p += term,
+        }
+        if size <= 1e-17 * p.abs().max(q.abs())
+        {
+            break;
+        }
+        prev = size;
+    }
+    let (s, c) = x.sin_cos();
+    // cos/sin of x − π/4, times √2 (the 1/√2 is folded into the amplitude).
+    let (c0, s0) = (c + s, s - c);
+    let (cos_chi, sin_chi) = match n.rem_euclid(4)
+    {
+        0 => (c0, s0),
+        1 => (s0, -c0),
+        2 => (-c0, -s0),
+        _ => (-s0, c0),
+    };
+    // √(2/(πx))/√2 = 1/(√π·√x), split so that πx cannot overflow.
+    let amp = 1.0 / (PI.sqrt() * x.sqrt());
+    (
+        amp * (p * cos_chi - q * sin_chi),
+        amp * (p * sin_chi + q * cos_chi),
+    )
+}
+
+/// Bessel function of the first kind, integer order `n`, `Jₙ(x)`.
+///
+/// Three regimes, each accurate to a few units of rounding in its range:
+/// - `|x| ≤ 1`: the power series (no cancellation; correct down to
+///   subnormal `x`, where `Jₙ(x) ≈ (x/2)ⁿ/n!` underflows to `0` exactly when
+///   the true value does);
+/// - `1 < |x| < 25`, or `n > |x|`: Miller's downward recurrence normalized by
+///   `J₀ + 2·Σ J₂ₖ = 1`;
+/// - `|x| ≥ 25` and `n ≤ |x|`: `J₀`, `J₁` from the Hankel asymptotic
+///   expansion, then the upward recurrence `J_{k+1} = (2k/x)·Jₖ − J_{k−1}`,
+///   which is stable while `k < x`. The cost is `O(n)` instead of `O(x)`, so
+///   huge arguments (`x = 1e12`, `1e300`) return immediately.
+///
+/// `Jₙ(−x) = (−1)ⁿ Jₙ(x)` and `J₋ₙ(x) = (−1)ⁿ Jₙ(x)` (standard parity
+/// relations for integer order) handle negative `n`/`x`. `Jₙ(±∞) = 0` and
+/// `Jₙ(NaN) = NaN`.
+pub fn bessel_j(n: i32, x: f64) -> f64 {
+    if x.is_nan()
+    {
+        return f64::NAN;
+    }
+    if n < 0
+    {
+        let sign = if n % 2 == 0 { 1.0 } else { -1.0 };
+        return sign * bessel_j_nonneg(-i64::from(n), x);
+    }
+    bessel_j_nonneg(i64::from(n), x)
+}
+
+/// [`bessel_j`] for `n ≥ 0` (as `i64`, so that `−i32::MIN` is representable).
+fn bessel_j_nonneg(n: i64, x: f64) -> f64 {
+    if x < 0.0
+    {
+        let sign = if n % 2 == 0 { 1.0 } else { -1.0 };
+        return sign * bessel_j_nonneg(n, -x);
+    }
+    if x == 0.0
+    {
+        return if n == 0 { 1.0 } else { 0.0 };
+    }
+    if x.is_infinite()
+    {
+        return 0.0;
+    }
+    if x <= BESSEL_J_SERIES_MAX
+    {
+        return bessel_j_series(n, x);
+    }
+    if x >= BESSEL_ASYMPTOTIC_MIN && (n as f64) <= x
+    {
+        let j0 = bessel_hankel(0, x).0;
+        if n == 0
+        {
+            return j0;
+        }
+        let mut j_km1 = j0;
+        let mut j_k = bessel_hankel(1, x).0;
+        for k in 1..n
+        {
+            let j_kp1 = (2.0 * k as f64 / x) * j_k - j_km1;
+            j_km1 = j_k;
+            j_k = j_kp1;
+        }
+        return j_k;
+    }
+    bessel_j_miller(n, x)
+}
+
 /// `Y₀(x)` via the log series (Abramowitz & Stegun 9.1.13; DLMF 10.8.1),
-/// accurate for `x` below [`BESSEL_Y_ASYMPTOTIC_THRESHOLD`]:
+/// used for `x` below [`BESSEL_Y_LOG_SERIES_MAX`]:
 /// `Y₀(x) = (2/π)(ln(x/2) + γ)·J₀(x) − (2/π)·Σ_{k=1}^∞ (−1)ᵏ Hₖ/(k!)² (x/2)^{2k}`,
 /// where `Hₖ` is the `k`-th harmonic number.
 fn bessel_y0_series(x: f64) -> f64 {
@@ -865,8 +1049,8 @@ fn bessel_y0_series(x: f64) -> f64 {
     (2.0 / PI) * (z.ln() + EULER_MASCHERONI) * j0 - (2.0 / PI) * sum
 }
 
-/// `Y₁(x)` via its log series, accurate for `x` below
-/// [`BESSEL_Y_ASYMPTOTIC_THRESHOLD`]:
+/// `Y₁(x)` via its log series, used for `x` below
+/// [`BESSEL_Y_LOG_SERIES_MAX`]:
 /// `Y₁(x) = (2/π)(ln(x/2) + γ)·J₁(x) − 2/(πx) − (1/π)·Σ_{k=0}^∞ (−1)ᵏ (Hₖ +
 /// H_{k+1})/(k!(k+1)!) (x/2)^{2k+1}`. Derived from the general `Yₙ` series
 /// (DLMF 10.8.1) by recognizing the `γ`-independent part of the digamma
@@ -894,112 +1078,101 @@ fn bessel_y1_series(x: f64) -> f64 {
     (2.0 / PI) * (z.ln() + EULER_MASCHERONI) * j1 - 2.0 / (PI * x) - (1.0 / PI) * sum
 }
 
-/// `(Jₙ, Yₙ)` for `n ∈ {0, 1}` via the shared large-`x` asymptotic expansion
-/// (Abramowitz & Stegun 9.2.5–9.2.10), accurate from
-/// [`BESSEL_Y_ASYMPTOTIC_THRESHOLD`] upward — precisely where the log series
-/// above starts losing accuracy to cancellation.
-fn bessel_01_asymptotic(n: i32, x: f64) -> (f64, f64) {
-    let mu = 4.0 * (n as f64) * (n as f64);
-    let chi = x - (n as f64 / 2.0 + 0.25) * PI;
-    let z = 8.0 * x;
-
-    // P(n,x) = 1 - (mu-1)(mu-9)/(2! z^2) + (mu-1)(mu-9)(mu-25)(mu-49)/(4! z^4) - ...
-    let mut p = 1.0f64;
-    let mut sign = -1.0f64;
-    for k in 1..=3usize
+/// `(Y₀(x), Y₁(x))` from the Neumann series over Miller-computed `Jₖ(x)`,
+/// used for `BESSEL_Y_LOG_SERIES_MAX ≤ x < BESSEL_ASYMPTOTIC_MIN`:
+/// - `Y₀ = (2/π)·[(ln(x/2) + γ)·J₀ − 2·Σ_{k≥1} (−1)ᵏ J₂ₖ/k]` (Neumann's
+///   expansion of `Y₀` in even-order `J`s, Abramowitz & Stegun §9.1);
+/// - `Y₁ = −Y₀′ = (2/π)·[(ln(x/2) + γ)·J₁ − J₀/x + Σ_{k≥1} (−1)ᵏ (J₂ₖ₋₁ −
+///   J₂ₖ₊₁)/k]`, from differentiating the `Y₀` series term by term with
+///   `J₀′ = −J₁` and `2Jₘ′ = Jₘ₋₁ − Jₘ₊₁`.
+///
+/// Every `Jₖ` is bounded by 1 and the sums converge once `2k` passes `x`, so
+/// unlike the log series there is no growth-then-cancellation.
+fn bessel_y01_neumann(x: f64) -> (f64, f64) {
+    let j = bessel_j_miller_sequence(x);
+    let ln_term = (0.5 * x).ln() + EULER_MASCHERONI;
+    let mut s0 = 0.0f64;
+    let mut s1 = 0.0f64;
+    let mut k = 1usize;
+    while 2 * k + 1 < j.len()
     {
-        let mut num = 1.0;
-        for i in 0..(2 * k)
-        {
-            let odd = (2 * i + 1) as f64;
-            num *= mu - odd * odd;
-        }
-        let fact: f64 = (1..=(2 * k)).map(|v| v as f64).product();
-        p += sign * num / (fact * z.powi(2 * k as i32));
-        sign = -sign;
+        let sign = if k % 2 == 1 { -1.0 } else { 1.0 };
+        let kf = k as f64;
+        s0 += sign * j[2 * k] / kf;
+        s1 += sign * (j[2 * k - 1] - j[2 * k + 1]) / kf;
+        k += 1;
     }
-
-    // Q(n,x) = (mu-1)/z - (mu-1)(mu-9)(mu-25)/(3! z^3) + (mu-1)...(mu-81)/(5! z^5) - ...
-    let mut q = (mu - 1.0) / z;
-    let num3 = (mu - 1.0) * (mu - 9.0) * (mu - 25.0);
-    q -= num3 / (6.0 * z.powi(3));
-    let num5 = num3 * (mu - 49.0) * (mu - 81.0);
-    q += num5 / (120.0 * z.powi(5));
-
-    let amp = (2.0 / (PI * x)).sqrt();
-    let j = amp * (p * chi.cos() - q * chi.sin());
-    let y = amp * (p * chi.sin() + q * chi.cos());
-    (j, y)
+    let y0 = (2.0 / PI) * (ln_term * j[0] - 2.0 * s0);
+    let y1 = (2.0 / PI) * (ln_term * j[1] - j[0] / x + s1);
+    (y0, y1)
 }
 
-/// `Y₀(x)`: log series below [`BESSEL_Y_ASYMPTOTIC_THRESHOLD`], asymptotic
-/// expansion above.
-fn bessel_y0(x: f64) -> f64 {
-    if x < BESSEL_Y_ASYMPTOTIC_THRESHOLD
+/// `(Y₀(x), Y₁(x))` for `x > 0`, from whichever method is accurate there.
+fn bessel_y01(x: f64) -> (f64, f64) {
+    if x < BESSEL_Y_LOG_SERIES_MAX
     {
-        bessel_y0_series(x)
+        (bessel_y0_series(x), bessel_y1_series(x))
+    }
+    else if x < BESSEL_ASYMPTOTIC_MIN
+    {
+        bessel_y01_neumann(x)
     }
     else
     {
-        bessel_01_asymptotic(0, x).1
-    }
-}
-
-/// `Y₁(x)`: log series below [`BESSEL_Y_ASYMPTOTIC_THRESHOLD`], asymptotic
-/// expansion above.
-fn bessel_y1(x: f64) -> f64 {
-    if x < BESSEL_Y_ASYMPTOTIC_THRESHOLD
-    {
-        bessel_y1_series(x)
-    }
-    else
-    {
-        bessel_01_asymptotic(1, x).1
+        (bessel_hankel(0, x).1, bessel_hankel(1, x).1)
     }
 }
 
 /// Bessel function of the second kind (Neumann function), integer order `n`,
 /// `Yₙ(x)`, for `x > 0`.
 ///
-/// `Y₀`/`Y₁` come from `bessel_y0`/`bessel_y1` (log series or asymptotic
-/// expansion, whichever is accurate at that `x`); higher orders follow via
-/// the three-term recurrence `Y_{k+1}(x) = (2k/x)·Yₖ(x) − Y_{k−1}(x)`, which
-/// — unlike `Jₙ`'s — is numerically *stable* run upward, so no Miller-style
-/// downward sweep is needed. `Y₋ₙ(x) = (−1)ⁿ Yₙ(x)` handles negative `n`.
+/// `Y₀`/`Y₁` come from the log series (`x < 2`), the Neumann series over
+/// Miller-computed `Jₖ` (`2 ≤ x < 25`) or the Hankel asymptotic expansion
+/// (`x ≥ 25`); higher orders follow via the three-term recurrence
+/// `Y_{k+1}(x) = (2k/x)·Yₖ(x) − Y_{k−1}(x)`, which — unlike `Jₙ`'s — is
+/// numerically *stable* run upward. When `|Yₙ(x)|` exceeds the `f64` range
+/// (large `n`, small `x`, where `Yₙ(x) → −∞`), the result is `−∞` rather than
+/// the `NaN` an `∞ − ∞` step in the recurrence would produce.
+/// `Y₋ₙ(x) = (−1)ⁿ Yₙ(x)` handles negative `n`.
 ///
-/// Returns `NaN` for `x < 0` (`Yₙ` is not real there) and `−∞` at `x = 0`
-/// (`Yₙ` has a logarithmic singularity at the origin for every `n`).
+/// Returns `NaN` for `x < 0` (`Yₙ` is not real there), `−∞` at `x = 0`
+/// (`Yₙ` has a logarithmic singularity at the origin for every `n`), and `0`
+/// at `x = +∞`.
 pub fn bessel_y(n: i32, x: f64) -> f64 {
-    if x.is_nan()
+    if x.is_nan() || x < 0.0
     {
         return f64::NAN;
     }
-    if x < 0.0
-    {
-        return f64::NAN;
-    }
+    let sign = if n < 0 && n % 2 != 0 { -1.0 } else { 1.0 };
+    sign * bessel_y_nonneg(i64::from(n).abs(), x)
+}
+
+/// [`bessel_y`] for `n ≥ 0`, `x ≥ 0`.
+fn bessel_y_nonneg(n: i64, x: f64) -> f64 {
     if x == 0.0
     {
         return f64::NEG_INFINITY;
     }
-    if n < 0
+    if x.is_infinite()
     {
-        let sign = if n % 2 == 0 { 1.0 } else { -1.0 };
-        return sign * bessel_y(-n, x);
+        return 0.0;
     }
+    let (y0, y1) = bessel_y01(x);
     if n == 0
     {
-        return bessel_y0(x);
+        return y0;
     }
-    if n == 1
-    {
-        return bessel_y1(x);
-    }
-    let mut y_km1 = bessel_y0(x);
-    let mut y_k = bessel_y1(x);
+    let mut y_km1 = y0;
+    let mut y_k = y1;
     for k in 1..n
     {
         let y_kp1 = (2.0 * k as f64 / x) * y_k - y_km1;
+        if !y_kp1.is_finite()
+        {
+            // |Yₖ| grows monotonically once k > x; past the f64 range it
+            // stays there, with the sign of Yₙ(x) for x < n (negative).
+            return f64::NEG_INFINITY;
+        }
         y_km1 = y_k;
         y_k = y_kp1;
     }
@@ -1476,7 +1649,7 @@ mod tests {
         for (n, x, expected) in cases
         {
             assert!(
-                close(bessel_j(n, x), expected, 1e-9),
+                close(bessel_j(n, x), expected, 1e-14),
                 "J_{n}({x}) = {} != {expected}",
                 bessel_j(n, x)
             );
@@ -1508,9 +1681,8 @@ mod tests {
 
     #[test]
     fn bessel_y_matches_scipy_reference() {
-        // scipy.special.yv(n, x), spanning both the log-series regime
-        // (x < 15) and the asymptotic regime (x >= 15) established during
-        // implementation by comparing both against scipy up to x = 40.
+        // scipy.special.yv(n, x), spanning the log-series (x < 2), Neumann
+        // series (2 <= x < 25) and Hankel asymptotic (x >= 25) regimes.
         let cases: [(i32, f64, f64); 18] = [
             (0, 0.5, -0.444_518_733_506_706_56),
             (0, 1.0, 0.088_256_964_215_677),
@@ -1534,7 +1706,7 @@ mod tests {
         for (n, x, expected) in cases
         {
             assert!(
-                close(bessel_y(n, x), expected, 1e-7),
+                close(bessel_y(n, x), expected, 1e-13),
                 "Y_{n}({x}) = {} != {expected}",
                 bessel_y(n, x)
             );
@@ -1560,48 +1732,222 @@ mod tests {
         }
     }
 
+    /// `|a − b|` relative to `max(|b|, √(2/(πx)))`: oscillatory Bessel values
+    /// pass through zero, where only an absolute error on the envelope's
+    /// scale is meaningful.
+    fn close_osc(a: f64, b: f64, x: f64, tol: f64) -> bool {
+        (a - b).abs() <= tol * b.abs().max((2.0 / (PI * x)).sqrt())
+    }
+
     #[test]
-    fn bessel_series_and_asymptotic_agree_near_the_crossover() {
-        // Independent cross-check at the exact transition point: the log
-        // series (still usable a little past its normal regime) and the
-        // asymptotic expansion (already usable a little before its normal
-        // regime) must agree with each other in an overlap window, not just
-        // individually with scipy.
-        for &x in &[13.0, 14.0, 15.0, 16.0, 17.0]
+    fn bessel_y01_methods_agree_across_both_crossovers() {
+        // Log series vs Neumann series around x = 2, Neumann series vs Hankel
+        // expansion around x = 25: three independent computations that must
+        // agree where their ranges meet.
+        for &x in &[1.5, 1.8, 2.0, 2.3, 2.6]
         {
-            assert!(close(
-                bessel_y0_series(x),
-                bessel_01_asymptotic(0, x).1,
-                1e-6
-            ));
-            assert!(close(
-                bessel_y1_series(x),
-                bessel_01_asymptotic(1, x).1,
-                1e-6
-            ));
+            let (y0, y1) = bessel_y01_neumann(x);
+            assert!(close_osc(bessel_y0_series(x), y0, x, 1e-14), "Y0({x})");
+            assert!(close_osc(bessel_y1_series(x), y1, x, 1e-14), "Y1({x})");
+        }
+        for &x in &[21.0, 23.0, 25.0, 27.0, 29.0]
+        {
+            let (y0, y1) = bessel_y01_neumann(x);
+            assert!(close_osc(bessel_hankel(0, x).1, y0, x, 1e-14), "Y0({x})");
+            assert!(close_osc(bessel_hankel(1, x).1, y1, x, 1e-14), "Y1({x})");
+            let j = bessel_j_miller_sequence(x);
+            assert!(close_osc(bessel_hankel(0, x).0, j[0], x, 1e-14), "J0({x})");
+            assert!(close_osc(bessel_hankel(1, x).0, j[1], x, 1e-14), "J1({x})");
         }
     }
 
     #[test]
     fn bessel_y_recurrence_matches_direct_asymptotic_at_high_order() {
-        // Cross-check the stable upward recurrence used for n >= 2 against
-        // the general asymptotic formula (bessel_01_asymptotic is general in
-        // n despite its name — it's only ever called with n = 0, 1 in the
-        // crate's own code path, since higher orders use the cheaper
-        // recurrence instead) evaluated directly at that same order — an
-        // independent computation, not a restatement of the recurrence.
-        for n in 2..6
+        // The stable upward recurrence used for n >= 2 against the Hankel
+        // expansion evaluated directly at that order — an independent
+        // computation, not a restatement of the recurrence.
+        for n in 2..8
         {
-            for &x in &[20.0, 30.0]
+            for &x in &[60.0, 80.0, 150.0]
             {
                 let via_recurrence = bessel_y(n, x);
-                let (_, via_asymptotic) = bessel_01_asymptotic(n, x);
+                let (_, via_asymptotic) = bessel_hankel(n, x);
                 assert!(
-                    close(via_recurrence, via_asymptotic, 1e-6),
+                    close_osc(via_recurrence, via_asymptotic, x, 1e-13),
                     "n={n} x={x}: recurrence={via_recurrence} asymptotic={via_asymptotic}"
                 );
             }
         }
+    }
+
+    #[test]
+    fn bessel_j_upward_recurrence_matches_miller_for_large_x() {
+        // For x >= 25 and n <= x, Jn comes from Hankel J0/J1 plus the upward
+        // recurrence; Miller's downward sweep is an independent check.
+        for &x in &[25.0, 31.7, 40.0, 64.0]
+        {
+            for n in [0i64, 1, 2, 5, 12, 20, 25]
+            {
+                if n as f64 > x
+                {
+                    continue;
+                }
+                let up = bessel_j(n as i32, x);
+                let miller = bessel_j_miller(n, x);
+                assert!(
+                    close_osc(up, miller, x, 1e-13),
+                    "J_{n}({x}): {up} vs {miller}"
+                );
+            }
+        }
+    }
+
+    // ---- Regression tests for extreme arguments (mpmath, 30 digits) ----
+
+    #[test]
+    fn bessel_j_tiny_argument_is_finite_and_correct() {
+        // Miller's 2k/x factors used to overflow to inf/inf = NaN here.
+        assert!(close(bessel_j(0, 1e-100), 1.0, 1e-15));
+        assert!(close(bessel_j(0, 1e-300), 1.0, 1e-15));
+        assert!(close(bessel_j(1, 1e-100), 5.0e-101, 1e-15));
+        assert!(close(bessel_j(-1, 1e-100), -5.0e-101, 1e-15));
+        assert!(close(bessel_j(1, -1e-100), -5.0e-101, 1e-15));
+        assert!(close(
+            bessel_j(3, 1e-100) / 2.083_333_333_333_333_3e-302,
+            1.0,
+            1e-14
+        ));
+        // (x/2)^n/n! below the f64 range: exactly 0, not NaN, and no
+        // order-length loop.
+        assert_eq!(bessel_j(2, 1e-300), 0.0);
+        assert_eq!(bessel_j(50, 1e-8), 0.0);
+        assert_eq!(bessel_j(i32::MAX, 0.5), 0.0);
+        assert_eq!(bessel_j(i32::MIN, 0.5), 0.0);
+        assert_eq!(bessel_j(1, 5e-324), 0.0); // true value 2.5e-324 rounds to 0
+    }
+
+    #[test]
+    fn bessel_y_tiny_argument_is_finite_or_minus_infinity() {
+        // Y0/Y1 went through bessel_j(·, x) = NaN; high orders went
+        // −∞ − (−∞) = NaN in the recurrence.
+        assert!(close(bessel_y(0, 1e-100), -146.660_924_070_994_24, 1e-14));
+        assert!(close(bessel_y(0, 1e-300), -439.835_163_622_765_3, 1e-14));
+        assert!(close(bessel_y(1, 1e-100), -6.366_197_723_675_814e99, 1e-14));
+        assert!(close(
+            bessel_y(3, 1e-100) / -5.092_958_178_940_650_7e300,
+            1.0,
+            1e-14
+        ));
+        assert_eq!(bessel_y(4, 1e-100), f64::NEG_INFINITY);
+        assert_eq!(bessel_y(20, 1e-20), f64::NEG_INFINITY);
+        assert_eq!(bessel_y(50, 1e-8), f64::NEG_INFINITY);
+        assert_eq!(bessel_y(-50, 1e-8), f64::NEG_INFINITY);
+        assert_eq!(bessel_y(-51, 1e-8), f64::INFINITY);
+        // −i32::MIN used to overflow (debug panic; endless recursion in release).
+        assert_eq!(bessel_y(i32::MIN, 1.0), f64::NEG_INFINITY);
+    }
+
+    #[test]
+    fn bessel_y_full_precision_between_the_old_crossover_and_asymptotic_range() {
+        // The previous 3-term asymptotic expansion from x = 15 left ~1e-7
+        // relative error here (Y1(15) was 0.021073630340 vs 0.021073628037).
+        let cases: [(i32, f64, f64); 9] = [
+            (0, 7.5, 0.117_313_286_148_208_63),
+            (1, 15.0, 0.021_073_628_036_873_51),
+            (0, 17.0, -0.092_637_198_442_323_7),
+            (2, 15.0, -0.202_654_478_967_335_13),
+            (5, 15.0, 0.167_172_715_759_400_2),
+            (10, 17.0, -0.080_636_958_476_328_83),
+            (20, 17.0, -0.866_674_412_487_030_3),
+            (1, 22.0, 0.123_405_856_226_507_62),
+            (30, 40.0, -0.114_714_586_685_050_26),
+        ];
+        for (n, x, expected) in cases
+        {
+            let y = bessel_y(n, x);
+            assert!(close(y, expected, 1e-13), "Y_{n}({x}) = {y} != {expected}");
+        }
+    }
+
+    #[test]
+    fn bessel_large_argument_is_fast_finite_and_phase_accurate() {
+        // Miller's sweep used to run O(x) steps (≈2.3 s at x = 1e9) and its
+        // start order overflowed i64 near x = 1e300 (NaN in release, panic
+        // in debug); the asymptotic phase x − π/4 lost the low bits of x
+        // (Y0(1e300) was −6.5e-151 instead of −1.37e-151).
+        let cases: [(i32, f64, f64, f64); 9] = [
+            (
+                0,
+                1e9,
+                2.468_747_188_626_919_5e-5,
+                -5.210_422_653_897_613_7e-6,
+            ),
+            (
+                1,
+                1e9,
+                -5.210_422_641_553_878e-6,
+                -2.468_747_188_887_440_6e-5,
+            ),
+            (
+                0,
+                1e300,
+                -7.860_673_062_724_093e-151,
+                -1.368_136_045_034_248e-151,
+            ),
+            (
+                1,
+                1e300,
+                -1.368_136_045_034_248e-151,
+                7.860_673_062_724_093e-151,
+            ),
+            (
+                7,
+                1e5,
+                -0.001_846_344_901_431_354_3,
+                -0.001_719_653_524_449_580_2,
+            ),
+            (
+                0,
+                1e6,
+                3.310_430_137_398_737_4e-4,
+                -7.259_685_223_351_791e-4,
+            ),
+            (
+                1,
+                1e6,
+                -7.259_683_568_137_63e-4,
+                -3.310_433_767_241_762_9e-4,
+            ),
+            (
+                30,
+                40.0,
+                -0.104_085_949_765_649_73,
+                -0.114_714_586_685_050_26,
+            ),
+            (
+                50,
+                50.0,
+                0.121_409_021_897_615_06,
+                -0.210_316_554_643_977_41,
+            ),
+        ];
+        for (n, x, ej, ey) in cases
+        {
+            let (j, y) = (bessel_j(n, x), bessel_y(n, x));
+            assert!(close_osc(j, ej, x, 1e-13), "J_{n}({x}) = {j} != {ej}");
+            assert!(close_osc(y, ey, x, 1e-13), "Y_{n}({x}) = {y} != {ey}");
+        }
+        assert!(close_osc(
+            bessel_j(0, -1e300),
+            -7.860_673_062_724_093e-151,
+            1e300,
+            1e-13
+        ));
+        assert_eq!(bessel_j(0, f64::INFINITY), 0.0);
+        assert_eq!(bessel_j(3, f64::NEG_INFINITY), 0.0);
+        assert_eq!(bessel_y(0, f64::INFINITY), 0.0);
+        assert!(bessel_j(0, f64::NAN).is_nan());
+        assert!(bessel_y(2, f64::NAN).is_nan());
     }
 }
 
