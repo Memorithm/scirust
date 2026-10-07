@@ -1165,47 +1165,107 @@ const BERNOULLI_OVER_FACT: [f64; 10] = [
     -2.174_868_698_558_062e-16,
 ];
 
-/// Euler–Maclaurin tail `Σ_{j=m}^{∞} j^(−s)` for `s > 1`, `m ≥ 10`.
+/// Hurwitz-type tail `Σ_{j=m}^{∞} j^(−s)` for `s > 1`, `m ≥ 10` (`NaN`
+/// otherwise; `0` for `s = +∞`).
 ///
-/// `∫_m^∞ x^(−s) dx + f(m)/2 + Σ_k B_{2k}/(2k)! · s(s+1)…(s+2k−2) ·
-/// m^(−s−2k+1)` with a fixed 10-term budget — deterministic, and free of the
-/// `ζ(s) − partial-sum` cancellation, which is what a far-tail survival
-/// function needs.
+/// Computed directly, without the `ζ(s) − partial-sum` cancellation, which is
+/// what a far-tail survival function needs. The Euler–Maclaurin correction
+/// `∫_N^∞ x^(−s) dx + N^(−s)/2 + Σ_k B_{2k}/(2k)! · s(s+1)…(s+2k−2) ·
+/// N^(−s−2k+1)` (10 Bernoulli terms) is an *asymptotic* series: its terms
+/// shrink only while `(s + 2k)/(2πN)` is small, so it is applied at a cut
+/// `N = max(m, ⌈s⌉ + 21)`, where the first omitted term is below about
+/// `6e-18` relative. The terms `m ≤ j < N` are summed explicitly (smallest
+/// first), stopping early once the remaining tail cannot change the sum —
+/// for large `s` only a handful of terms are non-negligible, so the cost
+/// stays at a few dozen `powf` calls for any `(s, m)`.
 pub fn riemann_zeta_tail(s: f64, m: f64) -> f64 {
     if s <= 1.0 || m < 10.0 || s.is_nan() || m.is_nan()
     {
         return f64::NAN;
     }
-    let mut acc = m.powf(1.0 - s) / (s - 1.0) + 0.5 * m.powf(-s);
-    let mut poch = s;
-    let mut mpow = m.powf(-s - 1.0);
-    for (k, c) in BERNOULLI_OVER_FACT.iter().enumerate()
+    if s == f64::INFINITY
     {
-        acc += c * poch * mpow;
-        let i = 2.0 * (k as f64 + 1.0);
-        poch *= (s + i - 1.0) * (s + i);
-        mpow /= m * m;
+        return 0.0; // every j^(−s) with j ≥ 10 vanishes
+    }
+    // The cut N must be an integer offset from m so that the explicit terms
+    // m, m+1, …, N−1 plus the E–M remainder at N partition the tail exactly.
+    let need = (s.ceil() + 21.0 - m).max(0.0).ceil();
+    let cut = m + need;
+    // Pass 1: find how many explicit terms matter. Once the next term t_j
+    // satisfies t_j·(1 + j/(s−1)) ≤ 2⁻⁵⁸·(sum so far) — a bound on the whole
+    // remaining tail Σ_{i≥j} i^(−s) — the rest is dropped.
+    let mut count = 0.0_f64;
+    let mut head = 0.0_f64;
+    let mut truncated = false;
+    while count < need
+    {
+        let j = m + count;
+        let t = j.powf(-s);
+        if t * (1.0 + j / (s - 1.0)) <= head * 3.469_446_951_953_614e-18
+        {
+            truncated = true;
+            break;
+        }
+        head += t;
+        count += 1.0;
+    }
+    // Pass 2: E–M remainder at the cut (unless truncated), then the explicit
+    // terms from the smallest up, for a fixed, deterministic summation order.
+    let mut acc = if truncated
+    {
+        0.0
+    }
+    else
+    {
+        euler_maclaurin_tail(s, cut)
+    };
+    let mut i = count;
+    while i > 0.0
+    {
+        i -= 1.0;
+        acc += (m + i).powf(-s);
     }
     acc
 }
 
-/// Riemann zeta `ζ(s) = Σ_{j≥1} j^(−s)` for real `s > 1` (`NaN` otherwise).
+/// Euler–Maclaurin remainder `Σ_{j=n}^{∞} j^(−s)` with the 10-term Bernoulli
+/// budget; accurate only for `n ≥ s + 21` (see [`riemann_zeta_tail`]).
 ///
-/// Direct sum of the first 19 terms (smallest first, fixed order) plus the
-/// Euler–Maclaurin tail at `m = 20` — deterministic, ~1e-15 relative across
-/// the domain (checked against `scipy.special.zeta`: ζ(2) = π²/6,
-/// ζ(3) = 1.2020569031595942…, ζ(1.5) = 2.6123753486854882…).
+/// The rising factorial `s(s+1)…` and the powers of `n` are carried as the
+/// single ratio `s(s+1)…(s+2k−2)/n^(2k−1)`, which stays below one at that
+/// cut, so neither overflows to `∞` nor underflows to `0` (their product
+/// used to be `∞ · 0 = NaN` at huge `s`).
+fn euler_maclaurin_tail(s: f64, n: f64) -> f64 {
+    let lead = n.powf(1.0 - s) / (s - 1.0);
+    let mut corr = 0.5;
+    let mut ratio = s / n;
+    for (k, c) in BERNOULLI_OVER_FACT.iter().enumerate()
+    {
+        corr += c * ratio;
+        let i = 2.0 * (k as f64 + 1.0);
+        ratio *= (s + i - 1.0) * (s + i) / (n * n);
+    }
+    lead + n.powf(-s) * corr
+}
+
+/// Riemann zeta `ζ(s) = Σ_{j≥1} j^(−s)` for real `s > 1` (`NaN` otherwise),
+/// with `ζ(+∞) = 1`.
+///
+/// Direct sum of the first 19 terms (smallest first, fixed order) plus
+/// [`riemann_zeta_tail`] from `j = 20` — deterministic and close to full
+/// relative precision across the domain (checked against mpmath:
+/// ζ(2) = π²/6, ζ(3) = 1.2020569031595942…, ζ(1.5) = 2.6123753486854882…).
 pub fn riemann_zeta(s: f64) -> f64 {
     if s <= 1.0 || s.is_nan()
     {
         return f64::NAN;
     }
-    let mut acc = 0.0;
+    let mut acc = riemann_zeta_tail(s, 20.0);
     for j in (1..20u32).rev()
     {
         acc += f64::from(j).powf(-s);
     }
-    acc + riemann_zeta_tail(s, 20.0)
+    acc
 }
 
 // ============================================================ //
@@ -1810,6 +1870,62 @@ mod tests {
             }
         }
         assert!(riemann_zeta_tail(2.0, 5.0).is_nan()); // m below the budgeted floor
+    }
+
+    #[test]
+    fn riemann_zeta_tail_large_exponent_matches_mpmath() {
+        let rel = |a: f64, b: f64| ((a - b) / b).abs();
+        // Regression: the fixed m-point Euler–Maclaurin series diverges once
+        // s is large next to 2πm. tail(200, 20) used to be −2.3e-257 (negative),
+        // tail(300, 10) −4.3e-288, tail(50, 10) 4.8 % low, tail(100, 20) 1 % low.
+        // Oracles: mpmath.zeta(s, m) (Hurwitz) at 50 digits.
+        for &(s, m, want) in &[
+            (50.0, 10.0, 1.008_630_495_435_279_1e-50),
+            (100.0, 20.0, 7.949_177_157_934_937e-131),
+            (200.0, 20.0, 6.223_375_176_830_755e-261),
+            (300.0, 10.0, 1.000_000_000_000_382_1e-300),
+            (60.0, 20.0, 9.168_597_639_368_875e-79),
+        ]
+        {
+            let got = riemann_zeta_tail(s, m);
+            assert!(
+                rel(got, want) <= 1e-13,
+                "tail({s}, {m}) = {got:e}, want {want:e}"
+            );
+        }
+        // Elementary bracket m^(−s) ≤ tail ≤ m^(−s)·(1 + m/(s−1)) over a grid
+        // that crosses the old divergence boundary.
+        for &s in &[1.01, 1.5, 3.0, 12.0, 40.0, 80.0, 150.0, 250.0]
+        {
+            for &m in &[10.0, 11.0, 20.0, 37.0, 100.0, 1e4]
+            {
+                let t = riemann_zeta_tail(s, m);
+                let first = f64::powf(m, -s);
+                assert!(t.is_finite() && t >= 0.0, "tail({s}, {m}) = {t:e}");
+                assert!(
+                    t >= first * (1.0 - 1e-15),
+                    "tail({s}, {m}) = {t:e} < {first:e}"
+                );
+                assert!(
+                    t <= first * (1.0 + m / (s - 1.0)) * (1.0 + 1e-15),
+                    "tail({s}, {m}) = {t:e} above bracket"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn riemann_zeta_huge_exponent_is_one() {
+        let rel = |a: f64, b: f64| ((a - b) / b).abs();
+        // Regression: s(s+1)… overflowed to ∞ while m^(−s−1) underflowed to 0,
+        // so ζ(1e20) and ζ(+∞) were ∞·0 = NaN instead of 1.
+        assert_eq!(riemann_zeta(1e20), 1.0);
+        assert_eq!(riemann_zeta(f64::INFINITY), 1.0);
+        assert_eq!(riemann_zeta(1e6), 1.0);
+        assert_eq!(riemann_zeta_tail(f64::INFINITY, 10.0), 0.0);
+        assert_eq!(riemann_zeta_tail(1e20, 10.0), 0.0);
+        // ζ(50) = 1 + 2^−50 + …: the excess survives.
+        assert!(rel(riemann_zeta(50.0) - 1.0, 8.881_784_210_930_816e-16) <= 1e-2);
     }
 
     // ---- gamma family ----
