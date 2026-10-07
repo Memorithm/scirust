@@ -927,7 +927,12 @@ impl DiscreteDistribution for Zeta {
     fn mean(&self) -> f64 {
         if self.s > 2.0
         {
-            riemann_zeta(self.s - 1.0) / self.zeta_s
+            // ζ(s−1)/ζ(s) = 1 + Σ_{j≥2} (j−1)·j^(−s) / ζ(s): the excess over 1
+            // is summed directly instead of being left to the quotient.
+            let s = self.s;
+            let excess = zeta_weighted_head(s, |j| j - 1.0) + riemann_zeta_tail(s - 1.0, 20.0)
+                - riemann_zeta_tail(s, 20.0);
+            1.0 + excess / self.zeta_s
         }
         else
         {
@@ -937,14 +942,41 @@ impl DiscreteDistribution for Zeta {
     fn variance(&self) -> f64 {
         if self.s > 3.0
         {
-            let m = self.mean();
-            riemann_zeta(self.s - 2.0) / self.zeta_s - m * m
+            // Var = [ζ(s)ζ(s−2) − ζ(s−1)²] / ζ(s)². With η(x) = ζ(x) − 1 the
+            // numerator is exactly D + η(s−2)η(s) − η(s−1)², where
+            // D = Σ_{j≥2} (j−1)²·j^(−s) ≥ 0 and η(s−2)η(s) ≥ η(s−1)² (Cauchy–
+            // Schwarz). The textbook `ζ(s−2)/ζ(s) − mean²` cancels to 0 once
+            // s ≳ 55 (true variance ≈ 2^(−s)) and loses digits well before.
+            let s = self.s;
+            let (t0, t1, t2) = (
+                riemann_zeta_tail(s, 20.0),
+                riemann_zeta_tail(s - 1.0, 20.0),
+                riemann_zeta_tail(s - 2.0, 20.0),
+            );
+            let d = zeta_weighted_head(s, |j| (j - 1.0) * (j - 1.0)) + (t2 - 2.0 * t1 + t0);
+            let eta0 = zeta_weighted_head(s, |_| 1.0) + t0;
+            let eta1 = zeta_weighted_head(s, |j| j) + t1;
+            let eta2 = zeta_weighted_head(s, |j| j * j) + t2;
+            let num = d + (eta2 * eta0 - eta1 * eta1).max(0.0);
+            num / (self.zeta_s * self.zeta_s)
         }
         else
         {
             f64::INFINITY
         }
     }
+}
+
+/// `Σ_{j=2}^{19} w(j)·j^(−s)`, smallest term first — the explicit head that
+/// pairs with `riemann_zeta_tail(·, 20)` in the [`Zeta`] moments.
+fn zeta_weighted_head(s: f64, w: impl Fn(f64) -> f64) -> f64 {
+    let mut acc = 0.0;
+    for j in (2..20u32).rev()
+    {
+        let jf = f64::from(j);
+        acc += w(jf) * jf.powf(-s);
+    }
+    acc
 }
 
 // ============================================================ //
@@ -2294,6 +2326,35 @@ mod tests {
         assert_eq!(a, b);
         let m = a.iter().sum::<i64>() as f64 / a.len() as f64;
         assert!((m - 1.7).abs() < 0.06, "mean {m}");
+    }
+
+    #[test]
+    fn zeta_moments_and_tail_at_large_exponent() {
+        // Regression: variance = ζ(s−2)/ζ(s) − mean² cancelled (s = 30 was
+        // 1.2e-7 relative off, s = 60 and s = 100 gave exactly 0), and sf
+        // inherited the divergent Euler–Maclaurin tail (s = 100 1 % low,
+        // s = 200 negative). Oracles: mpmath at 50 digits.
+        let z10 = Zeta::new(10.0);
+        assert!(rel_close(z10.variance(), 1.053_071_509_776_049_3e-3, 1e-14));
+        assert!(close(z10.mean(), 1.001_012_810_382_248_7, 1e-15));
+        let z30 = Zeta::new(30.0);
+        assert!(rel_close(z30.variance(), 9.313_420_084_472_63e-10, 1e-13));
+        let z60 = Zeta::new(60.0);
+        assert!(rel_close(z60.variance(), 8.673_617_380_827_63e-19, 1e-13));
+        assert!(rel_close(z60.sf(19), 9.168_597_639_368_875e-79, 1e-13));
+        let z100 = Zeta::new(100.0);
+        assert!(rel_close(z100.variance(), 7.888_609_052_210_118e-31, 1e-13));
+        assert!(rel_close(z100.sf(19), 7.949_177_157_934_937e-131, 1e-13));
+        let z200 = Zeta::new(200.0);
+        let sf = z200.sf(19);
+        assert!(
+            rel_close(sf, 6.223_375_176_830_755e-261, 1e-13),
+            "sf = {sf:e}"
+        );
+        for k in [1u64, 2, 5, 19, 20, 40]
+        {
+            assert!(z200.sf(k) >= 0.0 && z200.cdf(k) <= 1.0, "k = {k}");
+        }
     }
 
     #[test]
