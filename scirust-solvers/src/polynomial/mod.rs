@@ -5,8 +5,8 @@
 //!
 //! - `eval`     : évaluation Horner
 //! - `deriv`    : dérivée formelle
-//! - `roots`    : toutes les racines (réelles + complexes) via la matrice
-//!   compagnon et l'algorithme QR sur celle-ci
+//! - `roots`    : toutes les racines (réelles + complexes) via l'itération
+//!   de Durand-Kerner (voir [`roots`](mod@roots))
 //! - `real_roots`: filtrage des racines réelles
 
 use crate::SolverResult;
