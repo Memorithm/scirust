@@ -379,9 +379,16 @@ fn jacobi_eigen(a: &Matrix) -> (Vec<f64>, Vec<Vec<f64>>) {
             break;
         }
 
-        // Compute rotation angle
+        // Compute rotation angle. `tau = (a_qq - a_pp) / (2 a_pq)` is a
+        // dimensionless ratio, so the 45-degree special case must only be
+        // taken when the diagonals are *exactly* equal. An absolute cutoff
+        // (formerly `|a_qq - a_pp| < 1e-15`) fired for every pivot of a
+        // small-scale matrix (e.g. a covariance of data ~1e-9), forcing a
+        // 45-degree rotation that does not annihilate `a_pq`; the diagonal
+        // update below assumes it does, so PCA returned wrong and even
+        // negative eigenvalues for positive semi-definite input.
         let diff = s.data[q][q] - s.data[p][p];
-        let t = if diff.abs() < 1e-15
+        let t = if diff == 0.0
         {
             // Equal diagonals: tau == 0, the rotation is exactly 45 degrees.
             // The sign matches the off-diagonal pivot convention.
@@ -390,7 +397,12 @@ fn jacobi_eigen(a: &Matrix) -> (Vec<f64>, Vec<Vec<f64>>) {
         else
         {
             let tau = diff / (2.0 * s.data[p][q]);
-            if tau >= 0.0
+            if tau.abs() > 1e150
+            {
+                // tau² would overflow; t = 1/(2 tau) to working precision.
+                0.5 / tau
+            }
+            else if tau >= 0.0
             {
                 1.0 / (tau + (1.0 + tau * tau).sqrt())
             }
@@ -2047,6 +2059,81 @@ mod tests {
             "second eigenvalue: {}",
             evals[1]
         );
+    }
+
+    #[test]
+    fn jacobi_eigen_is_scale_invariant_for_small_matrices() {
+        // Regression: an absolute `|a_qq - a_pp| < 1e-15` cutoff forced a
+        // 45-degree rotation on every pivot once the matrix entries were
+        // small, so the eigenvalues of a tiny symmetric matrix were wrong.
+        // Eigenvalues of s·B must be s·eig(B) for any positive scale s.
+        let base = [[4.0, 1.0, 0.5], [1.0, 3.0, 0.25], [0.5, 0.25, 2.0]];
+        let mut reference = jacobi_eigen(&Matrix::from_slice(&[&base[0], &base[1], &base[2]])).0;
+        reference.sort_by(|a, c| c.total_cmp(a));
+        // Trace and determinant identities pin down the reference itself.
+        let trace: f64 = reference.iter().sum();
+        assert!((trace - 9.0).abs() < 1e-12, "trace {trace}");
+        let det: f64 = reference.iter().product();
+        let det_ref = 4.0 * (3.0 * 2.0 - 0.0625) - 1.0 * (2.0 - 0.125) + 0.5 * (0.25 - 1.5);
+        assert!((det - det_ref).abs() < 1e-12, "det {det} vs {det_ref}");
+        for scale in [1e-6, 1e-12, 1e-18, 1e-100, 1e100]
+        {
+            let rows: Vec<Vec<f64>> = base
+                .iter()
+                .map(|r| r.iter().map(|v| v * scale).collect())
+                .collect();
+            let refs: Vec<&[f64]> = rows.iter().map(|r| r.as_slice()).collect();
+            let mut evals = jacobi_eigen(&Matrix::from_slice(&refs)).0;
+            evals.sort_by(|a, c| c.total_cmp(a));
+            for (e, r) in evals.iter().zip(&reference)
+            {
+                let rel = (e / scale - r).abs() / r.abs();
+                assert!(
+                    rel < 1e-12,
+                    "scale {scale:e}: {} vs {r} (rel {rel:e})",
+                    e / scale
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pca_fit_is_scale_invariant_for_small_scale_data() {
+        // Regression: data at a ~1e-9 physical scale (covariance ~1e-16)
+        // made PCA report a negative eigenvalue (a covariance matrix is
+        // positive semi-definite) and an explained-variance ratio above 1.
+        let rows: Vec<Vec<f64>> = (0..20)
+            .map(|i| {
+                let t = f64::from(i);
+                vec![t, 2.0 * t + (t * 1.7).sin(), (t * 0.3).cos() * 3.0]
+            })
+            .collect();
+        let fit = |scale: f64| {
+            let scaled: Vec<Vec<f64>> = rows
+                .iter()
+                .map(|r| r.iter().map(|v| v * scale).collect())
+                .collect();
+            let refs: Vec<&[f64]> = scaled.iter().map(|r| r.as_slice()).collect();
+            pca_fit(&Matrix::from_slice(&refs))
+        };
+        let reference = fit(1.0);
+        for scale in [1e-8, 1e-9, 1e-12]
+        {
+            let pca = fit(scale);
+            for (e, r) in pca.eigenvalues.iter().zip(&reference.eigenvalues)
+            {
+                assert!(*e >= 0.0, "scale {scale:e}: negative eigenvalue {e:e}");
+                let rel = (e / (scale * scale) - r).abs() / r.abs();
+                assert!(rel < 1e-9, "scale {scale:e}: eigenvalue rel err {rel:e}");
+            }
+            for (v, r) in pca
+                .explained_variance_ratio
+                .iter()
+                .zip(&reference.explained_variance_ratio)
+            {
+                assert!((v - r).abs() < 1e-9, "scale {scale:e}: ratio {v} vs {r}");
+            }
+        }
     }
 
     #[test]
