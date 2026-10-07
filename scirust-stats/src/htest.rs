@@ -635,7 +635,11 @@ mod tests {
             ks_test_one_sample(&a, &n).unwrap(),
             ks_test_one_sample(&b, &n).unwrap(),
         );
-        assert_eq!(ra, rb);
+        // The CDF is transcendental: Miri perturbs its last bits on each call,
+        // so the two orderings are compared with a tolerance, not bit for bit.
+        assert_eq!(ra.df, rb.df);
+        assert!(close(ra.statistic, rb.statistic, 1e-12));
+        assert!(close(ra.p_value, rb.p_value, 1e-12));
         assert!(ra.statistic.is_finite() && (0.0..=1.0).contains(&ra.p_value));
     }
 
