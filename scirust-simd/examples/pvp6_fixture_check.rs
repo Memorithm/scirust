@@ -90,8 +90,8 @@ fn main() {
     assert_eq!(queries.len(), QUERY_ROWS, "unexpected QUERY count");
 
     let mut outputs = HashSet::new();
-    for density in DENSITIES {
-        for schedule in SCHEDULES {
+    for schedule in SCHEDULES {
+        for density in DENSITIES {
             for position in 0..BANK_WORDS {
                 let fields: Vec<&str> = lines[cursor].split(',').collect();
                 assert_eq!(fields.len(), 5, "OUTPUT record must have five fields");
