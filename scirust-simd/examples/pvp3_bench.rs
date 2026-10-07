@@ -6,8 +6,8 @@
 //! pinning the exact binary, CPU identity, and process-isolation protocol.
 
 use scirust_simd::pvp::{
-    direct_subset_zeta_oracle_v1, pascal_subset_zeta_scalar_in_place,
-    pascal_subset_zeta_with_backend_in_place, PvpBackendV1, PvpBitplanesV1, PvpLayoutV1,
+    PvpBackendV1, PvpBitplanesV1, PvpLayoutV1, direct_subset_zeta_oracle_v1,
+    pascal_subset_zeta_scalar_in_place, pascal_subset_zeta_with_backend_in_place,
 };
 use std::env;
 use std::hint::black_box;
@@ -15,13 +15,15 @@ use std::time::Instant;
 
 fn usage() -> ! {
     eprintln!(
-        "usage: pvp3_bench --k K --g G [--backend scalar|avx2|avx512|neon|sve]          [--warmups N] [--reps N]"
+        "usage: pvp3_bench --k K --g G [--backend scalar|avx2|avx512|neon|sve] [--warmups N] [--reps N]"
     );
     std::process::exit(2);
 }
 
 fn value(flag: &str, args: &[String]) -> Option<String> {
-    args.windows(2).find(|pair| pair[0] == flag).map(|pair| pair[1].clone())
+    args.windows(2)
+        .find(|pair| pair[0] == flag)
+        .map(|pair| pair[1].clone())
 }
 
 fn parse_usize(flag: &str, args: &[String]) -> usize {
@@ -31,7 +33,8 @@ fn parse_usize(flag: &str, args: &[String]) -> usize {
 }
 
 fn backend(args: &[String]) -> PvpBackendV1 {
-    match value("--backend", args).as_deref().unwrap_or("scalar") {
+    match value("--backend", args).as_deref().unwrap_or("scalar")
+    {
         "scalar" => PvpBackendV1::Scalar,
         "avx2" => PvpBackendV1::Avx2,
         "avx512" => PvpBackendV1::Avx512,
@@ -45,17 +48,19 @@ fn backend(args: &[String]) -> PvpBackendV1 {
 fn fixture(layout: PvpLayoutV1) -> Vec<u64> {
     let words = layout.gate_major_storage_words().expect("checked layout");
     let mut result = vec![0_u64; words];
-    for gate in 0..layout.gates() {
-        for address in 0..layout.addresses() {
+    for gate in 0..layout.gates()
+    {
+        for address in 0..layout.addresses()
+        {
             let bit = ((gate as u64)
                 .wrapping_mul(0x9e37_79b9)
                 .wrapping_add((address as u64).wrapping_mul(0x85eb_ca6b))
                 .rotate_left((gate as u32) & 31)
                 ^ (address as u64))
                 .count_ones()
-                % 3
-                == 0;
-            if bit {
+                .is_multiple_of(3);
+            if bit
+            {
                 let index = gate * layout.address_words_per_gate() + address / 64;
                 result[index] |= 1_u64 << (address % 64);
             }
@@ -72,7 +77,7 @@ fn checksum(words: &[u64]) -> u64 {
 }
 
 fn percentile(sorted: &[u128], numerator: usize, denominator: usize) -> u128 {
-    let index = ((sorted.len() - 1) * numerator + denominator - 1) / denominator;
+    let index = ((sorted.len() - 1) * numerator).div_ceil(denominator);
     sorted[index]
 }
 
@@ -86,13 +91,18 @@ fn main() {
     let reps = value("--reps", &args)
         .and_then(|v| v.parse().ok())
         .unwrap_or(30);
-    if reps == 0 {
+    if reps == 0
+    {
         usage();
     }
 
     let selected = backend(&args);
-    if !selected.available() {
-        eprintln!("backend {} is unavailable on this process", selected.label());
+    if !selected.available()
+    {
+        eprintln!(
+            "backend {} is unavailable on this process",
+            selected.label()
+        );
         std::process::exit(3);
     }
 
@@ -103,13 +113,15 @@ fn main() {
 
     // Keep the independent direct oracle on small geometries, so the benchmark
     // cannot silently time a shared implementation bug.
-    if k <= 64 && g <= 257 {
+    if k <= 64 && g <= 257
+    {
         let direct = direct_subset_zeta_oracle_v1(layout, &source).expect("direct oracle");
         assert_eq!(scalar, direct, "scalar/direct oracle mismatch");
     }
 
     let mut samples = Vec::with_capacity(reps);
-    for _ in 0..warmups {
+    for _ in 0..warmups
+    {
         let mut candidate =
             PvpBitplanesV1::from_gate_major_words(layout, &source).expect("fixture");
         let _ = black_box(
@@ -117,7 +129,8 @@ fn main() {
         );
         assert_eq!(candidate, scalar, "candidate/scalar mismatch");
     }
-    for _ in 0..reps {
+    for _ in 0..reps
+    {
         let mut candidate =
             PvpBitplanesV1::from_gate_major_words(layout, &source).expect("fixture");
         let start = Instant::now();
@@ -125,8 +138,14 @@ fn main() {
             pascal_subset_zeta_with_backend_in_place(&mut candidate, selected).expect("candidate");
         let elapsed = start.elapsed().as_nanos();
         assert_eq!(candidate, scalar, "candidate/scalar mismatch");
-        assert_eq!(stats.logical_gate_xor_ops, scalar_stats.logical_gate_xor_ops);
-        assert_eq!(stats.packed_word_updates, scalar_stats.packed_word_updates);
+        assert_eq!(
+            stats.logical_gate_xor_ops,
+            scalar_stats.logical_gate_xor_ops
+        );
+        assert_eq!(
+            stats.packed_word_updates,
+            scalar_stats.packed_word_updates
+        );
         black_box(candidate);
         samples.push(elapsed);
     }
