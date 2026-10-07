@@ -28,8 +28,7 @@ fn fixture_path() -> String {
         .unwrap_or_else(|| usage())
 }
 
-fn parse_word(raw: &str, field: &str) -> u64
-{
+fn parse_word(raw: &str, field: &str) -> u64 {
     assert_eq!(raw.len(), 16, "{field} must contain exactly 16 hex digits");
     assert!(
         raw.bytes()
@@ -39,8 +38,7 @@ fn parse_word(raw: &str, field: &str) -> u64
     u64::from_str_radix(raw, 16).unwrap_or_else(|_| panic!("{field} is not hexadecimal"))
 }
 
-fn main()
-{
+fn main() {
     let path = fixture_path();
     let text = fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {path}: {error}"));
     assert!(text.is_ascii(), "fixture must be ASCII-compatible UTF-8");
