@@ -16,12 +16,11 @@
 //! (SciPy's `nbinom`). [`Skellam`] lives on all of ℤ, so it exposes its own
 //! `i64` methods instead of the non-negative-integer trait.
 
-use crate::comb::{ln_binomial, ln_factorial};
+use crate::comb::ln_binomial;
 use crate::rng::SplitMix64;
 use scirust_special::{
-    binom_deviance, ln_beta, ln_binomial_pmf, ln_gamma, ln_poisson_pmf, regularized_gamma_p,
-    regularized_gamma_q, regularized_incomplete_beta, riemann_zeta, riemann_zeta_tail,
-    stirling_error,
+    binom_deviance, ln_binomial_pmf, ln_poisson_pmf, regularized_gamma_p, regularized_gamma_q,
+    regularized_incomplete_beta, riemann_zeta, riemann_zeta_tail, stirling_error,
 };
 
 /// `ln(2π)`, the constant of Stirling's formula.
@@ -592,9 +591,9 @@ impl DiscreteDistribution for BetaBinomial {
         {
             return f64::NEG_INFINITY;
         }
-        let kf = k as f64;
-        ln_binomial(self.n, k) + ln_beta(kf + self.a, (self.n - k) as f64 + self.b)
-            - ln_beta(self.a, self.b)
+        // The two-category Pólya form; summing `ln C(n,k) + ln B(k+a, n−k+b)
+        // − ln B(a,b)` cancels terms of size ~n·ln 2 at large n.
+        ln_polya_pmf(&[k, self.n - k], &[self.a, self.b], self.n, self.a + self.b)
     }
     fn cdf(&self, k: u64) -> f64 {
         if k >= self.n
@@ -1283,6 +1282,75 @@ impl MultivariateHypergeometric {
     }
 }
 
+/// `ln P(counts)` of the Pólya (Dirichlet-multinomial) law with `n = Σ kᵢ`
+/// trials and concentrations `αᵢ > 0` summing to `A`; the beta-binomial is
+/// the two-category case. The caller has checked `Σ counts = n`.
+///
+/// With `T(k, α) = ln Γ(k+α) − ln Γ(α) − ln k!` the pmf is
+/// `Σᵢ T(kᵢ, αᵢ) − T(n, A)`. Summing `ln Γ` values directly cancels terms of
+/// size `~k·ln k` (or `~α·ln α`) and loses every digit once a count or a
+/// concentration nears `1e15`. Writing `ln Γ(x+1) = (x+½)ln x − x + ½ln 2π + δ(x)`
+/// (Stirling, with the remainder `δ` from `stirling_error`) splits each `T`
+/// into `k·ln(1+α/k) + α·ln(1+k/α)`, a few `½ln` terms and `δ` values. The
+/// first parts of all the `T` combine exactly into
+/// `−Σᵢ [D₀(kᵢ, wᵢP) + D₀(αᵢ, wᵢQ)]` with `wᵢ = kᵢ+αᵢ`, `P = n/(n+A)`,
+/// `Q = A/(n+A)` and the binomial deviance `D₀(x, μ) = x·ln(x/μ) + μ − x ≥ 0`,
+/// the same device as Loader's binomial pmf. Every remaining term is at most
+/// of size `~ln n`, so no large values cancel.
+fn ln_polya_pmf(counts: &[u64], alpha: &[f64], n: u64, alpha_sum: f64) -> f64 {
+    use scirust_special::{binom_deviance, stirling_error};
+    if n == 0
+    {
+        // Only the all-zero vector is possible.
+        return 0.0;
+    }
+    let half_ln_2pi = 0.5 * (2.0 * std::f64::consts::PI).ln();
+    let nf = n as f64;
+    let total = nf + alpha_sum;
+    let (share_k, share_a) = (nf / total, alpha_sum / total);
+    let (ln_share_k, ln_share_a) = (nf.ln() - total.ln(), alpha_sum.ln() - total.ln());
+    // D₀(x, μ) with μ = w·share. D₀(0, μ) = μ; `binom_deviance` needs x > 0.
+    // When the product w·share would underflow (tiny concentrations), μ is not
+    // materialised: D₀ = x·(ln x − ln w − ln share) + μ − x, where every term
+    // is tiny or the logarithm dominates, so nothing cancels.
+    let deviance = |x: f64, w: f64, share: f64, ln_share: f64| {
+        let mu = w * share;
+        if x == 0.0
+        {
+            mu
+        }
+        else if mu >= f64::MIN_POSITIVE
+        {
+            binom_deviance(x, mu)
+        }
+        else
+        {
+            x * (x.ln() - w.ln() - ln_share) + mu - x
+        }
+    };
+    // ½ln(α/(k(k+α))) − ½ln 2π + δ(k+α) − δ(α) − δ(k), the non-deviance part
+    // of T(k, α) for k ≥ 1.
+    let remainder = |k: f64, a: f64| {
+        // ½ln(α/(k(k+α))) = −½[ln k + ln(1 + k/α)], which cannot overflow.
+        -0.5 * (k.ln() + (k / a).ln_1p()) - half_ln_2pi + stirling_error(k + a)
+            - stirling_error(a)
+            - stirling_error(k)
+    };
+    let mut dev = 0.0;
+    let mut rest = -remainder(nf, alpha_sum);
+    for (&k, &a) in counts.iter().zip(alpha)
+    {
+        let kf = k as f64;
+        let w = kf + a;
+        dev += deviance(kf, w, share_k, ln_share_k) + deviance(a, w, share_a, ln_share_a);
+        if k > 0
+        {
+            rest += remainder(kf, a);
+        }
+    }
+    rest - dev
+}
+
 // ============================================================ //
 //  Dirichlet-multinomial (vector-valued)                       //
 // ============================================================ //
@@ -1323,9 +1391,10 @@ impl DirichletMultinomial {
     /// Natural log of `P(counts)`; `−∞` unless `Σ counts = n`. Panics if
     /// `counts` has the wrong length.
     ///
-    /// Uses the closed form
-    /// `ln Γ(A) − ln Γ(n+A) + ln n! + Σ[ln Γ(kᵢ+αᵢ) − ln Γ(αᵢ) − ln kᵢ!]`
-    /// with `A = Σ αᵢ`.
+    /// The value is `ln Γ(A) − ln Γ(n+A) + ln n! + Σ[ln Γ(kᵢ+αᵢ) − ln Γ(αᵢ) − ln kᵢ!]`
+    /// with `A = Σ αᵢ`, evaluated in a saddle-point form (binomial deviances
+    /// plus Stirling remainders) that keeps its relative precision when the
+    /// counts or the concentrations are huge.
     pub fn ln_pmf(&self, counts: &[u64]) -> f64 {
         assert_eq!(
             counts.len(),
@@ -1336,13 +1405,7 @@ impl DirichletMultinomial {
         {
             return f64::NEG_INFINITY;
         }
-        let mut acc = ln_gamma(self.alpha_sum) - ln_gamma(self.n as f64 + self.alpha_sum)
-            + ln_factorial(self.n);
-        for (&k, &a) in counts.iter().zip(&self.alpha)
-        {
-            acc += ln_gamma(k as f64 + a) - ln_gamma(a) - ln_factorial(k);
-        }
-        acc
+        ln_polya_pmf(counts, &self.alpha, self.n, self.alpha_sum)
     }
     /// Probability mass `P(counts)`.
     pub fn pmf(&self, counts: &[u64]) -> f64 {
@@ -2431,6 +2494,111 @@ mod tests {
         // Exact rational: alpha=[2,3,5], n=4, counts=[1,1,2] = 18/143.
         let dm4 = DirichletMultinomial::new(4, &[2.0, 3.0, 5.0]);
         assert!(close(dm4.pmf(&[1, 1, 2]), 18.0 / 143.0, 1e-12));
+    }
+
+    /// `|got − want| ≤ tol·max(1, |want|)` on a log-pmf: absolute near 0
+    /// (relative precision of the pmf itself), relative for large magnitudes.
+    fn assert_polya_ln_close(got: f64, want: f64, what: &str) {
+        let tol = 1e-12 * want.abs().max(1.0);
+        assert!((got - want).abs() <= tol, "{what}: got {got}, want {want}");
+    }
+
+    // Oracle: mpmath 1.4.1 at 360 digits,
+    // Σ[lnΓ(kᵢ+αᵢ) − lnΓ(αᵢ) − lnΓ(kᵢ+1)] − [lnΓ(n+A) − lnΓ(A) − lnΓ(n+1)].
+    #[test]
+    fn dirichlet_multinomial_ln_pmf_keeps_precision_at_huge_arguments() {
+        // Huge counts near the mean: the direct ln Γ sum returned −14336.
+        let n = 1u64 << 60;
+        let dm = DirichletMultinomial::new(n, &[1e15, 2e15, 3e15]);
+        assert_polya_ln_close(
+            dm.ln_pmf(&[
+                192_153_584_101_141_162,
+                384_307_168_202_282_325,
+                576_460_752_303_423_489,
+            ]),
+            -46.898_434_075_768_57,
+            "DM(2^60, [1e15,2e15,3e15])",
+        );
+        // Small counts, huge concentrations (was −61.27).
+        let dm = DirichletMultinomial::new(10, &[1e15, 2e15, 3e15]);
+        assert_polya_ln_close(
+            dm.ln_pmf(&[1, 3, 6]),
+            -2.513_077_526_754_697_6,
+            "DM(10, [1e15,2e15,3e15])",
+        );
+        // All mass in the dominant category: the old form returned 0 (pmf 1).
+        let dm = DirichletMultinomial::new(n, &[1e-8, 2.0, 3000.0]);
+        assert_polya_ln_close(
+            dm.ln_pmf(&[0, 0, n]),
+            -67.164_593_589_922_46,
+            "DM(2^60, [1e-8,2,3000]) one-hot",
+        );
+        assert_polya_ln_close(
+            dm.ln_pmf(&[1, 1, n - 2]),
+            -84.892_127_153_314_89,
+            "DM(2^60, [1e-8,2,3000]) skewed",
+        );
+        // α → ∞ is the multinomial: (1/3)^10. The old form gave +8.9e-16.
+        let dm = DirichletMultinomial::new(10, &[1e300, 2e300]);
+        assert_polya_ln_close(
+            dm.ln_pmf(&[10, 0]),
+            -10.986_122_886_681_097,
+            "DM(10, [1e300,2e300])",
+        );
+        assert_polya_ln_close(
+            dm.ln_pmf(&[3, 7]),
+            -1.346_600_879_979_433_8,
+            "DM(10, [1e300,2e300]) mixed",
+        );
+        // n = 0: the empty vector is certain.
+        let dm = DirichletMultinomial::new(0, &[0.5, 2.0]);
+        assert_eq!(dm.ln_pmf(&[0, 0]), 0.0);
+    }
+
+    #[test]
+    fn beta_binomial_ln_pmf_keeps_precision_at_huge_arguments() {
+        // a = b = 1 is uniform on 0..=n: exactly −ln(n+1) (was −40960).
+        let n = 1u64 << 62;
+        let bb = BetaBinomial::new(n, 1.0, 1.0);
+        for k in [0, 1, n / 3, n / 2, n - 1, n]
+        {
+            assert_polya_ln_close(bb.ln_pmf(k), -42.975_125_194_716_61, "BB(2^62,1,1)");
+        }
+        // Huge shapes and counts (was −50).
+        let bb = BetaBinomial::new(1_000_000_000_000_000, 1e15, 1e15);
+        assert_polya_ln_close(
+            bb.ln_pmf(500_000_000_000_000),
+            -17.697_912_104_154_153,
+            "BB(1e15, 1e15, 1e15)",
+        );
+        // Lopsided shapes (was +55411.8, a pmf far above 1).
+        let bb = BetaBinomial::new(n, 3.0, 1e14);
+        assert_polya_ln_close(
+            bb.ln_pmf(138_350),
+            -12.234_863_141_759_818,
+            "BB(2^62, 3, 1e14)",
+        );
+        // Small arguments still agree with SciPy betabinom.
+        let bb = BetaBinomial::new(10, 2.0, 3.0);
+        let total: f64 = (0..=10).map(|k| bb.pmf(k)).sum();
+        assert!(close(total, 1.0, 1e-13));
+    }
+
+    #[test]
+    fn beta_binomial_ln_pmf_stays_finite_at_tiny_concentrations() {
+        // a = b = ε → 0: the mass concentrates on {0, n} with 1/2 each. The
+        // deviance mean w·A/(n+A) underflows here and must not be materialised.
+        let d = BetaBinomial::new(10, 1.0e-300, 1.0e-300);
+        for k in [0, 10]
+        {
+            let got = d.ln_pmf(k);
+            assert!(got.is_finite(), "ln_pmf({k}) = {got}");
+            assert!((got - 0.5f64.ln()).abs() < 1.0e-12, "ln_pmf({k}) = {got}");
+        }
+        let total: f64 = (0..=10).map(|k| d.pmf(k)).sum();
+        assert!((total - 1.0).abs() < 1.0e-12, "total = {total}");
+        let dm = DirichletMultinomial::new(10, &[1.0e-300, 1.0e-300]);
+        assert!((dm.ln_pmf(&[0, 10]) - 0.5f64.ln()).abs() < 1.0e-12);
     }
 
     #[test]
