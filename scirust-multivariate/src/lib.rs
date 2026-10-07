@@ -938,8 +938,17 @@ pub fn elbow_method(data: &Matrix, max_k: usize, max_iter: usize) -> Vec<(usize,
 
 /// Compute silhouette score for a clustering.
 ///
-/// Returns average silhouette coefficient over all observations.
-/// Values range from -1 (bad) to +1 (good).
+/// Returns the mean silhouette coefficient `s(i) = (b(i) - a(i)) / max(a(i), b(i))`
+/// over all observations, where `a(i)` is the mean distance from observation `i`
+/// to the other members of its cluster and `b(i)` is the smallest mean distance
+/// to the members of another cluster. Values range from -1 (bad) to +1 (good).
+///
+/// Following Rousseeuw (1987) and scikit-learn, an observation that is the only
+/// member of its cluster has `s(i) = 0`, so splitting points into singleton
+/// clusters does not raise the score. The score is invariant to a uniform
+/// rescaling of the data. When every observation shares one label (or there are
+/// fewer than two observations) the coefficient is undefined and `0.0` is
+/// returned.
 #[allow(clippy::needless_range_loop)]
 pub fn silhouette_score(data: &Matrix, labels: &[usize]) -> f64 {
     let n = data.rows;
@@ -1008,7 +1017,14 @@ pub fn silhouette_score(data: &Matrix, labels: &[usize]) -> f64 {
             // No other clusters: silhouette is undefined, treat as 0
             0.0
         }
-        else if a_i.max(b_i) > 1e-15
+        else if a_count == 0
+        {
+            // Singleton cluster: s(i) = 0 by definition (Rousseeuw 1987).
+            // Using a(i) = 0 here would give s(i) = 1 and reward
+            // over-segmentation.
+            0.0
+        }
+        else if a_i.max(b_i) > 0.0
         {
             (b_i - a_i) / a_i.max(b_i)
         }
@@ -1937,6 +1953,57 @@ mod tests {
             assert!(
                 dist_from_origin > 1e-6,
                 "centroid {c} collapsed to the origin: {centroid:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn silhouette_singleton_cluster_scores_zero() {
+        // 1-D points 0, 1, 10 with labels [0, 0, 1]:
+        // s(0) = (10 - 1) / 10, s(1) = (9 - 1) / 9, s(2) = 0 (singleton).
+        let data = Matrix::from_slice(&[&[0.0], &[1.0], &[10.0]]);
+        let score = silhouette_score(&data, &[0, 0, 1]);
+        let expected = (0.9 + 8.0 / 9.0 + 0.0) / 3.0;
+        assert!(
+            (score - expected).abs() < 1e-12,
+            "expected {expected}, got {score}"
+        );
+
+        // Every point in its own cluster: all coefficients are 0.
+        let all_singletons = silhouette_score(&data, &[0, 1, 2]);
+        assert!(
+            all_singletons.abs() < 1e-12,
+            "singleton clusters must not score 1, got {all_singletons}"
+        );
+    }
+
+    #[test]
+    fn silhouette_is_scale_invariant() {
+        let base = [
+            [0.0, 0.0],
+            [0.1, 0.1],
+            [10.0, 10.0],
+            [10.1, 10.1],
+            [5.0, 4.0],
+        ];
+        let labels = [0, 0, 1, 1, 1];
+        let rows: Vec<&[f64]> = base.iter().map(|r| r.as_slice()).collect();
+        let reference = silhouette_score(&Matrix::from_slice(&rows), &labels);
+        assert!(
+            reference > 0.1,
+            "reference score should be clearly positive"
+        );
+        for scale in [1e-20, 1e-17, 1e15]
+        {
+            let scaled: Vec<Vec<f64>> = base
+                .iter()
+                .map(|r| r.iter().map(|v| v * scale).collect())
+                .collect();
+            let rows: Vec<&[f64]> = scaled.iter().map(|r| r.as_slice()).collect();
+            let score = silhouette_score(&Matrix::from_slice(&rows), &labels);
+            assert!(
+                ((score - reference) / reference).abs() < 1e-12,
+                "scale {scale:e}: expected {reference}, got {score}"
             );
         }
     }
