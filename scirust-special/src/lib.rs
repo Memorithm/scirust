@@ -170,11 +170,38 @@ pub fn gamma(x: f64) -> f64 {
 
 /// The digamma function ψ(x) = d/dx ln Γ(x).
 ///
-/// Uses the recurrence ψ(x+1) = ψ(x) + 1/x to push the argument into the
-/// asymptotic regime, then a Bernoulli asymptotic series. Reflection handles
-/// negative arguments; poles (non-positive integers) return `NaN`.
-pub fn digamma(mut x: f64) -> f64 {
-    if x.is_nan()
+/// * For `x ≥ 10` the asymptotic series
+///   `ψ(x) ≈ ln x − 1/(2x) − Σ_{n=1}^{7} B₂ₙ/(2n·x²ⁿ)` is used; its
+///   truncation error is below `5e-17` there.
+/// * Smaller positive arguments are first moved up with the recurrence
+///   `ψ(x) = ψ(x+1) − 1/x`.
+/// * Negative arguments use the reflection `ψ(x) = ψ(1−x) − π·cot(πx)`, with
+///   `πx` reduced exactly to `π·(x − round(x))` before the cotangent, so large
+///   negative non-integers keep their accuracy.
+/// * Close to the positive zero `x₀ ≈ 1.4616` and the first negative zero
+///   `x₋ ≈ −0.5041`, a Taylor series in `x − x₀` (whose coefficients are
+///   `(−1)ⁿ⁺¹ ζ(n+1, x₀)`, with `x₀` stored as a two-part constant) keeps full
+///   relative accuracy, as in SciPy's `digamma`. Near the other negative
+///   zeros, only absolute accuracy (about `1e-15` times the size of the
+///   terms) is guaranteed.
+///
+/// Away from those zeros the relative error is a few units of `1e-16`.
+/// Non-positive integers (the poles) and `−∞` return `NaN`; `+∞` returns `+∞`.
+///
+/// # Examples
+///
+/// ```
+/// use scirust_special::digamma;
+///
+/// // ψ(1) = −γ (Euler–Mascheroni).
+/// assert!((digamma(1.0) + 0.577_215_664_901_532_9).abs() < 1e-15);
+/// // ψ(1/2) = −γ − 2 ln 2.
+/// let want = -0.577_215_664_901_532_9 - 2.0 * std::f64::consts::LN_2;
+/// assert!((digamma(0.5) - want).abs() < 1e-15);
+/// assert!(digamma(-2.0).is_nan());
+/// ```
+pub fn digamma(x: f64) -> f64 {
+    if x.is_nan() || x == f64::NEG_INFINITY
     {
         return f64::NAN;
     }
@@ -182,28 +209,132 @@ pub fn digamma(mut x: f64) -> f64 {
     {
         return f64::NAN;
     }
-    let mut result = 0.0;
-    // Reflection for x < 0: ψ(1−x) − ψ(x) = π·cot(πx).
+    if (x - DIGAMMA_POS_ROOT.0).abs() < 0.25
+    {
+        return digamma_near_root(x, DIGAMMA_POS_ROOT, &DIGAMMA_POS_ROOT_TAYLOR);
+    }
+    if (x - DIGAMMA_NEG_ROOT.0).abs() < 0.05
+    {
+        return digamma_near_root(x, DIGAMMA_NEG_ROOT, &DIGAMMA_NEG_ROOT_TAYLOR);
+    }
     if x < 0.0
     {
-        result -= PI / (PI * x).tan();
-        x = 1.0 - x;
+        // Reflection ψ(x) = ψ(1−x) − π·cot(πx). cot(πx) has period 1, so the
+        // argument is reduced exactly to r = x − round(x) ∈ [−½, ½] first;
+        // forming π·x directly would lose about |x|·ε of absolute accuracy.
+        let r = x - x.round();
+        let cot_pi = (PI * r).cos() / (PI * r).sin();
+        return digamma_positive(1.0 - x) - PI * cot_pi;
     }
-    // Recurrence up to x >= 12 so the truncated Bernoulli asymptotic series
-    // below is accurate to ~1e-13 (its error scales like B₁₀/(10·x¹⁰)).
-    while x < 12.0
+    digamma_positive(x)
+}
+
+/// ψ(x) for `x > 0` from the recurrence and the asymptotic series.
+fn digamma_positive(mut x: f64) -> f64 {
+    // Σ 1/x over the recurrence steps, subtracted once at the end.
+    let mut shift = 0.0;
+    while x < 10.0
     {
-        result -= 1.0 / x;
+        shift += 1.0 / x;
         x += 1.0;
     }
-    // Asymptotic: ψ(x) ≈ ln x − 1/(2x) − Σ B_{2n}/(2n x^{2n}).
     let inv = 1.0 / x;
     let inv2 = inv * inv;
-    result += x.ln()
-        - 0.5 * inv
-        - inv2 * (1.0 / 12.0 - inv2 * (1.0 / 120.0 - inv2 * (1.0 / 252.0 - inv2 / 240.0)));
-    result
+    // Σ_{n=1}^{7} B₂ₙ/(2n) · x^(−2n), B₂ₙ/(2n) = 1/12, −1/120, 1/252, −1/240,
+    // 1/132, −691/32760, 1/12. The next term is below 5e-17 at x = 10.
+    let series = inv2
+        * (1.0 / 12.0
+            - inv2
+                * (1.0 / 120.0
+                    - inv2
+                        * (1.0 / 252.0
+                            - inv2
+                                * (1.0 / 240.0
+                                    - inv2
+                                        * (1.0 / 132.0
+                                            - inv2 * (691.0 / 32760.0 - inv2 / 12.0))))));
+    (x.ln() - 0.5 * inv - series) - shift
 }
+
+/// ψ(x) = t·Σ cₙ tⁿ⁻¹ with `t = x − root`, where `root = hi + lo`.
+fn digamma_near_root(x: f64, root: (f64, f64), coeffs: &[f64]) -> f64 {
+    // x − hi is exact here (Sterbenz), so t carries the full relative
+    // accuracy that the zero needs.
+    let t = (x - root.0) - root.1;
+    let mut acc = 0.0;
+    for &c in coeffs.iter().rev()
+    {
+        acc = acc * t + c;
+    }
+    t * acc
+}
+
+/// Positive zero of ψ as `hi + lo` (mpmath, 60 digits).
+const DIGAMMA_POS_ROOT: (f64, f64) = (1.461_632_144_968_362_2, 9.549_995_429_965_697e-17);
+/// First negative zero of ψ as `hi + lo` (mpmath, 60 digits).
+const DIGAMMA_NEG_ROOT: (f64, f64) = (-0.504_083_008_264_455_4, -8.154_282_062_438_13e-18);
+
+/// Taylor coefficients `cₙ = ψ⁽ⁿ⁾(x₀)/n! = (−1)ⁿ⁺¹ ζ(n+1, x₀)`, n = 1..24, at
+/// the positive zero (mpmath, 60 digits). Used for |x − x₀| < 0.25, where the
+/// dropped terms are below 1e-17 relative.
+#[allow(clippy::excessive_precision)]
+const DIGAMMA_POS_ROOT_TAYLOR: [f64; 24] = [
+    0.9676722454476212,
+    -0.4427631689835921,
+    0.258499760955651,
+    -0.16394270544240652,
+    0.10782405069126237,
+    -0.07219956125645471,
+    0.04880428816414311,
+    -0.03316112647484736,
+    0.022597648232218104,
+    -0.01542476590494896,
+    0.010538791616612175,
+    -0.007204534386356869,
+    0.004926781395729853,
+    -0.003369801655439328,
+    0.002305126326734928,
+    -0.0015769367714301972,
+    0.0010788252019162967,
+    -0.0007380709389960052,
+    0.000504953265834602,
+    -0.0003454680251063077,
+    0.00023635601564027053,
+    -0.00016170622091974803,
+    0.0001106337276874741,
+    -7.569179582195066e-05,
+];
+
+/// Same coefficients at the first negative zero, n = 1..24. Used for
+/// |x − x₋| < 0.05; the series radius is about 0.496 (the pole at −1), so the
+/// dropped terms are below 1e-20 relative.
+#[allow(clippy::excessive_precision)]
+const DIGAMMA_NEG_ROOT_TAYLOR: [f64; 24] = [
+    8.939798558792134,
+    -0.8093454625306507,
+    32.258572064915505,
+    -2.761011648790828,
+    128.27342343090902,
+    -14.70672173553036,
+    513.2704629562862,
+    -75.37700066344631,
+    2055.5357119463315,
+    -368.5783503832191,
+    8234.667099203069,
+    -1743.364608867363,
+    32997.785655255044,
+    -8051.818155363498,
+    132262.95480834588,
+    -36529.94596948565,
+    530280.3912420176,
+    -163451.79342700253,
+    2126602.3725968753,
+    -723318.8861804305,
+    8530604.878543982,
+    -3172131.3155744765,
+    34228316.69580112,
+    -13807481.997263888,
+];
 
 /// The beta function `B(a, b) = Γ(a)Γ(b)/Γ(a+b)`.
 pub fn beta(a: f64, b: f64) -> f64 {
@@ -1163,6 +1294,45 @@ mod tests {
         ));
         // ψ(2) = 1 − γ
         assert!(close(digamma(2.0), 1.0 - EULER_MASCHERONI, 1e-12));
+    }
+
+    /// Regression: the asymptotic series was cut after the x⁻⁸ term at
+    /// x ≥ 12, which left a bias of about 1.2e-13 on every value (ψ(1) was
+    /// off by 2.1e-13 relative); near the zeros of ψ that bias swamped the
+    /// result (ψ(1.4616321449683622) came out as +8.3e-14 instead of
+    /// −9.2e-17); and the reflection formed tan(π·x) on the unreduced
+    /// argument, so ψ(−9999999999.7) was off by 2.8e-7 relative.
+    /// References: mpmath `digamma` at 40 digits on the exact doubles.
+    #[test]
+    #[allow(clippy::excessive_precision)]
+    fn digamma_keeps_full_relative_precision() {
+        let cases = [
+            (1.0, -0.577_215_664_901_532_860_61),
+            (2.0, 0.422_784_335_098_467_139_39),
+            (1e-10, -10_000_000_000.577_215_3),
+            (-0.5, 0.036_489_973_978_576_520_559),
+            (-0.45, 0.486_262_971_580_048_282_65),
+            // Positive zero x₀ (double nearest) and a point next to it.
+            (1.461_632_144_968_362_2, -9.241_265_521_729_427_5e-17),
+            (1.4616, -3.110_625_123_034_164_965_8e-5),
+            // First negative zero (double nearest).
+            (-0.504_083_008_264_455_4, 7.289_763_902_976_894_944_5e-17),
+            // Large negative non-integers (reflection argument reduction).
+            (-999_999.75, 10.673_918_154_374_491_282),
+            (-9_999_999_999.7, 20.743_338_756_758_580_262),
+        ];
+        for (x, want) in cases
+        {
+            let got = digamma(x);
+            assert!(
+                ((got - want) / want).abs() < 1e-14,
+                "digamma({x:e}) = {got:e}, want {want:e}"
+            );
+        }
+        assert!(digamma(-2.0).is_nan());
+        assert!(digamma(0.0).is_nan());
+        assert!(digamma(f64::NEG_INFINITY).is_nan());
+        assert_eq!(digamma(f64::INFINITY), f64::INFINITY);
     }
 
     #[test]
