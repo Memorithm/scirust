@@ -690,22 +690,53 @@ impl LocalOutlierFactor {
         (k_distances, k_neighbors, reachability)
     }
 
-    /// Local reachability density of point i.
-    fn lrd(reachability: &[Vec<f64>], idx: usize) -> f64 {
+    /// Local reachability density of point i: the inverse of its mean
+    /// reachability distance, regularised by `eps`.
+    ///
+    /// When at least `k + 1` points coincide with `i`, every reachability
+    /// distance of `i` is zero and the unregularised density is infinite.
+    /// `eps` (a tiny fraction of the data's own reachability scale, so the
+    /// result does not depend on units) keeps that density finite and
+    /// very large, as in the usual `1 / (mean + 1e-10)` convention, instead
+    /// of the zero this function used to return, which made a pile of
+    /// duplicates look like the *sparsest* region and hid any outlier
+    /// whose neighbourhood is that pile.
+    fn lrd(reachability: &[Vec<f64>], idx: usize, eps: f64) -> f64 {
         let rd = &reachability[idx];
         if rd.is_empty()
         {
             return 0.0;
         }
-        let sum: f64 = rd.iter().sum();
-        if sum == 0.0
+        let mean = rd.iter().sum::<f64>() / rd.len() as f64;
+        let denom = mean + eps;
+        if denom == 0.0
         {
-            return 0.0;
+            // Only reachable when every reachability distance in the data
+            // set is zero: all neighbourhoods are piles of duplicates.
+            return f64::INFINITY;
         }
-        rd.len() as f64 / sum
+        1.0 / denom
     }
 
+    /// Relative regularisation of the mean reachability distance used by
+    /// [`Self::lrd`], as a fraction of the largest finite reachability
+    /// distance in the data set.
+    const LRD_RELATIVE_EPS: f64 = 1e-10;
+
     /// Compute LOF scores for all points.
+    ///
+    /// The score of a point is the mean local reachability density of its
+    /// `k` nearest neighbours divided by its own density, so values near 1
+    /// mean "as dense as its neighbourhood" and larger values flag outliers.
+    ///
+    /// Duplicate points: if at least `k + 1` points coincide, their mean
+    /// reachability distance is zero. It is regularised by `1e-10` times the
+    /// largest finite reachability distance in the data, so such points
+    /// score 1 (their neighbours are the other copies) and a point that has
+    /// one of them as a neighbour gets a large, finite score, ranked by how
+    /// far it is from the pile. Scores are finite for finite input. Points
+    /// with no neighbours (`k == 0` or a single sample), and every point when
+    /// all reachability distances are zero, score 1.
     #[allow(clippy::needless_range_loop)]
     pub fn fit_predict(&self, data: &[Vec<f64>]) -> Vec<f64> {
         let n = data.len();
@@ -715,17 +746,27 @@ impl LocalOutlierFactor {
         }
         let (_k_distances, k_neighbors, reachability) = self.compute_distances(data);
 
+        let scale = reachability
+            .iter()
+            .flatten()
+            .copied()
+            .filter(|r| r.is_finite())
+            .fold(0.0_f64, f64::max);
+        let eps = Self::LRD_RELATIVE_EPS * scale;
+
         let mut lrds = vec![0.0_f64; n];
         for i in 0..n
         {
-            lrds[i] = Self::lrd(&reachability, i);
+            lrds[i] = Self::lrd(&reachability, i, eps);
         }
 
         let mut lof_scores = vec![1.0_f64; n];
         for i in 0..n
         {
-            if k_neighbors[i].is_empty()
+            if k_neighbors[i].is_empty() || lrds[i].is_infinite()
             {
+                // No neighbours, or every reachability distance in the data
+                // is zero so all densities are equal: the ratio is 1.
                 continue;
             }
             let sum: f64 = k_neighbors[i].iter().map(|&j| lrds[j]).sum();
@@ -1997,6 +2038,108 @@ mod tests {
         let lof = LocalOutlierFactor::new(config);
         let scores = lof.fit_predict(&[]);
         assert!(scores.is_empty());
+    }
+
+    #[test]
+    fn test_lof_duplicate_pile_does_not_hide_outlier() {
+        // Regression test: when at least k+1 points coincide, their
+        // reachability distances are all 0, so their local reachability
+        // density is infinite. The old code mapped that to lrd = 0, which made
+        // every point whose neighbourhood is such a pile look *denser* than
+        // its neighbours: the far outlier below scored LOF = 0 (the most
+        // "normal" score possible) and was never reported.
+        let lof = LocalOutlierFactor::new(LofConfig { k: 2 });
+        let data = vec![
+            vec![0.0, 0.0],
+            vec![0.0, 0.0],
+            vec![0.0, 0.0],
+            vec![0.0, 0.0],
+            vec![10.0, 10.0],
+        ];
+        let scores = lof.fit_predict(&data);
+        for (i, s) in scores.iter().take(4).enumerate()
+        {
+            assert_eq!(
+                *s, 1.0,
+                "duplicate point {} should have LOF 1, got {}",
+                i, s
+            );
+        }
+        assert!(
+            scores[4] > 1.5,
+            "outlier next to a duplicate pile must score as an outlier, got {}",
+            scores[4]
+        );
+        assert_eq!(lof.detect_outliers(&data, 1.5), vec![4]);
+    }
+
+    #[test]
+    fn test_lof_partial_duplicates_stay_finite_and_ordered() {
+        // Three coincident points (k = 2, so their mean reachability distance
+        // is zero), one nearby point and one far point. Scores must stay
+        // finite (downstream AUROC rejects non-finite scores), the
+        // duplicates are mutual neighbours with equal density (LOF 1), and the
+        // far point must rank above the nearby one.
+        let lof = LocalOutlierFactor::new(LofConfig { k: 2 });
+        let data = vec![
+            vec![1.0, 1.0],
+            vec![1.0, 1.0],
+            vec![1.0, 1.0],
+            vec![1.5, 1.0],
+            vec![9.0, 1.0],
+        ];
+        let scores = lof.fit_predict(&data);
+        assert!(
+            scores.iter().all(|s| s.is_finite()),
+            "non-finite LOF score: {:?}",
+            scores
+        );
+        for s in scores.iter().take(3)
+        {
+            assert_eq!(*s, 1.0);
+        }
+        assert!(scores[3] > 1.0, "point beside the pile: {}", scores[3]);
+        assert!(
+            scores[4] > scores[3],
+            "far point should rank above the nearby one: {:?}",
+            scores
+        );
+    }
+
+    #[test]
+    fn test_lof_duplicates_scale_invariant_and_all_identical() {
+        // The duplicate regularisation is relative to the data's own
+        // reachability scale, so rescaling the data must not change the
+        // scores; and a data set of identical points scores 1 everywhere.
+        let lof = LocalOutlierFactor::new(LofConfig { k: 2 });
+        let base = vec![
+            vec![1.0, 1.0],
+            vec![1.0, 1.0],
+            vec![1.0, 1.0],
+            vec![1.5, 1.0],
+            vec![9.0, 1.0],
+        ];
+        let reference = lof.fit_predict(&base);
+        for factor in [1e-12, 1e12]
+        {
+            let scaled: Vec<Vec<f64>> = base
+                .iter()
+                .map(|p| p.iter().map(|v| v * factor).collect())
+                .collect();
+            let scores = lof.fit_predict(&scaled);
+            for (a, b) in scores.iter().zip(&reference)
+            {
+                assert!(
+                    ((a - b) / b).abs() < 1e-6,
+                    "scale {}: {} vs {}",
+                    factor,
+                    a,
+                    b
+                );
+            }
+        }
+        let same = vec![vec![3.0, -2.0]; 6];
+        assert_eq!(lof.fit_predict(&same), vec![1.0; 6]);
     }
 
     #[test]
