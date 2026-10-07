@@ -15,14 +15,12 @@ const QUERY_ROWS: usize = 6144;
 const OUTPUT_ROWS: usize = 24_576;
 const GATES: u32 = 16;
 
-fn usage() -> !
-{
+fn usage() -> ! {
     eprintln!("usage: pvp6_fixture_check --fixture PATH");
     std::process::exit(2);
 }
 
-fn fixture_path() -> String
-{
+fn fixture_path() -> String {
     let args: Vec<String> = env::args().collect();
     args.windows(2)
         .find(|pair| pair[0] == "--fixture")
@@ -44,8 +42,7 @@ fn parse_word(raw: &str, field: &str) -> u64
 fn main()
 {
     let path = fixture_path();
-    let text =
-        fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {path}: {error}"));
+    let text = fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {path}: {error}"));
     assert!(text.is_ascii(), "fixture must be ASCII-compatible UTF-8");
     assert!(
         !text.starts_with('\u{feff}'),
