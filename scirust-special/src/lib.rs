@@ -474,7 +474,7 @@ pub fn regularized_gamma_q(a: f64, x: f64) -> f64 {
 // grows like O(√a) (this is precisely the regime Temme's 1987 uniform
 // asymptotic expansion targets). Rather than silently truncate at a fixed
 // `MAX_ITERS` and return a wrong result for large `a`, the cap scales with
-// `√a` (empirically ~10·√a terms suffice; 20·√a leaves comfortable margin, see
+// `√a` (empirically ~8·√a terms suffice; 20·√a leaves comfortable margin, see
 // `scaled_iteration_budget`), bounded to avoid an unbounded loop on
 // pathological input, and a genuine non-convergence returns `NaN` instead of
 // a truncated series value.
