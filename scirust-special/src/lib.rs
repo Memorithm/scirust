@@ -225,6 +225,30 @@ pub fn ln_beta(a: f64, b: f64) -> f64 {
 // amplified by `|ln x²|` to a relative ~1e-14, so the polynomial is preferred.
 const ERF_TAYLOR_THRESHOLD: f64 = 1e-4;
 
+// Giles' single-precision seed for `erfinv` is fitted for
+// `w = −ln(1 − y²) ≲ 16` (the `f32` range); extrapolated beyond it, its error
+// grows from ~1e-5 at `w = 18` to ~12% at the last `f64` below 1
+// (`w ≈ 36`). Above this `w` the asymptotic tail seed is used instead.
+const ERFINV_TAIL_SEED_W: f64 = 18.0;
+// Upper bound on Halley refinement steps. From either seed (relative error
+// ≲ 2e-5) the cubic convergence reaches full precision in about three steps;
+// the loop exits as soon as the step drops to rounding level.
+const ERFINV_MAX_HALLEY: usize = 6;
+
+// Seed for `erfinv` deep in the tail, `q = 1 − |y|` small: solves
+// `erfc(x) ≈ e^{−x²}/(x√π)·(1 − 1/(2x²) + 3/(4x⁴))` for `x²` by fixed-point
+// iteration (relative error ≲ 2e-5 for `q ≤ 1e-7`).
+fn erfinv_tail_seed(q: f64) -> f64 {
+    let s = -(q * PI.sqrt()).ln();
+    let mut x2 = s;
+    for _ in 0..4
+    {
+        let u = 1.0 / x2;
+        x2 = s - 0.5 * x2.ln() + (u * (-0.5 + 0.75 * u)).ln_1p();
+    }
+    x2.sqrt()
+}
+
 // `erf(x)` for `|x| < ERF_TAYLOR_THRESHOLD` from pure arithmetic (no libm), so
 // it neither underflows with `x²` nor depends on transcendental rounding.
 fn erf_maclaurin(x: f64) -> f64 {
@@ -274,8 +298,17 @@ pub fn erfc(x: f64) -> f64 {
 
 /// The inverse error function `erfinv(y)` for `y ∈ (−1, 1)`.
 ///
-/// Giles' rational approximation followed by two Halley refinement steps, good
-/// to full `f64` precision. Returns `±∞` at `±1` and `NaN` outside `[−1, 1]`.
+/// Giles' rational approximation (an asymptotic tail seed for `1 − |y| ≲ 8e-9`,
+/// beyond the range Giles' single-precision fit covers) followed by Halley
+/// refinement, good to near full `f64` precision. Returns `±∞` at `±1` and
+/// `NaN` outside `[−1, 1]`.
+///
+/// For `|y| ≥ 1/2` the Halley residual is evaluated as `(1 − |y|) − erfc(x)`
+/// rather than `erf(x) − |y|`: `1 − |y|` is exact there (Sterbenz), and
+/// `erfc` keeps its full relative precision in the tail, whereas
+/// `erf(x) − |y|` cancels down to the rounding error of `erf(x) ≈ 1`. This
+/// keeps the result accurate up to the last representable `y` below `1`
+/// (`erfinv(1 − 2⁻⁵³) ≈ 5.8636`).
 pub fn erfinv(y: f64) -> f64 {
     if y <= -1.0
     {
@@ -296,9 +329,16 @@ pub fn erfinv(y: f64) -> f64 {
     {
         return 0.0;
     }
+    // erfinv is odd: refine on t = |y| and restore the sign at the end.
+    let t = y.abs();
     // Initial guess (Giles, 2010).
-    let w = -((1.0 - y) * (1.0 + y)).ln();
-    let mut x = if w < 5.0
+    let w = -((1.0 - t) * (1.0 + t)).ln();
+    let tail = 1.0 - t; // exact for t ≥ 1/2 (Sterbenz)
+    let mut x = if w >= ERFINV_TAIL_SEED_W
+    {
+        erfinv_tail_seed(tail)
+    }
+    else if w < 5.0
     {
         let w = w - 2.5;
         let mut p = 2.810_226_36e-08;
@@ -309,7 +349,7 @@ pub fn erfinv(y: f64) -> f64 {
         p = -0.001_253_725_03 + p * w;
         p = -0.004_177_681_64 + p * w;
         p = 0.246_640_727 + p * w;
-        1.501_405_53 + p * w
+        (1.501_405_53 + p * w) * t
     }
     else
     {
@@ -322,16 +362,27 @@ pub fn erfinv(y: f64) -> f64 {
         p = -0.007_622_461_3 + p * w;
         p = 0.009_438_870_47 + p * w;
         p = 1.001_674_06 + p * w;
-        2.832_976_82 + p * w
-    } * y;
-    // Two Halley steps sharpen the rational seed to full precision.
-    for _ in 0..2
+        (2.832_976_82 + p * w) * t
+    };
+    // Halley steps sharpen the seed to full precision. In the upper half the
+    // residual erf(x) − t is rewritten as (1 − t) − erfc(x): 1 − t is exact
+    // for t ≥ 1/2, and erfc(x) is accurate relative to itself, so the
+    // residual keeps full precision even where erf(x) rounds to 1.
+    let upper = t >= 0.5;
+    for _ in 0..ERFINV_MAX_HALLEY
     {
-        let err = erf(x) - y;
-        let deriv = 2.0 / PI.sqrt() * (-x * x).exp();
-        x -= err / (deriv - x * err); // Halley (uses erf'' = -2x·erf').
+        let err = if upper { tail - erfc(x) } else { erf(x) - t };
+        let deriv = FRAC_2_SQRT_PI * (-x * x).exp();
+        // Halley for f(x) = erf(x) − t: f'' = −2x·f', so
+        // x ← x − f / (f' − f·f''/(2f')) = x − f / (f' + x·f).
+        let step = err / (deriv + x * err);
+        x -= step;
+        if step.abs() <= 4.0 * f64::EPSILON * x
+        {
+            break;
+        }
     }
-    x
+    if y < 0.0 { -x } else { x }
 }
 
 // ============================================================ //
@@ -1135,6 +1186,51 @@ mod tests {
         assert!(erfinv(1.0).is_infinite());
         assert!(erfinv(-1.0).is_infinite());
         assert!(erfinv(1.5).is_nan());
+    }
+
+    #[test]
+    fn erfinv_accurate_near_plus_minus_one() {
+        // Regression: the Halley residual used to be `erf(x) − y`, which
+        // cancels to the rounding error of `erf(x) ≈ 1` near |y| = 1, and the
+        // single-precision Giles seed was extrapolated far past its fit
+        // range. erfinv(1 − 1e-15) returned 5.4134 instead of 5.6759 (4.6%),
+        // and erfinv(1 − 2⁻⁵³) 5.3029 instead of 5.8636 (9.6%).
+        // Oracle: mpmath.erfinv evaluated at the exact f64 inputs.
+        let cases = [
+            (1.0 - 1e-10, 4.572_824_958_544_925),
+            (1.0 - 1e-12, 5.042_031_898_572_696),
+            (1.0 - 1e-15, 5.675_915_739_744_713),
+            (1.0 - f64::EPSILON / 2.0, 5.863_584_748_755_168),
+        ];
+        for &(y, want) in &cases
+        {
+            assert!(close(erfinv(y), want, 1e-13), "y = {y}: {}", erfinv(y));
+            assert!(
+                close(erfinv(-y), -want, 1e-13),
+                "y = {}: {}",
+                -y,
+                erfinv(-y)
+            );
+        }
+    }
+
+    #[test]
+    fn erfinv_tail_round_trips_through_erfc() {
+        // In the tail the meaningful check is on q = 1 − y: erfc(erfinv(1 − q))
+        // must give back q to high relative precision (erf(x) itself rounds
+        // to 1 there and cannot discriminate).
+        let mut q = 0.25_f64;
+        while q > 1e-16
+        {
+            let y = 1.0 - q;
+            let back = erfc(erfinv(y));
+            let exact_q = 1.0 - y; // exact (Sterbenz)
+            assert!(
+                (back - exact_q).abs() <= 1e-12 * exact_q,
+                "q = {exact_q:e}: erfc(erfinv(1 − q)) = {back:e}"
+            );
+            q *= 0.1;
+        }
     }
 
     // ---- incomplete gamma / χ² ----
