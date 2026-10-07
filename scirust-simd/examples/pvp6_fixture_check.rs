@@ -15,12 +15,14 @@ const QUERY_ROWS: usize = 6144;
 const OUTPUT_ROWS: usize = 24_576;
 const GATES: u32 = 16;
 
-fn usage() -> ! {
+fn usage() -> !
+{
     eprintln!("usage: pvp6_fixture_check --fixture PATH");
     std::process::exit(2);
 }
 
-fn fixture_path() -> String {
+fn fixture_path() -> String
+{
     let args: Vec<String> = env::args().collect();
     args.windows(2)
         .find(|pair| pair[0] == "--fixture")
@@ -28,22 +30,32 @@ fn fixture_path() -> String {
         .unwrap_or_else(|| usage())
 }
 
-fn parse_word(raw: &str, field: &str) -> u64 {
+fn parse_word(raw: &str, field: &str) -> u64
+{
     assert_eq!(raw.len(), 16, "{field} must contain exactly 16 hex digits");
     assert!(
-        raw.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()),
+        raw.bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()),
         "{field} must use lowercase hexadecimal"
     );
     u64::from_str_radix(raw, 16).unwrap_or_else(|_| panic!("{field} is not hexadecimal"))
 }
 
-fn main() {
+fn main()
+{
     let path = fixture_path();
-    let text = fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {path}: {error}"));
+    let text =
+        fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {path}: {error}"));
     assert!(text.is_ascii(), "fixture must be ASCII-compatible UTF-8");
-    assert!(!text.starts_with('\u{feff}'), "fixture must not contain a BOM");
+    assert!(
+        !text.starts_with('\u{feff}'),
+        "fixture must not contain a BOM"
+    );
     assert!(text.ends_with('\n'), "fixture must end with exactly one LF");
-    assert!(!text.ends_with("\n\n"), "fixture must contain one trailing LF");
+    assert!(
+        !text.ends_with("\n\n"),
+        "fixture must contain one trailing LF"
+    );
 
     let lines: Vec<&str> = text.lines().collect();
     assert_eq!(
@@ -54,9 +66,12 @@ fn main() {
 
     let mut cursor = 1usize;
     let mut banks = HashSet::new();
-    for density in DENSITIES {
-        for gate in 0..GATES {
-            for word in 0..32usize {
+    for density in DENSITIES
+    {
+        for gate in 0..GATES
+        {
+            for word in 0..32usize
+            {
                 let fields: Vec<&str> = lines[cursor].split(',').collect();
                 assert_eq!(fields.len(), 6, "BANK record must have six fields");
                 assert_eq!(fields[0], "BANK");
@@ -74,8 +89,10 @@ fn main() {
     assert_eq!(banks.len(), 2048, "BANK records must be unique");
 
     let mut queries = HashSet::new();
-    for schedule in SCHEDULES {
-        for position in 0..BANK_WORDS {
+    for schedule in SCHEDULES
+    {
+        for position in 0..BANK_WORDS
+        {
             let fields: Vec<&str> = lines[cursor].split(',').collect();
             assert_eq!(fields.len(), 4, "QUERY record must have four fields");
             assert_eq!(fields[0], "QUERY");
@@ -83,16 +100,22 @@ fn main() {
             assert_eq!(fields[2].parse::<usize>().unwrap(), position);
             let address = fields[3].parse::<usize>().unwrap();
             assert!(address < 2048, "QUERY address out of range");
-            assert!(queries.insert((schedule, position)), "duplicate QUERY record");
+            assert!(
+                queries.insert((schedule, position)),
+                "duplicate QUERY record"
+            );
             cursor += 1;
         }
     }
     assert_eq!(queries.len(), QUERY_ROWS, "unexpected QUERY count");
 
     let mut outputs = HashSet::new();
-    for schedule in SCHEDULES {
-        for density in DENSITIES {
-            for position in 0..BANK_WORDS {
+    for schedule in SCHEDULES
+    {
+        for density in DENSITIES
+        {
+            for position in 0..BANK_WORDS
+            {
                 let fields: Vec<&str> = lines[cursor].split(',').collect();
                 assert_eq!(fields.len(), 5, "OUTPUT record must have five fields");
                 assert_eq!(fields[0], "OUTPUT");
@@ -101,7 +124,10 @@ fn main() {
                 assert_eq!(fields[3].parse::<usize>().unwrap(), position);
                 let word = parse_word(fields[4], "word_hex");
                 assert_eq!(word >> GATES, 0, "OUTPUT padding bits must be zero");
-                assert!(outputs.insert((density, schedule, position)), "duplicate OUTPUT record");
+                assert!(
+                    outputs.insert((density, schedule, position)),
+                    "duplicate OUTPUT record"
+                );
                 cursor += 1;
             }
         }
@@ -109,7 +135,21 @@ fn main() {
     assert_eq!(outputs.len(), OUTPUT_ROWS, "unexpected OUTPUT count");
 
     let end: Vec<&str> = lines[cursor].split(',').collect();
-    assert_eq!(end, ["END", "banks", "4", "bank_words", "2048", "query_rows", "6144", "output_rows", "24576"]);
+    assert_eq!(
+        end.as_slice(),
+        [
+            "END",
+            "banks",
+            "4",
+            "bank_words",
+            "2048",
+            "query_rows",
+            "6144",
+            "output_rows",
+            "24576"
+        ]
+        .as_slice()
+    );
     assert_eq!(cursor + 1, lines.len(), "unexpected records after END");
 
     println!(
