@@ -573,9 +573,122 @@ const DIGAMMA_NEG_ROOT_TAYLOR: [f64; 24] = [
     -13807481.997263888,
 ];
 
-/// The beta function `B(a, b) = Γ(a)Γ(b)/Γ(a+b)`.
+/// The beta function `B(a, b) = Γ(a)Γ(b)/Γ(a+b)`, including its analytic
+/// continuation to negative arguments.
+///
+/// * When `|a|`, `|b|` and `|a + b|` are below 170, the value is the ratio of
+///   [`gamma`] values (each accurate to a few rounding units), arranged as
+///   `(Γ(q)/Γ(a+b))·Γ(p)` with `q` the larger argument so no intermediate
+///   overflows. This avoids `exp(ln B)`, whose relative error grows like
+///   `ε·|ln B|` (≈ 7e-15 at `B(80, 80) ≈ 2.7e-49`).
+/// * Otherwise it is `±exp(ln |B|)` from [`ln_beta`], with the sign of
+///   `Γ(a)·Γ(b)/Γ(a+b)`.
+/// * At a non-positive integer `a = −m` with a positive integer `b = n ≤ m`
+///   (or the same with `a` and `b` swapped) the poles of `Γ(a)` and `Γ(a+b)`
+///   cancel, and the finite limit `(−1)ⁿ·B(m − n + 1, n)` is returned.
+/// * Any other non-positive integer argument is a pole: `+∞` (the sign is not
+///   defined there). When only `a + b` is a non-positive integer, `B = 0`.
+/// * `B(+∞, b)` is `0` for `b > 0` and `±∞` for negative non-integer `b`;
+///   `NaN` or `−∞` input gives `NaN`.
+///
+/// # Examples
+///
+/// ```
+/// use scirust_special::beta;
+/// // B(2, 3) = 1/12.
+/// assert!((beta(2.0, 3.0) - 1.0 / 12.0).abs() < 1e-16);
+/// // Negative arguments keep their sign: B(−½, 1) = 1/(−½) = −2.
+/// assert!((beta(-0.5, 1.0) + 2.0).abs() < 1e-14);
+/// // Cancelling poles: B(−3, 2) = 1/((−3)(−2)) = 1/6.
+/// assert!((beta(-3.0, 2.0) - 1.0 / 6.0).abs() < 1e-15);
+/// assert_eq!(beta(-1.0, 0.5), f64::INFINITY);
+/// ```
 pub fn beta(a: f64, b: f64) -> f64 {
-    ln_beta(a, b).exp()
+    if let Some(v) = beta_edge(a, b)
+    {
+        return v.0;
+    }
+    let s = a + b;
+    let (p, q) = if a <= b { (a, b) } else { (b, a) };
+    if a.abs() < BETA_DIRECT_MAX && b.abs() < BETA_DIRECT_MAX && s.abs() < BETA_DIRECT_MAX
+    {
+        let (gp, gq, gs) = (gamma(p), gamma(q), gamma(s));
+        if gp.is_finite() && gq.is_finite() && gs.is_finite() && gs != 0.0
+        {
+            let t = gq / gs;
+            let r = t * gp;
+            if t.is_normal() && r.is_normal()
+            {
+                return r;
+            }
+        }
+    }
+    gamma_sign(a) * gamma_sign(b) * gamma_sign(s) * ln_beta(a, b).exp()
+}
+
+/// Bound on `|a|`, `|b|`, `|a + b|` below which [`beta`] is formed as a ratio
+/// of gamma values (`Γ` overflows just above 171.6).
+const BETA_DIRECT_MAX: f64 = 170.0;
+
+/// Sign of `Γ(x)` for `x` that is not a pole: `+1` for `x > 0`, and on the
+/// negative axis `−1` on `(−1, 0)`, `(−3, −2)`, … (odd `⌊x⌋`).
+fn gamma_sign(x: f64) -> f64 {
+    if x > 0.0 || x.floor().rem_euclid(2.0) == 0.0
+    {
+        1.0
+    }
+    else
+    {
+        -1.0
+    }
+}
+
+fn is_non_positive_integer(x: f64) -> bool {
+    x <= 0.0 && x.is_finite() && x == x.floor()
+}
+
+/// Shared edge-case handling for [`beta`] and [`ln_beta`]: returns
+/// `(B(a, b), ln |B(a, b)|)` for `NaN`/infinite input, poles, zeros and the
+/// cancelling-pole limit, and `None` for the regular case.
+fn beta_edge(a: f64, b: f64) -> Option<(f64, f64)> {
+    if a.is_nan() || b.is_nan() || a == f64::NEG_INFINITY || b == f64::NEG_INFINITY
+    {
+        return Some((f64::NAN, f64::NAN));
+    }
+    // Cancelling poles: a = −m, b = n with 1 ≤ n ≤ m (either order).
+    for (m, n) in [(a, b), (b, a)]
+    {
+        if is_non_positive_integer(m) && n >= 1.0 && n == n.floor() && m + n <= 0.0
+        {
+            let (p, q) = (1.0 - m - n, n);
+            let sign = if n.rem_euclid(2.0) == 1.0 { -1.0 } else { 1.0 };
+            return Some((sign * beta(p, q), ln_beta(p, q)));
+        }
+    }
+    if is_non_positive_integer(a) || is_non_positive_integer(b)
+    {
+        return Some((f64::INFINITY, f64::INFINITY));
+    }
+    if a == f64::INFINITY || b == f64::INFINITY
+    {
+        let other = if a == f64::INFINITY { b } else { a };
+        // B(q, b) ~ Γ(b)·q^(−b) as q → ∞.
+        return Some(
+            if other > 0.0
+            {
+                (0.0, f64::NEG_INFINITY)
+            }
+            else
+            {
+                (gamma_sign(other) * f64::INFINITY, f64::INFINITY)
+            },
+        );
+    }
+    if is_non_positive_integer(a + b)
+    {
+        return Some((0.0, f64::NEG_INFINITY));
+    }
+    None
 }
 
 /// `ln B(a, b)`, the logarithm of the beta function.
@@ -595,9 +708,15 @@ pub fn beta(a: f64, b: f64) -> f64 {
 /// `q·ln q` and lost every significant digit once one argument was large and
 /// the other small (`ln B(1e15, ½)` came out as `−20` instead of `≈ −16.697`).
 ///
-/// Below that range, and for non-positive or non-finite arguments (where the
-/// result is `ln |B|` of the analytic continuation, `±∞` or `NaN`), the plain
-/// `ln Γ` sum is kept; there its terms are small enough not to cancel badly.
+/// Below that range, and for negative arguments (where the result is
+/// `ln |B|` of the analytic continuation), the plain `ln Γ` sum is kept; there
+/// its terms are small enough not to cancel badly.
+///
+/// Poles, zeros and infinite arguments follow [`beta`]: `+∞` at a pole of
+/// `Γ(a)` or `Γ(b)` that `Γ(a+b)` does not cancel, `−∞` when only `a + b` is a
+/// non-positive integer or one argument is `+∞` and the other positive, the
+/// finite `ln B(m − n + 1, n)` at the cancelling poles `B(−m, n)`, `1 ≤ n ≤ m`,
+/// and `NaN` for `NaN` or `−∞` input.
 ///
 /// # Examples
 ///
@@ -610,6 +729,10 @@ pub fn beta(a: f64, b: f64) -> f64 {
 /// assert!((lb - (-16.697_023_254_530_64)).abs() < 1e-12);
 /// ```
 pub fn ln_beta(a: f64, b: f64) -> f64 {
+    if let Some(v) = beta_edge(a, b)
+    {
+        return v.1;
+    }
     let (p, q) = if a <= b { (a, b) } else { (b, a) };
     if !(p > 0.0 && q.is_finite() && q >= LN_BETA_STIRLING_MIN)
     {
