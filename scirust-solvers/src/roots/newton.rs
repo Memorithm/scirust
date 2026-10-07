@@ -1,9 +1,17 @@
 //! Méthode de Newton 1D avec dérivée (autodiff ou explicite).
 //!
 //! ## Sécurité numérique
-//! - Division par zéro: `|dfx| < 1e-15` → `SolverError::ZeroDerivative`
-//! - check_finite sur fx, dfx, step
-//! - Détection oscillation: si signe du step change, on réduit le pas
+//! - Racine exacte (`f(x) == 0`) ou `|f(x)| < tol.abs` → solution acceptée.
+//! - Dérivée nulle (`f'(x) == 0`) ou pas `f(x)/f'(x)` non fini →
+//!   `SolverError::ZeroDerivative`. Il n'y a pas de seuil absolu sur `|f'|` :
+//!   une pente de `1e-18` est légitime (par ex. `ln(x) − 40` près de `x ≈ 2,35e17`).
+//! - Convergence : `|pas| < tol.abs + tol.rel · |x|`, testée avant toute
+//!   détection de stagnation.
+//! - Stagnation : si le pas ne change plus `x` en `f64` sans que la tolérance
+//!   soit atteinte (tolérance plus fine que la précision machine en `x`) →
+//!   `SolverError::StepUnderflow`. Le critère est relatif à `x`, pas un seuil
+//!   absolu, pour que les racines de petite amplitude (`1e-10`) convergent.
+//! - check_finite sur fx et dfx.
 
 use crate::{Solution, SolverError, SolverResult, Tolerance};
 use scirust_autodiff::Dual;
@@ -15,6 +23,21 @@ fn check_finite(v: f64, _label: &str) -> Result<(), SolverError> {
         return Err(SolverError::NanDetected { iter: 0, value: v });
     }
     Ok(())
+}
+
+/// Newton step `f(x) / f'(x)`, or `None` when the derivative is zero or so
+/// small relative to `f(x)` that the step is not finite.
+///
+/// There is deliberately no absolute floor on `|f'(x)|`: the derivative's
+/// scale depends on the units of `x` and `f`, and only an exactly flat slope
+/// or an overflowing step makes the Newton update undefined.
+fn newton_step(fx: f64, dfx: f64) -> Option<f64> {
+    if dfx == 0.0
+    {
+        return None;
+    }
+    let step = fx / dfx;
+    step.is_finite().then_some(step)
 }
 
 /// Newton avec dérivée calculée automatiquement par dual numbers.
@@ -31,32 +54,29 @@ where
         check_finite(fx, "fx")?;
         check_finite(dfx, "dfx")?;
 
-        if fx.abs() < tol.abs
+        if fx == 0.0 || fx.abs() < tol.abs
         {
             return Ok(Solution::new(x, k, fx.abs()));
         }
-        if dfx.abs() < 1e-15
+        let Some(step) = newton_step(fx, dfx)
+        else
         {
             warn!(target: "solver", "Newton 1D: zero derivative at x={x:.6e}");
             return Err(SolverError::ZeroDerivative { x });
-        }
+        };
 
-        let step = fx / dfx;
-        check_finite(step, "step")?;
-
-        if step.abs() < 1e-16
+        let x_new = x - step;
+        if step.abs() < tol.abs + tol.rel * x_new.abs()
         {
-            warn!(target: "solver", "Newton 1D: step underflow {step:.3e} at iteration {k}");
+            let fx2 = f(Dual::new(x_new, 0.0)).value;
+            return Ok(Solution::new(x_new, k + 1, fx2.abs()));
+        }
+        if x_new == x
+        {
+            warn!(target: "solver", "Newton 1D: step {step:.3e} no longer moves x={x:.6e} at iteration {k}");
             return Err(SolverError::StepUnderflow { step });
         }
-
-        x -= step;
-
-        if step.abs() < tol.abs + tol.rel * x.abs()
-        {
-            let fx2 = f(Dual::new(x, 0.0)).value;
-            return Ok(Solution::new(x, k + 1, fx2.abs()));
-        }
+        x = x_new;
     }
     let fx = f(Dual::new(x, 0.0)).value;
     Err(SolverError::NoConvergence {
@@ -84,31 +104,28 @@ where
         check_finite(fx, "fx")?;
         check_finite(dfx, "dfx")?;
 
-        if fx.abs() < tol.abs
+        if fx == 0.0 || fx.abs() < tol.abs
         {
             return Ok(Solution::new(x, k, fx.abs()));
         }
-        if dfx.abs() < 1e-15
+        let Some(step) = newton_step(fx, dfx)
+        else
         {
             warn!(target: "solver", "Newton 1D (explicit): zero derivative at x={x:.6e}");
             return Err(SolverError::ZeroDerivative { x });
+        };
+
+        let x_new = x - step;
+        if step.abs() < tol.abs + tol.rel * x_new.abs()
+        {
+            let fx2 = f(x_new);
+            return Ok(Solution::new(x_new, k + 1, fx2.abs()));
         }
-
-        let step = fx / dfx;
-        check_finite(step, "step")?;
-
-        if step.abs() < 1e-16
+        if x_new == x
         {
             return Err(SolverError::StepUnderflow { step });
         }
-
-        x -= step;
-
-        if step.abs() < tol.abs + tol.rel * x.abs()
-        {
-            let fx2 = f(x);
-            return Ok(Solution::new(x, k + 1, fx2.abs()));
-        }
+        x = x_new;
     }
     Err(SolverError::NoConvergence {
         iterations: tol.max_iter,
@@ -150,5 +167,76 @@ mod tests {
         )
         .unwrap();
         assert_relative_eq!(s.value, 4.493_409_457_909_064, epsilon = 1e-9);
+    }
+
+    /// `ln(x) = 40` has its root at `x = e^40 ≈ 2.354e17`, where the slope
+    /// is `1/x ≈ 4.2e-18`. The old absolute `|f'| < 1e-15` cutoff reported
+    /// `ZeroDerivative` at the starting point although Newton converges.
+    #[test]
+    fn newton_accepts_small_but_nonzero_slope() {
+        let root = 40.0_f64.exp();
+        let s = newton(|x: Dual| x.ln() - 40.0, 2e17, Tolerance::default()).unwrap();
+        assert_relative_eq!(s.value, root, max_relative = 1e-12);
+        let s = newton_with_derivative(|x| x.ln() - 40.0, |x| 1.0 / x, 2e17, Tolerance::default())
+            .unwrap();
+        assert_relative_eq!(s.value, root, max_relative = 1e-12);
+    }
+
+    /// A function measured in small units, `1e-20 · (x² − 2)`, with a residual
+    /// tolerance chosen for that scale. The slope `≈ 2.8e-20` is not zero.
+    #[test]
+    fn newton_small_scale_function() {
+        let tol = Tolerance::new(1e-40, 1e-12, 200);
+        let s = newton(|x: Dual| (x * x - 2.0) * 1e-20, 1.0, tol).unwrap();
+        assert_relative_eq!(s.value, 2.0_f64.sqrt(), max_relative = 1e-10);
+        let s = newton_with_derivative(|x| (x * x - 2.0) * 1e-20, |x| 2e-20 * x, 1.0, tol).unwrap();
+        assert_relative_eq!(s.value, 2.0_f64.sqrt(), max_relative = 1e-10);
+    }
+
+    /// With a purely relative tolerance near machine precision, roots of
+    /// magnitude below ~0.5 used to fail with `StepUnderflow` because the
+    /// final Newton step is below the absolute `1e-16` cutoff even though it
+    /// satisfies `|step| < rel · |x|`. An exact zero residual (`f(x) == 0`)
+    /// with `abs = 0` was also rejected.
+    #[test]
+    fn newton_small_roots_with_relative_tolerance() {
+        let tol = Tolerance::new(0.0, 1e-15, 200);
+        for c in [0.02_f64, 2e-6, 2.0, 2e-20]
+        {
+            let root = c.sqrt();
+            let s =
+                newton(|x: Dual| x * x - c, 1.0, tol).unwrap_or_else(|e| panic!("c = {c}: {e:?}"));
+            assert_relative_eq!(s.value, root, max_relative = 4e-15);
+            let s = newton_with_derivative(|x| x * x - c, |x| 2.0 * x, 1.0, tol)
+                .unwrap_or_else(|e| panic!("c = {c}: {e:?}"));
+            assert_relative_eq!(s.value, root, max_relative = 4e-15);
+        }
+    }
+
+    #[test]
+    fn newton_still_reports_flat_derivative() {
+        let r = newton(|x: Dual| x * x + 1.0, 0.0, Tolerance::default());
+        assert!(matches!(r, Err(SolverError::ZeroDerivative { .. })));
+        let r = newton_with_derivative(|x| x * x + 1.0, |x| 2.0 * x, 0.0, Tolerance::default());
+        assert!(matches!(r, Err(SolverError::ZeroDerivative { .. })));
+    }
+
+    /// A zero tolerance cannot be met at an irrational root: the solver must
+    /// stop with an error (stagnation or iteration limit), not report success.
+    #[test]
+    fn newton_unreachable_tolerance_is_an_error() {
+        let tol = Tolerance::new(0.0, 0.0, 200);
+        let r = newton(|x: Dual| x * x - 2.0, 1.0, tol);
+        match r
+        {
+            Ok(s) => assert_eq!(s.info.residual, 0.0),
+            Err(e) => assert!(
+                matches!(
+                    e,
+                    SolverError::StepUnderflow { .. } | SolverError::NoConvergence { .. }
+                ),
+                "{e:?}"
+            ),
+        }
     }
 }

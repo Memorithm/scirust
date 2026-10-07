@@ -2,8 +2,13 @@
 //! deux points pour approximer la pente. Ordre de convergence ≈ 1.618.
 //!
 //! ## Sécurité numérique
-//! - Division par zéro interceptée via `|denom| < 1e-30`
-//! - Détection de stagnation : `|x2 - x1| < 1e-16` → StepUnderflow
+//! - Racine exacte (`f(x1) == 0`) ou `|f(x1)| < tol.abs` → solution acceptée.
+//! - Sécante horizontale (`f(x1) == f(x0)`) → `StepUnderflow`. Pas de seuil
+//!   absolu sur `|f(x1) − f(x0)|` : il dépend des unités de `f`.
+//! - Convergence : `|x2 − x1| < tol.abs + tol.rel · |x2|`, testée avant la
+//!   détection de stagnation.
+//! - Stagnation : `x2 == x1` sans tolérance atteinte → StepUnderflow
+//!   (critère relatif à `x`, pas un seuil absolu de `1e-16`).
 //! - check_finite sur f(x0), f(x1), x2
 
 use crate::{Solution, SolverError, SolverResult, Tolerance};
@@ -31,13 +36,13 @@ pub fn secant<F: Fn(f64) -> f64>(
 
     for k in 0..tol.max_iter
     {
-        if f1.abs() < tol.abs
+        if f1 == 0.0 || f1.abs() < tol.abs
         {
             return Ok(Solution::new(x1, k, f1.abs()));
         }
 
         let denom = f1 - f0;
-        if denom.abs() < 1e-30
+        if denom == 0.0
         {
             warn!(
                 target: "solver",
@@ -52,20 +57,20 @@ pub fn secant<F: Fn(f64) -> f64>(
 
         let step = (x2 - x1).abs();
 
-        if step < 1e-16
-        {
-            warn!(
-                target: "solver",
-                "Secant: step underflow {:.3e} at iteration {}",
-                step, k
-            );
-            return Err(SolverError::StepUnderflow { step });
-        }
-
         if step < tol.abs + tol.rel * x2.abs()
         {
             let f2 = f(x2);
             return Ok(Solution::new(x2, k + 1, f2.abs()));
+        }
+
+        if x2 == x1
+        {
+            warn!(
+                target: "solver",
+                "Secant: step no longer moves x={:.6e} at iteration {}",
+                x1, k
+            );
+            return Err(SolverError::StepUnderflow { step });
         }
 
         x0 = x1;
@@ -102,5 +107,35 @@ mod tests {
     fn secant_transcendental() {
         let s = secant(|x| x.exp() - 3.0 * x, 0.0, 1.0, Tolerance::default()).unwrap();
         assert!((s.value - 0.6190612867).abs() < 1e-6);
+    }
+
+    /// Roots of magnitude below ~0.5 with a relative tolerance near machine
+    /// precision: the old absolute `|x2 − x1| < 1e-16` stagnation test fired
+    /// before the convergence test (`0.02`, `2e-6`, `2e-20` all failed).
+    #[test]
+    fn secant_small_roots_with_relative_tolerance() {
+        let tol = Tolerance::new(0.0, 1e-15, 200);
+        for c in [0.02_f64, 2e-6, 2.0, 2e-20]
+        {
+            let s =
+                secant(|x| x * x - c, 1.0, 0.9, tol).unwrap_or_else(|e| panic!("c = {c}: {e:?}"));
+            assert_relative_eq!(s.value, c.sqrt(), max_relative = 4e-15);
+        }
+    }
+
+    /// `1e-35 · (x² − 2)` with a residual tolerance for that scale: the
+    /// secant denominator is ~1e-35, which the old absolute `1e-30` cutoff
+    /// rejected as a division by zero.
+    #[test]
+    fn secant_small_scale_function() {
+        let tol = Tolerance::new(1e-60, 1e-12, 200);
+        let s = secant(|x| (x * x - 2.0) * 1e-35, 1.0, 2.0, tol).unwrap();
+        assert_relative_eq!(s.value, 2.0_f64.sqrt(), max_relative = 1e-10);
+    }
+
+    #[test]
+    fn secant_still_reports_flat_secant() {
+        let r = secant(|x| x * x + 1.0, -1.0, 1.0, Tolerance::default());
+        assert!(matches!(r, Err(SolverError::StepUnderflow { .. })));
     }
 }
