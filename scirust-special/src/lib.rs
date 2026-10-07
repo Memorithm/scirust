@@ -84,28 +84,159 @@ fn scaled_iteration_budget(scale: f64) -> usize {
 //  Gamma family                                                //
 // ============================================================ //
 
-// Lanczos approximation coefficients (g = 7, n = 9) — the classic Godfrey set,
-// accurate to ~15 significant digits for `ln_gamma` across the positive axis.
-const LANCZOS_G: f64 = 7.0;
-const LANCZOS_COEFFS: [f64; 9] = [
-    0.999_999_999_999_809_9,
-    676.520_368_121_885_1,
-    -1_259.139_216_722_402_8,
-    771.323_428_777_653_1,
-    -176.615_029_162_140_6,
-    12.507_343_278_686_905,
-    -0.138_571_095_265_720_12,
-    9.984_369_578_019_572e-6,
-    1.505_632_735_149_311_6e-7,
+/// `1 − γ`, the linear coefficient of `ln Γ(2 + z)` at `z = 0`.
+const ONE_MINUS_EULER: f64 = 0.422_784_335_098_467_13;
+
+/// Taylor coefficients of `ln Γ(2 + z) − (1 − γ)·z`: the coefficient of `zᵏ`
+/// is `(−1)ᵏ·(ζ(k) − 1)/k` for `k = 2..=30` (Abramowitz & Stegun 6.1.33,
+/// rearranged), rounded from 40-digit `mpmath` values. The series converges
+/// for `|z| < 2`; on the `|z| ≤ ½` range where it is used its terms fall like
+/// `4⁻ᵏ/k`, so the first omitted one is below `1e-20`.
+const LN_GAMMA_2_TAYLOR: [f64; 29] = [
+    0.322_467_033_424_113_2,
+    -0.067_352_301_053_198_1,
+    0.020_580_808_427_784_546,
+    -0.007_385_551_028_673_986,
+    0.002_890_510_330_741_523_4,
+    -0.001_192_753_911_703_261,
+    0.000_509_669_524_743_042_5,
+    -0.000_223_154_758_453_579_39,
+    9.945_751_278_180_853e-5,
+    -4.492_623_673_813_314e-5,
+    2.050_721_277_567_069e-5,
+    -9.439_488_275_268_397e-6,
+    4.374_866_789_907_488e-6,
+    -2.039_215_753_801_366e-6,
+    9.551_412_130_407_42e-7,
+    -4.492_469_198_764_566e-7,
+    2.120_718_480_555_466_5e-7,
+    -1.004_322_482_396_809_9e-7,
+    4.769_810_169_363_980_4e-8,
+    -2.271_109_460_894_316_4e-8,
+    1.083_865_921_489_695_5e-8,
+    -5.183_475_041_970_047e-9,
+    2.483_674_543_802_478_5e-9,
+    -1.192_140_140_586_091_2e-9,
+    5.731_367_241_678_862e-10,
+    -2.759_522_885_124_233_4e-10,
+    1.330_476_437_424_449e-10,
+    -6.422_964_563_838_1e-11,
+    3.104_424_774_732_227_6e-11,
 ];
+
+// `ln Γ(2 + z)` for `|z| ≤ ½` from its Taylor series about the zero at 2.
+// Every coefficient is exact to rounding and the sum is dominated by its
+// first term, so the result keeps full *relative* accuracy as `z → 0`, where
+// the Lanczos sum used before (absolute error ~1e-16) lost every digit.
+fn ln_gamma_2_plus(z: f64) -> f64 {
+    let mut acc = 0.0;
+    for &c in LN_GAMMA_2_TAYLOR.iter().rev()
+    {
+        acc = acc * z + c;
+    }
+    z * (ONE_MINUS_EULER + z * acc)
+}
+
+// `ln Γ(1 + z)` for `|z| ≤ ½`: `ln Γ(2 + z) − ln(1 + z)`. Near `z = 0` the two
+// terms are `≈ 0.42·z` and `≈ z`, so their difference `≈ −0.58·z` loses less
+// than one bit.
+fn ln_gamma_1_plus(z: f64) -> f64 {
+    ln_gamma_2_plus(z) - z.ln_1p()
+}
+
+/// `sin(πx)` with the argument reduced exactly before multiplying by π.
+///
+/// `x − 2·round(x/2)` is exact in binary floating point, so the result has
+/// full relative accuracy for every finite `x` (and is exactly `±0` at the
+/// integers), whereas `(PI * x).sin()` inherits the rounding error of the
+/// product `π·x`, which is `≈ |x|·1e-16` in absolute terms.
+fn sin_pi(x: f64) -> f64 {
+    // r ∈ [−1, 1], sin(πx) = sin(πr).
+    let r = x - 2.0 * (0.5 * x).round();
+    // Fold into [−½, ½] using sin(π(1 − r)) = sin(πr) so the sine is
+    // evaluated where it is best conditioned.
+    let r = if r > 0.5
+    {
+        1.0 - r
+    }
+    else if r < -0.5
+    {
+        -1.0 - r
+    }
+    else
+    {
+        r
+    };
+    (PI * r).sin()
+}
+
+// `ln Γ(x)` for `x ≥ GAMMA_RECURRENCE_MAX` from Stirling's series:
+// `(x−½)·ln x − x + ½·ln 2π + C(x)`. Every input to the elementary functions
+// is exact, so the error is a few rounding units of the result. (The Lanczos
+// g = 7, n = 9 sum used before has a built-in relative bias that tends to
+// `c₀ − 1 ≈ −1.9e-13` as `x → ∞`, which `Γ(x)` inherited in full.)
+fn ln_gamma_stirling(x: f64) -> f64 {
+    (x - 0.5) * x.ln() - x + 0.5 * LN_2PI + stirling_correction(x)
+}
+
+// Below this argument `Γ(x)` and `ln Γ(x)` are reduced to `[1.5, 2.5]` by the
+// recurrence `Γ(x) = (x−1)·Γ(x−1)`. The shifts `x − k` are exact, so the only
+// error is one rounding per factor (≤ 27 of them); integer arguments give
+// exact factorials up to `22!`, the largest one representable in `f64`.
+const GAMMA_RECURRENCE_MAX: f64 = 30.0;
+
+// `(x−1)(x−2)…(x−n)` and the reduced argument `x − n ∈ [1.5, 2.5)` for
+// `2.5 ≤ x < GAMMA_RECURRENCE_MAX`.
+fn gamma_recurrence(x: f64) -> (f64, f64) {
+    let mut y = x;
+    let mut prod = 1.0;
+    while y >= 2.5
+    {
+        y -= 1.0;
+        prod *= y;
+    }
+    (prod, y)
+}
 
 /// Natural logarithm of the absolute value of the gamma function, `ln|Γ(x)|`.
 ///
-/// Uses the Lanczos approximation, with Euler's reflection formula for the
-/// left half-plane so negative non-integer arguments are handled. Poles at the
-/// non-positive integers return `f64::INFINITY`. `ln_gamma(+∞) = +∞`;
-/// `x = −∞` has no limit (|Γ| oscillates between the poles), so it returns
-/// `NaN`, as does `NaN` input.
+/// * `|x − 1| ≤ ½` and `|x − 2| ≤ ½`: Taylor series of `ln Γ` about its zeros
+///   at 1 and 2 (coefficients `(−1)ᵏ(ζ(k) − 1)/k`), so the result keeps full
+///   relative accuracy as it goes to 0 — `ln_gamma(1.0)` and `ln_gamma(2.0)`
+///   are exactly `0`, and `ln_gamma(1 + 1e-10) = −5.772…e-11` to the last
+///   digits (the Lanczos sum used before gave `−5.77218e-11`, only five
+///   correct digits, and `ln_gamma(1.0) = −8.9e-16`).
+/// * `|x| < ½`: `ln Γ(1 + x) − ln|x|`, which stays finite down to the
+///   subnormal range (`ln_gamma(1e-310) ≈ 713.8`; the reflection formula
+///   used before overflowed to `+∞` there).
+/// * `2.5 ≤ x < 30`: the recurrence `Γ(x) = (x−1)·Γ(x−1)` down to `[1.5, 2.5)`.
+/// * `x ≥ 30`: Stirling's series with six Bernoulli correction terms.
+/// * `x ≤ −½`: Euler's reflection, written as
+///   `ln|Γ(x)| = ln π − ln|x·sin πx| − ln Γ(−x)` so the argument `−x` is exact,
+///   with `sin πx` evaluated after exact argument reduction. Near the zeros of
+///   `ln|Γ|` on the negative axis (`x ≈ −2.457`, `−3.144`, …) the two terms
+///   cancel, so there the error is a few rounding units of the cancelling
+///   terms in absolute value, not relative to the tiny result.
+///
+/// Poles at the non-positive integers return `f64::INFINITY`.
+/// `ln_gamma(+∞) = +∞`; `x = −∞` has no limit (|Γ| oscillates between the
+/// poles), so it returns `NaN`, as does `NaN` input.
+///
+/// # Examples
+///
+/// ```
+/// use scirust_special::{ln_gamma, EULER_MASCHERONI};
+/// assert!(ln_gamma(1.0).abs() < f64::MIN_POSITIVE); // exactly zero
+/// assert!(ln_gamma(2.0).abs() < f64::MIN_POSITIVE);
+/// // Near the zero at 1, ln Γ(1 + ε) ≈ −γ·ε keeps full relative accuracy
+/// // (reference: mpmath at the f64 nearest 1 + 1e-10).
+/// let x = 1.000_000_000_1;
+/// let rel = (ln_gamma(x) / -5.772_157_125_783_244e-11 - 1.0).abs();
+/// assert!(rel < 1e-14);
+/// assert!((ln_gamma(x) / (-EULER_MASCHERONI * (x - 1.0)) - 1.0).abs() < 1e-9);
+/// // Subnormal arguments stay finite: ln Γ(x) ≈ −ln x.
+/// assert!((ln_gamma(1e-310) - 713.801_378_828_154_2).abs() < 1e-12);
+/// ```
 pub fn ln_gamma(x: f64) -> f64 {
     if x.is_nan() || x == f64::NEG_INFINITY
     {
@@ -120,21 +251,33 @@ pub fn ln_gamma(x: f64) -> f64 {
     {
         return f64::INFINITY;
     }
-    if x < 0.5
+    if x >= GAMMA_RECURRENCE_MAX
     {
-        // Reflection: Γ(x)Γ(1−x) = π / sin(πx)  ⇒
-        // ln|Γ(x)| = ln(π/|sin(πx)|) − ln|Γ(1−x)|.
-        let sin_pix = (PI * x).sin().abs();
-        return (PI / sin_pix).ln() - ln_gamma(1.0 - x);
+        return ln_gamma_stirling(x);
     }
-    let x = x - 1.0;
-    let mut a = LANCZOS_COEFFS[0];
-    let t = x + LANCZOS_G + 0.5;
-    for (i, &c) in LANCZOS_COEFFS.iter().enumerate().skip(1)
+    if x >= 2.5
     {
-        a += c / (x + i as f64);
+        let (prod, y) = gamma_recurrence(x);
+        return prod.ln() + ln_gamma_2_plus(y - 2.0);
     }
-    0.5 * (2.0 * PI).ln() + (x + 0.5) * t.ln() - t + a.ln()
+    if x >= 1.5
+    {
+        return ln_gamma_2_plus(x - 2.0);
+    }
+    if x >= 0.5
+    {
+        return ln_gamma_1_plus(x - 1.0);
+    }
+    if x > -0.5
+    {
+        // Γ(x) = Γ(1 + x)/x; `x` itself is the exact series argument.
+        return ln_gamma_1_plus(x) - x.abs().ln();
+    }
+    // Reflection: Γ(x)Γ(1−x) = π / sin(πx) with Γ(1−x) = −x·Γ(−x)  ⇒
+    // ln|Γ(x)| = ln π − ln|x·sin(πx)| − ln Γ(−x). Using `−x` (exact) rather
+    // than `1 − x` (rounded once `1 − x` crosses a power of two) keeps the
+    // argument of `ln Γ` exact.
+    PI.ln() - (x * sin_pi(x)).abs().ln() - ln_gamma(-x)
 }
 
 /// The gamma function `Γ(x)`.
@@ -143,6 +286,31 @@ pub fn ln_gamma(x: f64) -> f64 {
 /// reflection). Returns `+∞` at the poles (non-positive integers) and at
 /// `x = +∞`; returns `NaN` for `NaN` input and for `x = −∞`, where Γ has no
 /// limit.
+///
+/// The value is formed directly rather than as `exp(ln Γ(x))`, whose relative
+/// error grows like `ε·|ln Γ(x)|` (≈ 2e-13 near `x = 170`):
+///
+/// * `½ ≤ x < 2.5`: `exp` of the Taylor series about 1 or 2, so
+///   `Γ(1) = Γ(2) = 1` exactly;
+/// * `2.5 ≤ x < 30`: the recurrence `Γ(x) = (x−1)·Γ(x−1)`, exact for integer
+///   `x` up to `Γ(23) = 22!`;
+/// * `x ≥ 30`: Stirling's series in product form,
+///   `√(2π)·x^(x−½)·e^(−x)·e^(C(x))`, with the power split in two halves so it
+///   does not overflow before `Γ` does;
+/// * `−2.5 < x < ½`: `Γ(x) = Γ(x+1)/x`, repeated into `[½, 2.5)`;
+/// * `x ≤ −2.5`: reflection `−π / (x·sin(πx)·Γ(−x))` with `sin πx` evaluated
+///   after exact argument reduction; where `Γ(−x)` would overflow, factors
+///   `−x − 1, −x − 2, …` are divided out first, so results in the subnormal
+///   range (`x ≈ −172…−178`) are not flushed to zero.
+///
+/// # Examples
+///
+/// ```
+/// use scirust_special::gamma;
+/// assert!((gamma(1.0) - 1.0).abs() < 1e-15);
+/// assert!((gamma(11.0) / 3_628_800.0 - 1.0).abs() < 1e-15); // 10!
+/// assert!((gamma(0.5) - std::f64::consts::PI.sqrt()).abs() < 1e-15);
+/// ```
 pub fn gamma(x: f64) -> f64 {
     if x.is_nan() || x == f64::NEG_INFINITY
     {
@@ -157,15 +325,84 @@ pub fn gamma(x: f64) -> f64 {
         // Pole. Sign alternates but the magnitude is infinite; return +∞.
         return f64::INFINITY;
     }
-    if x < 0.5
+    if x > GAMMA_OVERFLOW
     {
-        // Reflection formula keeps the sign correct for negative arguments.
-        PI / ((PI * x).sin() * gamma(1.0 - x))
+        // Γ(x) > f64::MAX; the split power below would give `∞ · 0 = NaN`.
+        return f64::INFINITY;
     }
-    else
+    if x >= GAMMA_RECURRENCE_MAX
     {
-        ln_gamma(x).exp()
+        return gamma_stirling(x);
     }
+    if x >= 2.5
+    {
+        let (prod, y) = gamma_recurrence(x);
+        return prod * ln_gamma_2_plus(y - 2.0).exp();
+    }
+    if x >= 1.5
+    {
+        return ln_gamma_2_plus(x - 2.0).exp();
+    }
+    if x >= 0.5
+    {
+        return ln_gamma_1_plus(x - 1.0).exp();
+    }
+    if x > -2.5
+    {
+        // Γ(x) = Γ(x + 1)/x, applied until the argument is in [0.5, 2.5).
+        // For |x| < ½ the series argument is `x` itself (exact).
+        if x > -0.5
+        {
+            return ln_gamma_1_plus(x).exp() / x;
+        }
+        let mut y = x;
+        let mut den = 1.0;
+        while y < 0.5
+        {
+            den *= y;
+            y += 1.0;
+        }
+        return gamma(y) / den;
+    }
+    // Reflection Γ(x) = −π / (x·sin(πx)·Γ(−x)) (from Γ(x)Γ(1−x) = π/sin(πx)
+    // and Γ(1−x) = −x·Γ(−x)); `−x` is exact, unlike `1 − x`. It keeps the
+    // sign correct for negative arguments.
+    // Γ(x) = q / Γ(y) with q = −π/(x·sin πx) and y = −x.
+    let mut q = -PI / (x * sin_pi(x));
+    if x < -GAMMA_UNDERFLOW
+    {
+        // |Γ(x)| < 5e-324: the result is a signed zero.
+        return q * 0.0;
+    }
+    let mut y = -x;
+    // While Γ(y) would overflow (or come close), peel off factors with
+    // Γ(y) = (y−1)·Γ(y−1), so a result in the subnormal range is still
+    // formed by a single final division instead of flushing to zero.
+    while y > 171.0
+    {
+        y -= 1.0;
+        q /= y;
+    }
+    q / gamma(y)
+}
+
+// Γ(172) ≈ 1.24e309 already exceeds `f64::MAX` (Γ overflows at x ≈ 171.6245).
+const GAMMA_OVERFLOW: f64 = 172.0;
+
+// Below `x = −GAMMA_UNDERFLOW`, |Γ(x)| is far below the smallest subnormal
+// (|Γ(−178.5)| ≈ 1e-325 already rounds to zero).
+const GAMMA_UNDERFLOW: f64 = 190.0;
+
+// `Γ(x)` for `GAMMA_RECURRENCE_MAX ≤ x ≤ GAMMA_OVERFLOW` from Stirling's
+// series in product form, `√(2π)·x^(x−½)·e^(−x)·e^(C(x))`. `x^(x−½)` overflows
+// long before `Γ(x)` does (near `x ≈ 144`), so it is applied as two half powers
+// with `e^(−x)` in between. `x`, `x − ½` and its half are exact, so each factor
+// carries about one rounding error, instead of the `ε·ln Γ(x)` (≈ 1e-13 at
+// `x = 170`) of `exp(ln Γ(x))`.
+fn gamma_stirling(x: f64) -> f64 {
+    let half_pow = x.powf(0.5 * (x - 0.5));
+    let scale = (2.0 * PI).sqrt() * stirling_correction(x).exp();
+    scale * half_pow * (half_pow * (-x).exp())
 }
 
 /// The digamma function ψ(x) = d/dx ln Γ(x).

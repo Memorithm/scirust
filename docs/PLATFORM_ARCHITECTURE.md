@@ -54,8 +54,10 @@ Single-file crate, zero runtime dependencies. Flat public API. Every function
 is a documented numerical implementation of established mathematics, each with a
 literature reference and test oracles against `scipy.special` / `mpmath`.
 
-- **Gamma family:** `ln_gamma` (Lanczos g=7, Godfrey coefficients, Euler
-  reflection), `gamma`, `digamma`, `beta`, `ln_beta`.
+- **Gamma family:** `ln_gamma` / `gamma` (Taylor series about the zeros at
+  1 and 2 with `(ζ(k)−1)/k` coefficients, upward recurrence below 30,
+  Stirling series above, Euler reflection with exact `sin πx` reduction),
+  `digamma`, `beta`, `ln_beta`.
 - **Error function:** `erf`, `erfc` (via regularized incomplete gamma),
   `erfinv` (Giles 2010 seed + Halley steps).
 - **Incomplete gamma / χ²:** `regularized_gamma_p` / `_q` (series + modified
