@@ -1008,12 +1008,33 @@ fn gamma_prefactor(a: f64, x: f64) -> f64 {
 ///
 /// The continued-fraction budget scales with `√(a+b)`; `NaN` is returned for
 /// non-positive or non-finite `a`/`b`, `NaN` `x`, or a genuine
-/// non-convergence (never a silently truncated value). The prefactor
-/// `x^a (1−x)^b / B(a, b)` uses [`ln_beta`], so one large and one small shape
-/// parameter (Student-t with huge `ν`) no longer cancels; when *both* shape
-/// parameters are very large, the absolute accuracy is still limited by the
-/// cancellation between `a·ln x + b·ln(1−x)` and `ln B(a, b)` near the mode
-/// (≈ `ε·(a+b)`), not by the continued fraction.
+/// non-convergence (never a silently truncated value).
+///
+/// The prefactor `x^a (1−x)^b / B(a, b)` is evaluated without cancellation:
+///
+/// * when both shapes are at least 10, in the saddle-point form used by
+///   TOMS 708 / R's `pbeta` (with `n = a + b`, `δ` = [`stirling_error`] and
+///   `D₀` = [`binom_deviance`]):
+///   `√(ab / (2πn)) · exp(δ(n) − δ(a) − δ(b) − D₀(a, n·x) − D₀(b, n·(1−x)))`;
+/// * otherwise as `exp(a·ln x + b·ln(1−x) − ln B(a, b))` with [`ln_beta`],
+///   which already handles one large and one small shape (Student-t with
+///   huge `ν`).
+///
+/// The direct exponent, used before for every shape, subtracts terms of
+/// size `≈ (a+b)·ln 2` that cancel to `≈ −½·ln(a+b)` near the mode, so its
+/// relative error grew like `ε·(a+b)`: `I_½(1e12, 1e12)` came out as
+/// `0.499975` and `I_½(1e14, 1e14)` as `0.5044` instead of `0.5`. What
+/// remains near the mode at very large shapes is rounding accumulated by the
+/// continued fraction; measured against mpmath it grows roughly like
+/// `ε·√(a+b)` (≈ `2e-10` relative at `a = b = 1e12`). An asymptotic
+/// expansion (TOMS 708 `basym`) would be needed to go below that.
+///
+/// ```
+/// use scirust_special::regularized_incomplete_beta;
+/// // Symmetric shapes: I_½(a, a) = ½ exactly, even at huge shapes.
+/// let v = regularized_incomplete_beta(1e12, 1e12, 0.5);
+/// assert!((v - 0.5).abs() < 1e-9);
+/// ```
 pub fn regularized_incomplete_beta(a: f64, b: f64, x: f64) -> f64 {
     if a <= 0.0 || b <= 0.0 || !a.is_finite() || !b.is_finite() || x.is_nan()
     {
@@ -1027,9 +1048,7 @@ pub fn regularized_incomplete_beta(a: f64, b: f64, x: f64) -> f64 {
     {
         return 1.0;
     }
-    // `x ∈ (0, 1)`: `ln_1p(−x)` keeps `ln(1 − x)` exact for tiny `x`, and
-    // `ln_beta` avoids the large-argument `ln Γ` cancellation.
-    let front = (a * x.ln() + b * (-x).ln_1p() - ln_beta(a, b)).exp();
+    let front = incomplete_beta_prefactor(a, b, x);
     if x < (a + 1.0) / (a + b + 2.0)
     {
         front * beta_cf(a, b, x) / a
@@ -1038,6 +1057,35 @@ pub fn regularized_incomplete_beta(a: f64, b: f64, x: f64) -> f64 {
     {
         1.0 - front * beta_cf(b, a, 1.0 - x) / b
     }
+}
+
+// Both shapes at or above this use the saddle-point prefactor in
+// `incomplete_beta_prefactor` (the TOMS 708 `brcomp` cut-off is 8).
+const INCBETA_SADDLE_MIN: f64 = 10.0;
+
+// `x^a (1−x)^b / B(a, b)` for `x ∈ (0, 1)`, `a, b > 0`.
+//
+// Large shapes: with `n = a + b`, Stirling's formula for the three `ln Γ`
+// gives `ln B(a, b) = (a−½)ln a + (b−½)ln b − (n−½)ln n + ½ln 2π
+// + δ(a) + δ(b) − δ(n)`, and `a·ln x + b·ln(1−x) − a·ln(a/n) − b·ln(b/n)`
+// is exactly `−D₀(a, n·x) − D₀(b, n·(1−x))` (the `n·x − a` and
+// `n·(1−x) − b` parts of the deviances sum to zero). Every term is then of
+// the size of the result, so no digits are lost near the mode.
+//
+// Otherwise the direct exponent: `ln_1p(−x)` keeps `ln(1 − x)` exact for
+// tiny `x`, and `ln_beta` avoids the large-argument `ln Γ` cancellation.
+fn incomplete_beta_prefactor(a: f64, b: f64, x: f64) -> f64 {
+    if a >= INCBETA_SADDLE_MIN && b >= INCBETA_SADDLE_MIN && (a + b).is_finite()
+    {
+        let n = a + b;
+        let ln_front = 0.5 * (a / (2.0 * PI) * (b / n)).ln() + stirling_error(n)
+            - stirling_error(a)
+            - stirling_error(b)
+            - binom_deviance(a, n * x)
+            - binom_deviance(b, n * (1.0 - x));
+        return ln_front.exp();
+    }
+    (a * x.ln() + b * (-x).ln_1p() - ln_beta(a, b)).exp()
 }
 
 // Lentz continued fraction for the incomplete beta. The term count near

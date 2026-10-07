@@ -776,6 +776,11 @@ impl Distribution for FisherF {
     }
 }
 
+// Shapes strictly above this (both) use the saddle-point density in
+// `Beta::pdf`, as R's `dbeta` does (`a − 1, b − 1 > 1` keeps the Stirling
+// remainders finite and the binomial form well conditioned).
+const BETA_PDF_SADDLE_MIN: f64 = 2.0;
+
 /// Beta distribution on `[0, 1]` with shapes `a, b > 0`.
 #[derive(Debug, Clone, Copy)]
 pub struct Beta {
@@ -795,8 +800,28 @@ impl Distribution for Beta {
         {
             return 0.0;
         }
-        // `ln_1p(−x)` keeps `ln(1 − x)` exact for tiny `x` (large-`b` shapes).
-        ((self.a - 1.0) * x.ln() + (self.b - 1.0) * (-x).ln_1p() - ln_beta(self.a, self.b)).exp()
+        let (a, b) = (self.a, self.b);
+        if a <= BETA_PDF_SADDLE_MIN || b <= BETA_PDF_SADDLE_MIN || !(a + b).is_finite()
+        {
+            // `ln_1p(−x)` keeps `ln(1 − x)` exact for tiny `x` (large-`b`
+            // shapes).
+            return ((a - 1.0) * x.ln() + (b - 1.0) * (-x).ln_1p() - ln_beta(a, b)).exp();
+        }
+        // `x^(a−1)(1−x)^(b−1)/B(a, b) = (a+b−1)·Binom(a−1; a+b−2, x)`, with
+        // the binomial "pmf" in Loader's saddle-point form (R's `dbeta`).
+        // The direct exponent subtracts terms of size `≈ (a+b)·ln 2` that
+        // cancel to `≈ ½·ln(a+b)` near the mode, costing `≈ ε·(a+b)`
+        // relative (1.3e-5 at `a = b = 1e12`).
+        let k = a - 1.0;
+        let m = b - 1.0;
+        let n = k + m;
+        let ln_binom = stirling_error(n)
+            - stirling_error(k)
+            - stirling_error(m)
+            - binom_deviance(k, n * x)
+            - binom_deviance(m, n * (1.0 - x))
+            + 0.5 * (n / (2.0 * PI * k * m)).ln();
+        (a + b - 1.0) * ln_binom.exp()
     }
     fn cdf(&self, x: f64) -> f64 {
         regularized_incomplete_beta(self.a, self.b, x)
