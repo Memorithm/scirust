@@ -633,4 +633,95 @@ mod tests {
             assert!((i - 8.0).abs() < 1e-12);
         }
     }
+
+    // ---------------------------------------------------------------- //
+    //  Scale invariance of the local-slope methods (regression).       //
+    // ---------------------------------------------------------------- //
+
+    /// Relative closeness with an absolute floor proportional to `scale`.
+    fn close_rel(got: f64, want: f64, scale: f64, tol: f64) -> bool {
+        (got - want).abs() <= tol * want.abs().max(scale)
+    }
+
+    #[test]
+    fn pchip_and_akima_reproduce_linear_data_at_tiny_scale() {
+        // Both methods reproduce straight-line data exactly (every node slope
+        // equals the common secant). Scaling the ordinates by `s` must scale
+        // the interpolant by `s`. Before the fix, the products of two secant
+        // slopes of size ~1e-170 underflowed to zero, so PCHIP took every
+        // interior node for a local extremum (slope 0) and Akima's weighted
+        // average collapsed to 0, giving errors of tens of percent.
+        let xs = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0];
+        for s in [1.0, 1e-170, 1e-200, 1e-300]
+        {
+            let ys: Vec<f64> = xs.iter().map(|&x| s * x).collect();
+            let p = PchipInterp::new(&xs, &ys).unwrap();
+            let a = AkimaSpline::new(&xs, &ys).unwrap();
+            for k in 0..=50
+            {
+                let x = 0.1 * k as f64;
+                let want = s * x;
+                for (name, got, slope) in [
+                    ("pchip", p.eval(x), p.derivative(x)),
+                    ("akima", a.eval(x), a.derivative(x)),
+                ]
+                {
+                    assert!(
+                        close_rel(got, want, s, 1e-12),
+                        "{name} s={s:e} x={x}: {got:e} vs {want:e}"
+                    );
+                    assert!(
+                        close_rel(slope, s, s, 1e-12),
+                        "{name} s={s:e} x={x}: slope {slope:e} vs {s:e}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pchip_and_akima_are_scale_invariant() {
+        // Non-trivial monotone data (PCHIP) and generic data (Akima): the
+        // interpolant of s*y must equal s times the interpolant of y.
+        let xs = [0.0, 0.5, 1.7, 2.0, 3.2, 4.0, 5.5];
+        let ys = [0.0, 0.3, 1.9, 2.0, 2.05, 4.0, 4.5];
+        let p1 = PchipInterp::new(&xs, &ys).unwrap();
+        let a1 = AkimaSpline::new(&xs, &ys).unwrap();
+        for s in [1e-150, 1e-170, 1e-250, 1e-300, 1e150, 1e300]
+        {
+            let ys_s: Vec<f64> = ys.iter().map(|&y| s * y).collect();
+            let ps = PchipInterp::new(&xs, &ys_s).unwrap();
+            let as_ = AkimaSpline::new(&xs, &ys_s).unwrap();
+            for k in 0..=60
+            {
+                let x = -0.25 + 0.1 * k as f64;
+                for (name, got, want) in [
+                    ("pchip", ps.eval(x), s * p1.eval(x)),
+                    ("pchip'", ps.derivative(x), s * p1.derivative(x)),
+                    ("akima", as_.eval(x), s * a1.eval(x)),
+                    ("akima'", as_.derivative(x), s * a1.derivative(x)),
+                ]
+                {
+                    assert!(
+                        close_rel(got, want, s, 1e-12),
+                        "{name} s={s:e} x={x}: {got:e} vs {want:e}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pchip_interior_slope_matches_harmonic_mean_at_tiny_scale() {
+        // Fritsch–Carlson interior slope with h = [1, 1]:
+        // d = 2 / (1/dl + 1/dr). For dl = 1e-308 the naive 3/dl overflowed
+        // to infinity and the slope collapsed to 0.
+        let s = 1e-308;
+        let xs = [0.0, 1.0, 2.0];
+        let ys = [0.0, s, 3.0 * s];
+        let p = PchipInterp::new(&xs, &ys).unwrap();
+        let want = 2.0 / (1.0 / 1.0 + 1.0 / 2.0) * s;
+        let got = p.derivative(1.0);
+        assert!(close_rel(got, want, s, 1e-12), "{got:e} vs {want:e}");
+    }
 }

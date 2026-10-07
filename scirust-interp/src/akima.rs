@@ -133,7 +133,11 @@ fn compute_slopes(xs: &[f64], ys: &[f64]) -> Vec<f64> {
             }
             else
             {
-                (w_right * s[i + 1] + w_left * s[i + 2]) / denom
+                // Normalise the weights before multiplying: for small-scale
+                // data both the weights and the slopes are tiny, and the
+                // products `w * s` (≈ scale²) would underflow to zero.
+                let (wr, wl) = (w_right / denom, w_left / denom);
+                wr * s[i + 1] + wl * s[i + 2]
             }
         })
         .collect()
