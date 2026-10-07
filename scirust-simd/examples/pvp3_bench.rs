@@ -142,10 +142,7 @@ fn main() {
             stats.logical_gate_xor_ops,
             scalar_stats.logical_gate_xor_ops
         );
-        assert_eq!(
-            stats.packed_word_updates,
-            scalar_stats.packed_word_updates
-        );
+        assert_eq!(stats.packed_word_updates, scalar_stats.packed_word_updates);
         black_box(candidate);
         samples.push(elapsed);
     }
