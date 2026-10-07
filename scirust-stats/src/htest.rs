@@ -385,20 +385,45 @@ pub fn chi2_gof_discrete<D: DiscreteDistribution>(
 /// One-sample Kolmogorov–Smirnov test that `data` is drawn from `dist`.
 ///
 /// Returns the D statistic and the asymptotic p-value (Kolmogorov distribution).
-/// Returns `None` for an empty sample.
+/// `df` holds the sample size `n`.
+///
+/// Returns `None` for an empty sample, for any `NaN` sample, or when
+/// `dist.cdf` is `NaN` at a sample point: a `NaN` has no position in the
+/// empirical distribution, so no meaningful D exists. Infinite samples are
+/// accepted (their CDF is `0` or `1`).
+///
+/// ```
+/// use scirust_stats::dist::Normal;
+/// use scirust_stats::htest::ks_test_one_sample;
+/// let n = Normal::standard();
+/// let sample = [-1.2, -0.4, 0.1, 0.5, 0.9, 1.3, -0.7, 0.2];
+/// let r = ks_test_one_sample(&sample, &n).unwrap();
+/// assert_eq!(r.df, 8.0);
+/// assert!(r.p_value > 0.5);
+/// assert!(ks_test_one_sample(&[0.1, f64::NAN], &n).is_none());
+/// assert!(ks_test_one_sample(&[], &n).is_none());
+/// ```
 pub fn ks_test_one_sample<D: Distribution>(data: &[f64], dist: &D) -> Option<TestResult> {
     let n = data.len();
-    if n == 0
+    if n == 0 || data.iter().any(|x| x.is_nan())
     {
         return None;
     }
     let mut v: Vec<f64> = data.to_vec();
-    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    // NaN-free here, so `total_cmp` is the usual numeric order (with −0 < +0,
+    // which does not affect the CDF).
+    v.sort_by(f64::total_cmp);
     let nf = n as f64;
     let mut d = 0.0_f64;
     for (i, &x) in v.iter().enumerate()
     {
         let f = dist.cdf(x);
+        // `f64::max` ignores a NaN operand, so a NaN CDF would otherwise be
+        // silently dropped from the supremum.
+        if f.is_nan()
+        {
+            return None;
+        }
         let d_plus = (i as f64 + 1.0) / nf - f;
         let d_minus = f - i as f64 / nf;
         d = d.max(d_plus).max(d_minus);
@@ -557,6 +582,61 @@ mod tests {
         let shifted = Normal::new(1.0, 1.0);
         let r2 = ks_test_one_sample(&sample, &shifted).unwrap();
         assert!(r2.p_value < 1e-6, "shifted p = {}", r2.p_value);
+    }
+
+    #[test]
+    fn ks_rejects_nan_samples_instead_of_ignoring_them() {
+        // Regression: NaN samples were counted in n but skipped by the
+        // supremum (`f64::max` drops NaN), so an all-NaN sample reported
+        // D = 0, p = 1, and 20 NaNs plus 8 well-fitting values reported
+        // p ≈ 9e-11 against the very distribution they came from.
+        let n = Normal::standard();
+        let clean = [-1.2, -0.4, 0.1, 0.5, 0.9, 1.3, -0.7, 0.2];
+        assert!(ks_test_one_sample(&clean, &n).is_some());
+        assert!(ks_test_one_sample(&[f64::NAN; 5], &n).is_none());
+        let mut padded = vec![f64::NAN; 20];
+        padded.extend_from_slice(&clean);
+        assert!(ks_test_one_sample(&padded, &n).is_none());
+        let mut one = clean.to_vec();
+        one.insert(3, f64::NAN);
+        assert!(ks_test_one_sample(&one, &n).is_none());
+    }
+
+    #[test]
+    fn ks_rejects_nan_cdf_values() {
+        struct NanCdf;
+        impl Distribution for NanCdf {
+            fn pdf(&self, _x: f64) -> f64 {
+                f64::NAN
+            }
+            fn cdf(&self, x: f64) -> f64 {
+                if x > 0.0 { f64::NAN } else { 0.5 }
+            }
+            fn quantile(&self, _p: f64) -> f64 {
+                f64::NAN
+            }
+            fn mean(&self) -> f64 {
+                f64::NAN
+            }
+            fn variance(&self) -> f64 {
+                f64::NAN
+            }
+        }
+        assert!(ks_test_one_sample(&[-1.0, 2.0], &NanCdf).is_none());
+        assert!(ks_test_one_sample(&[-1.0, -2.0], &NanCdf).is_some());
+    }
+
+    #[test]
+    fn ks_accepts_infinite_samples_and_order_is_irrelevant() {
+        let n = Normal::standard();
+        let a = [f64::NEG_INFINITY, -0.3, 0.4, 1.1, f64::INFINITY];
+        let b = [1.1, f64::INFINITY, -0.3, f64::NEG_INFINITY, 0.4];
+        let (ra, rb) = (
+            ks_test_one_sample(&a, &n).unwrap(),
+            ks_test_one_sample(&b, &n).unwrap(),
+        );
+        assert_eq!(ra, rb);
+        assert!(ra.statistic.is_finite() && (0.0..=1.0).contains(&ra.p_value));
     }
 
     #[test]
