@@ -223,10 +223,41 @@ pub fn mfcc(
 }
 
 /// Compute MFCC delta (velocity) features.
+///
+/// `mfccs` is a sequence of frames, each holding the same number of
+/// coefficients (as returned by [`mfcc`]). The result has one frame per input
+/// frame: interior frames use the central difference `(c[i+1] - c[i-1]) / 2`,
+/// the first frame uses the forward difference `c[1] - c[0]` and the last frame
+/// the backward difference `c[n-1] - c[n-2]`.
+///
+/// Short inputs follow the same definition:
+/// - no frames gives an empty result;
+/// - a single frame has no neighbour to difference against, so its velocity is
+///   a frame of zeros with the same number of coefficients;
+/// - two frames both get the one-sided difference `c[1] - c[0]`.
+///
+/// # Examples
+///
+/// ```
+/// use scirust_audio::mfcc_delta;
+///
+/// let frames = vec![vec![1.0, 2.0], vec![4.0, 8.0]];
+/// assert_eq!(mfcc_delta(&frames), vec![vec![3.0, 6.0], vec![3.0, 6.0]]);
+///
+/// let single = vec![vec![5.0, -1.0, 7.0]];
+/// assert_eq!(mfcc_delta(&single), vec![vec![0.0, 0.0, 0.0]]);
+/// ```
 pub fn mfcc_delta(mfccs: &[Vec<f64>]) -> Vec<Vec<f64>> {
-    if mfccs.len() < 3
+    // Fewer than two frames: nothing to difference against. Returning the
+    // input here (as an earlier version did) would hand back the coefficients
+    // themselves as if they were velocities.
+    if mfccs.is_empty()
     {
-        return mfccs.to_vec();
+        return Vec::new();
+    }
+    if mfccs.len() == 1
+    {
+        return vec![vec![0.0; mfccs[0].len()]];
     }
 
     let n = mfccs[0].len();
@@ -264,6 +295,10 @@ pub fn mfcc_delta(mfccs: &[Vec<f64>]) -> Vec<Vec<f64>> {
 }
 
 /// Compute MFCC delta-delta (acceleration) features.
+///
+/// Applies [`mfcc_delta`] twice, so it follows the same boundary and
+/// short-input rules: one or two frames give frames of zeros, because the
+/// velocity of one or two frames is constant.
 pub fn mfcc_delta2(mfccs: &[Vec<f64>]) -> Vec<Vec<f64>> {
     let delta1 = mfcc_delta(mfccs);
     mfcc_delta(&delta1)
@@ -1113,6 +1148,71 @@ mod tests {
         {
             assert!(d.iter().all(|&x| x.abs() < 1e-12));
         }
+    }
+
+    #[test]
+    fn test_mfcc_delta_two_frames_is_one_sided_difference() {
+        // Regression: fewer than 3 frames used to return the input unchanged,
+        // i.e. the coefficients themselves were reported as velocities.
+        let frames = vec![vec![1.0, 2.0, -3.0], vec![4.0, 8.0, -1.0]];
+        let delta = mfcc_delta(&frames);
+        assert_eq!(delta.len(), 2);
+        for d in &delta
+        {
+            assert!((d[0] - 3.0).abs() < 1e-12);
+            assert!((d[1] - 6.0).abs() < 1e-12);
+            assert!((d[2] - 2.0).abs() < 1e-12);
+        }
+        // The velocity of two frames is constant, so acceleration is zero.
+        let delta2 = mfcc_delta2(&frames);
+        assert_eq!(delta2.len(), 2);
+        for d in &delta2
+        {
+            assert_eq!(d.len(), 3);
+            assert!(d.iter().all(|&x| x.abs() < 1e-12));
+        }
+    }
+
+    #[test]
+    fn test_mfcc_delta_single_frame_is_zero() {
+        // Regression: a single frame used to be returned as its own velocity.
+        let frames = vec![vec![12.5, -4.0, 0.25, 9.0]];
+        let delta = mfcc_delta(&frames);
+        assert_eq!(delta, vec![vec![0.0; 4]]);
+        assert_eq!(mfcc_delta2(&frames), vec![vec![0.0; 4]]);
+    }
+
+    #[test]
+    fn test_mfcc_delta_empty_is_empty() {
+        let frames: Vec<Vec<f64>> = Vec::new();
+        assert!(mfcc_delta(&frames).is_empty());
+        assert!(mfcc_delta2(&frames).is_empty());
+    }
+
+    #[test]
+    fn test_mfcc_delta_of_short_real_mfcc_is_not_the_mfcc() {
+        // End-to-end: a clip that yields exactly two MFCC frames.
+        let sr = 8000;
+        let n_fft = 256;
+        let hop = 128;
+        let sig: Vec<f64> = (0..(n_fft + hop))
+            .map(|i| (2.0 * PI * 440.0 * i as f64 / sr as f64).sin() * (1.0 + i as f64 / 400.0))
+            .collect();
+        let m = mfcc(&sig, sr, 13, n_fft, hop);
+        assert_eq!(m.len(), 2);
+        let delta = mfcc_delta(&m);
+        assert_eq!(delta.len(), 2);
+        for d in &delta
+        {
+            for j in 0..13
+            {
+                assert!((d[j] - (m[1][j] - m[0][j])).abs() < 1e-9);
+            }
+        }
+        // The c0 (log-energy) coefficient is far from zero for this tone, so the
+        // old behaviour (delta == mfcc) is clearly distinguishable.
+        assert!(m[0][0].abs() > 1.0);
+        assert!((delta[0][0] - m[0][0]).abs() > 1.0);
     }
 
     // ── Chroma ─────────────────────────────────────────────────────────────
