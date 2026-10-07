@@ -459,6 +459,13 @@ pub fn erfinv(y: f64) -> f64 {
 /// `x < a + 1`, continued fraction (via `Q`) otherwise, for accuracy across the
 /// whole range.
 ///
+/// The common factor `x^a·e^(−x)/Γ(a)` is evaluated in Loader's saddle-point
+/// form for `a ≥ 1` (see `gamma_prefactor`), so large shapes keep their
+/// relative accuracy: against mpmath, the relative error in the bulk stays
+/// below `≈ 1e-12` up to `a = 1e10` (`≈ 1e-11` at `a = 1e12`), where the
+/// direct `a·ln x − x − ln Γ(a)` exponent gave up to `≈ 4e-5` at `a = 1e10`
+/// (`P(1e10, 1e10)` was `0.4999897` instead of `0.5000013`).
+///
 /// `P(a, +∞) = 1`. Returns `NaN` for `a ≤ 0`, non-finite `a`, `x < 0`, `NaN`
 /// input, or if an expansion fails to converge within its iteration budget
 /// (which scales with `√a`), rather than a silently truncated value.
@@ -533,7 +540,14 @@ fn gamma_series_p(a: f64, x: f64) -> f64 {
         ap += 1.0;
         del *= x / ap;
         sum += del;
-        if del.abs() < sum.abs() * EPS
+        // Stop once both the last term and a bound on the remaining tail are
+        // below `ε·sum`. The later term ratios `x/(ap + j)` stay below
+        // `r = x/(ap + 1) < 1`, so the tail is at most
+        // `del·r/(1 − r) = del·x/(ap + 1 − x)`. Near `x ≈ a` that bound is
+        // `≈ del·√a`, and a test on `del` alone left a truncation error of
+        // the same size (≈ 1.5e-11 relative at `a = 1e10`).
+        let tail_factor = (x / (ap + 1.0 - x)).max(1.0);
+        if del * tail_factor < sum * EPS
         {
             converged = true;
             break;
@@ -543,7 +557,7 @@ fn gamma_series_p(a: f64, x: f64) -> f64 {
     {
         return f64::NAN;
     }
-    sum * (-x + a * x.ln() - ln_gamma(a)).exp()
+    sum * gamma_prefactor(a, x)
 }
 
 // Continued-fraction expansion for Q(a, x) (modified Lentz), for x >= a + 1.
@@ -582,7 +596,35 @@ fn gamma_cf_q(a: f64, x: f64) -> f64 {
     {
         return f64::NAN;
     }
-    (-x + a * x.ln() - ln_gamma(a)).exp() * h
+    gamma_prefactor(a, x) * h
+}
+
+// Below this shape the common factor `x^a·e^(−x)/Γ(a)` of the series and the
+// continued fraction is formed directly; at and above it, from the
+// saddle-point form of `gamma_prefactor`.
+const GAMMA_PREFACTOR_SADDLE_MIN: f64 = 1.0;
+
+// `x^a·e^(−x)/Γ(a)` for `a > 0`, `0 < x < ∞`: the factor shared by the series
+// for `P(a, x)` and the continued fraction for `Q(a, x)`.
+//
+// The direct exponent `a·ln x − x − ln Γ(a)` adds terms of size `a·ln a` whose
+// sum is only `≈ −½·ln(2πa)` near the mode `x ≈ a`, so its absolute error, and
+// hence the relative error of the result, grows like `ε·a·ln a` (up to
+// ≈ 4e-5 at `a = 1e10`, ≈ 2e-3 at `a = 1e12`). For `a ≥ 1` the same quantity
+// is written as `a · Poisson(a; x)` in Loader's saddle-point form (the
+// approach of R's `pgamma`, via `dpois_raw`):
+//
+// `x^a·e^(−x)/Γ(a) = exp(½·ln(a/2π) − δ(a) − D₀(a, x))`,
+//
+// with `δ` the Stirling remainder ([`stirling_error`]) and `D₀` the deviance
+// ([`binom_deviance`]); neither term cancels, so the relative error stays a
+// small multiple of the rounding unit.
+fn gamma_prefactor(a: f64, x: f64) -> f64 {
+    if a < GAMMA_PREFACTOR_SADDLE_MIN
+    {
+        return (-x + a * x.ln() - ln_gamma(a)).exp();
+    }
+    (0.5 * (a / (2.0 * PI)).ln() - stirling_error(a) - binom_deviance(a, x)).exp()
 }
 
 // ============================================================ //
