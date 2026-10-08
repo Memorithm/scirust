@@ -704,16 +704,50 @@ pub fn spectral_rolloff(signal: &[f64], sample_rate: usize, percentile: f64) -> 
     sample_rate as f64 / 2.0
 }
 
-/// Spectral flatness (geometric mean / arithmetic mean).
+/// Spectral flatness: geometric mean over arithmetic mean of the magnitude
+/// spectrum (bins `0..=n/2` of [`magnitude_spectrum`]).
+///
+/// The result lies in `[0, 1]`: `1` for a flat spectrum (an impulse), close to
+/// `0` for a pure tone. It is a ratio in which the amplitude cancels, so it does
+/// not depend on the signal's units. A bin at most `f64::EPSILON` times the
+/// mean magnitude counts as empty (rounding-level leakage), which makes the
+/// geometric mean, and the result, `0`. An empty or all-zero signal returns
+/// `0`.
+///
+/// # Examples
+///
+/// ```
+/// use scirust_audio::spectral_flatness;
+///
+/// let mut impulse = vec![0.0; 16];
+/// impulse[0] = 1e-9; // a very quiet impulse is still perfectly flat
+/// assert!((spectral_flatness(&impulse) - 1.0).abs() < 1e-12);
+/// assert_eq!(spectral_flatness(&[0.0; 16]), 0.0);
+/// ```
 pub fn spectral_flatness(signal: &[f64]) -> f64 {
     let spectrum = magnitude_spectrum(signal);
-    let log_sum: f64 = spectrum.iter().map(|x| (x + 1e-10).ln()).sum();
-    let geometric_mean = (log_sum / spectrum.len() as f64).exp();
-    let arithmetic_mean: f64 = spectrum.iter().sum::<f64>() / spectrum.len() as f64;
-
-    if arithmetic_mean > 0.0
+    let n = spectrum.len();
+    if n == 0
     {
-        geometric_mean / arithmetic_mean
+        return 0.0;
+    }
+    let arithmetic_mean: f64 = spectrum.iter().sum::<f64>() / n as f64;
+    // A NaN mean (NaN input) also returns 0, as before.
+    if arithmetic_mean.is_nan() || arithmetic_mean <= 0.0
+    {
+        return 0.0;
+    }
+    // Relative floor: an absolute offset (the former `+ 1e-10` on every bin)
+    // dominates the spectrum of a quiet signal and pushed the ratio far above
+    // 1, the bound GM <= AM allows.
+    let floor = arithmetic_mean * f64::EPSILON;
+    let log_sum: f64 = spectrum
+        .iter()
+        .map(|&m| if m > floor { m.ln() } else { f64::NEG_INFINITY })
+        .sum();
+    if log_sum.is_finite()
+    {
+        (log_sum / n as f64).exp() / arithmetic_mean
     }
     else
     {
@@ -721,11 +755,30 @@ pub fn spectral_flatness(signal: &[f64]) -> f64 {
     }
 }
 
-/// Spectral entropy.
+/// Spectral entropy, in bits, of the normalized magnitude spectrum (bins
+/// `0..=n/2` of [`magnitude_spectrum`] divided by their sum).
+///
+/// The result lies in `[0, log2(n/2 + 1)]`: `0` for a single-bin tone, the
+/// maximum for a flat spectrum. Bins holding at most `1e-10` of the total are
+/// skipped. Because the spectrum is normalized first, the result does not
+/// depend on the signal's units. An empty or all-zero signal returns `0`.
+///
+/// # Examples
+///
+/// ```
+/// use scirust_audio::spectral_entropy;
+///
+/// let mut impulse = vec![0.0; 16];
+/// impulse[0] = 1e-12; // flat spectrum over 9 bins, however quiet
+/// assert!((spectral_entropy(&impulse) - 9.0_f64.log2()).abs() < 1e-12);
+/// assert_eq!(spectral_entropy(&[0.0; 16]), 0.0);
+/// ```
 pub fn spectral_entropy(signal: &[f64]) -> f64 {
     let spectrum = magnitude_spectrum(signal);
     let total: f64 = spectrum.iter().sum();
-    if total < 1e-10
+    // Only a spectrum with no energy is degenerate. The former absolute
+    // `total < 1e-10` cut-off reported any quiet signal as a pure tone (0).
+    if total <= 0.0
     {
         return 0.0;
     }
@@ -1542,5 +1595,66 @@ mod tests {
         // (4000 - 512) / 256 + 1 = 14 frames. Each magnitude bin 512/2 + 1 = 257.
         assert_eq!(spec.len(), 14);
         assert_eq!(spec[0].len(), 257);
+    }
+}
+
+#[cfg(test)]
+mod scale_invariance_tests {
+    use super::*;
+
+    /// Deterministic broadband record: every bin carries energy.
+    fn broadband(n: usize) -> Vec<f64> {
+        (0..n).map(|i| ((i * 37) % 11) as f64 - 5.0).collect()
+    }
+
+    fn scaled(x: &[f64], c: f64) -> Vec<f64> {
+        x.iter().map(|v| v * c).collect()
+    }
+
+    fn rel_close(a: f64, b: f64, tol: f64) -> bool {
+        (a - b).abs() <= tol * a.abs().max(b.abs())
+    }
+
+    #[test]
+    fn flatness_and_entropy_do_not_depend_on_the_units() {
+        // Flatness and entropy are ratios in which the amplitude cancels, so
+        // multiplying the record by a constant (changing its units) must not
+        // change them. Before the fix, `spectral_flatness` added an absolute
+        // 1e-10 to every magnitude and `spectral_entropy` returned 0 once the
+        // spectrum summed below an absolute 1e-10.
+        let base = broadband(96);
+        let flat_ref = spectral_flatness(&base);
+        let ent_ref = spectral_entropy(&base);
+        let cen_ref = spectral_centroid(&base, 1000);
+        let bw_ref = spectral_bandwidth(&base, 1000);
+        assert!(flat_ref > 0.1 && flat_ref < 1.0, "flatness {flat_ref}");
+        assert!(ent_ref > 1.0, "entropy {ent_ref}");
+        for &c in &[1e-3, 1e-6, 1e-9, 1e-12, 1e-15, 1e3, 1e6]
+        {
+            let x = scaled(&base, c);
+            let flat = spectral_flatness(&x);
+            let ent = spectral_entropy(&x);
+            assert!(
+                rel_close(flat, flat_ref, 1e-12),
+                "spectral_flatness at scale {c}: {flat} vs {flat_ref}"
+            );
+            assert!(
+                rel_close(ent, ent_ref, 1e-12),
+                "spectral_entropy at scale {c}: {ent} vs {ent_ref}"
+            );
+            assert!(rel_close(spectral_centroid(&x, 1000), cen_ref, 1e-12));
+            assert!(rel_close(spectral_bandwidth(&x, 1000), bw_ref, 1e-12));
+        }
+    }
+
+    #[test]
+    fn silence_still_gives_zero_and_an_on_bin_tone_stays_tonal_when_quiet() {
+        assert_eq!(spectral_flatness(&[0.0; 32]), 0.0);
+        assert_eq!(spectral_entropy(&[0.0; 32]), 0.0);
+        let tone: Vec<f64> = (0..64)
+            .map(|i| 1e-9 * (2.0 * PI * 8.0 * i as f64 / 64.0).cos())
+            .collect();
+        assert!(spectral_flatness(&tone) < 1e-3);
+        assert!(spectral_entropy(&tone) < 1e-6);
     }
 }
