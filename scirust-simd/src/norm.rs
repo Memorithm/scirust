@@ -7,8 +7,9 @@
 //! * **RoPE** — rotary positional embedding, rotation des paires `(2i, 2i+1)`
 //!   par un angle dépendant de la position.
 //!
-//! Les normalisations sont **vectorisées AVX-512** : réductions (somme, somme
-//! des carrés) par `_mm512_reduce_add_ps`, puis mise à l'échelle par voie ;
+//! Les normalisations sont **vectorisées AVX-512** : réductions (somme des
+//! carrés pour RMSNorm ; pour LayerNorm, somme puis somme des carrés *centrés*
+//! en deux passages) par `_mm512_reduce_add_ps`, puis mise à l'échelle par voie ;
 //! repli scalaire garanti. Toutes opèrent **par ligne** (`rows × d`, row-major)
 //! et en place. Vérifiées contre une référence scalaire dans les tests.
 
@@ -161,33 +162,49 @@ unsafe fn layernorm_row_avx512(row: &mut [f32], gamma: &[f32], beta: &[f32], eps
     let d = row.len();
     let dinv = 1.0 / d as f32;
 
-    // Σ x et Σ x² en un passage.
+    // Deux passages, comme le repli scalaire et `grad::layernorm_backward` :
+    // d'abord μ = Σx/d, puis σ² = Σ(x − μ)²/d. La forme en un passage
+    // `E[x²] − E[x]²` s'annule en f32 dès que |μ| ≫ σ (décalage constant) :
+    // σ² devenait faux, voire négatif, et la sortie aberrante ou NaN.
     let mut s = _mm512_setzero_ps();
+    let mut i = 0;
+    while i + 16 <= d
+    {
+        s = _mm512_add_ps(s, _mm512_loadu_ps(row.as_ptr().add(i)));
+        i += 16;
+    }
+    let rem = d - i;
+    let mask = if rem > 0 { (1u16 << rem) - 1 } else { 0 };
+    if rem > 0
+    {
+        s = _mm512_add_ps(s, _mm512_maskz_loadu_ps(mask, row.as_ptr().add(i)));
+    }
+    let mean = _mm512_reduce_add_ps(s) * dinv;
+    let meanv = _mm512_set1_ps(mean);
+
     let mut sq = _mm512_setzero_ps();
     let mut i = 0;
     while i + 16 <= d
     {
-        let v = _mm512_loadu_ps(row.as_ptr().add(i));
-        s = _mm512_add_ps(s, v);
-        sq = _mm512_fmadd_ps(v, v, sq);
+        let c = _mm512_sub_ps(_mm512_loadu_ps(row.as_ptr().add(i)), meanv);
+        sq = _mm512_fmadd_ps(c, c, sq);
         i += 16;
     }
-    let rem = d - i;
     if rem > 0
     {
-        let mask = (1u16 << rem) - 1;
-        let v = _mm512_maskz_loadu_ps(mask, row.as_ptr().add(i));
-        s = _mm512_add_ps(s, v);
-        sq = _mm512_fmadd_ps(v, v, sq);
+        // Voies masquées mises à zéro *après* la soustraction, pour ne pas
+        // ajouter μ² par voie inactive.
+        let c = _mm512_maskz_sub_ps(
+            mask,
+            _mm512_maskz_loadu_ps(mask, row.as_ptr().add(i)),
+            meanv,
+        );
+        sq = _mm512_fmadd_ps(c, c, sq);
     }
-    let sum = _mm512_reduce_add_ps(s);
-    let sumsq = _mm512_reduce_add_ps(sq);
-    let mean = sum * dinv;
-    let var = sumsq * dinv - mean * mean; // E[x²] − E[x]²
+    let var = _mm512_reduce_add_ps(sq) * dinv;
     let inv = 1.0 / (var + eps).sqrt();
 
     // x = (x − μ)·inv·γ + β.
-    let meanv = _mm512_set1_ps(mean);
     let invv = _mm512_set1_ps(inv);
     let mut i = 0;
     while i + 16 <= d
@@ -201,7 +218,6 @@ unsafe fn layernorm_row_avx512(row: &mut [f32], gamma: &[f32], beta: &[f32], eps
     }
     if rem > 0
     {
-        let mask = (1u16 << rem) - 1;
         let v = _mm512_maskz_loadu_ps(mask, row.as_ptr().add(i));
         let g = _mm512_maskz_loadu_ps(mask, gamma.as_ptr().add(i));
         let b = _mm512_maskz_loadu_ps(mask, beta.as_ptr().add(i));
@@ -329,6 +345,74 @@ mod tests {
             let var: f32 = row.iter().map(|&v| (v - mean) * (v - mean)).sum::<f32>() / d as f32;
             assert!(mean.abs() <= 1e-3, "row {r} mean {mean}");
             assert!((var - 1.0).abs() <= 1e-2, "row {r} var {var}");
+        }
+    }
+
+    /// f64 two-pass reference for one row (γ, β applied).
+    fn layernorm_row_f64(row: &[f32], gamma: &[f32], beta: &[f32], eps: f32) -> Vec<f32> {
+        let d = row.len() as f64;
+        let mean = row.iter().map(|&v| v as f64).sum::<f64>() / d;
+        let var = row.iter().map(|&v| (v as f64 - mean).powi(2)).sum::<f64>() / d;
+        let inv = 1.0 / (var + eps as f64).sqrt();
+        row.iter()
+            .zip(gamma)
+            .zip(beta)
+            .map(|((&v, &g), &b)| ((v as f64 - mean) * inv * g as f64 + b as f64) as f32)
+            .collect()
+    }
+
+    /// Regression: the AVX-512 row kernel computed `σ² = E[x²] − E[x]²` in
+    /// f32. For rows whose mean is large next to their spread (e.g. a
+    /// constant offset of 1000 with ±0.1 variation) the two terms cancel, so
+    /// σ² came out wrong, could be negative, and `1/√(σ²+eps)` turned into
+    /// garbage or NaN, while the scalar fallback (two-pass) stayed correct.
+    /// The dispatched result must now match an f64 two-pass reference
+    /// whatever the CPU, and must agree with the scalar kernel.
+    #[test]
+    fn layernorm_is_offset_invariant_on_every_dispatch_path() {
+        for &offset in &[0.0f32, 100.0, 1000.0, 3.0e4]
+        {
+            for d in [8usize, 16, 17, 64, 100]
+            {
+                let rows = 3;
+                let x0: Vec<f32> = (0..rows * d)
+                    .map(|i| offset + (i as f32 * 0.37).sin() * 0.1)
+                    .collect();
+                let gamma: Vec<f32> = (0..d).map(|i| 1.0 + (i as f32) * 0.01).collect();
+                let beta: Vec<f32> = (0..d).map(|i| (i as f32) * 0.02 - 0.1).collect();
+                let eps = 1e-6;
+                // f32 input quantisation at the offset bounds the achievable
+                // accuracy: ulp(3e4) ≈ 2e-3 against σ ≈ 0.07, and the two
+                // kernels sum the f32 mean in different orders.
+                let tol = if offset >= 1.0e4 { 0.1 } else { 2e-2 };
+
+                let mut got = x0.clone();
+                layernorm(&mut got, rows, d, &gamma, &beta, eps);
+                let mut scalar = x0.clone();
+                for r in 0..rows
+                {
+                    let row = &x0[r * d..r * d + d];
+                    let want = layernorm_row_f64(row, &gamma, &beta, eps);
+                    let ctx = format!("offset={offset} d={d} row={r}");
+                    assert!(
+                        got[r * d..r * d + d].iter().all(|v| v.is_finite()),
+                        "{ctx}: non-finite output"
+                    );
+                    approx(
+                        &got[r * d..r * d + d],
+                        &want,
+                        tol,
+                        &format!("{ctx} dispatched vs f64"),
+                    );
+                    layernorm_row_scalar(&mut scalar[r * d..r * d + d], &gamma, &beta, eps);
+                }
+                approx(
+                    &got,
+                    &scalar,
+                    tol,
+                    &format!("offset={offset} d={d} dispatched vs scalar"),
+                );
+            }
         }
     }
 
