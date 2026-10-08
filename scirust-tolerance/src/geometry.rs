@@ -50,63 +50,78 @@ fn range(d: &[f64]) -> f64 {
     hi - lo
 }
 
-fn det3(m: &[[f64; 3]; 3]) -> f64 {
-    m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
-        - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
-        + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
+/// Arithmetic mean of one coordinate of a point set (non-empty input).
+fn mean_of<const D: usize>(points: &[[f64; D]], axis: usize) -> f64 {
+    points.iter().map(|p| p[axis]).sum::<f64>() / points.len() as f64
 }
 
-/// Solve a 3×3 linear system by Cramer's rule; `None` if (near-)singular.
-fn solve3(m: &[[f64; 3]; 3], b: &[f64; 3]) -> Option<[f64; 3]> {
-    let d = det3(m);
-    if d.abs() < 1e-14
+/// `true` when every point has the same coordinate on `axis` (exact test).
+fn all_equal<const D: usize>(points: &[[f64; D]], axis: usize) -> bool {
+    points.iter().all(|p| p[axis] == points[0][axis])
+}
+
+/// Solve the 2×2 symmetric system `[[a, b], [b, c]]·[s, t] = [r1, r2]` of
+/// centred second moments. `None` when the moment matrix is singular *relative
+/// to its own diagonal* (`a·c − b² ≤ 1e-12·a·c`, i.e. a squared correlation of
+/// the two coordinates above `1 − 1e-12`), so the test does not depend on the
+/// units of the data.
+fn solve_centred_2x2(a: f64, b: f64, c: f64, r1: f64, r2: f64) -> Option<(f64, f64)> {
+    if a.is_nan() || c.is_nan() || a <= 0.0 || c <= 0.0
     {
         return None;
     }
-    let mut out = [0.0; 3];
-    for (k, slot) in out.iter_mut().enumerate()
+    let det = a * c - b * b;
+    if det.is_nan() || det <= 1e-12 * a * c
     {
-        let mut mk = *m;
-        for row in 0..3
-        {
-            mk[row][k] = b[row];
-        }
-        *slot = det3(&mk) / d;
+        return None;
     }
-    Some(out)
+    Some(((c * r1 - b * r2) / det, (a * r2 - b * r1) / det))
+}
+
+/// Least-squares line in centred form: `(x̄, ȳ, slope)`, the line being
+/// `y − ȳ = slope·(x − x̄)`.
+fn centred_line(points: &[[f64; 2]]) -> Option<(f64, f64, f64)> {
+    if points.len() < 2 || all_equal(points, 0)
+    {
+        return None;
+    }
+    let (mx, my) = (mean_of(points, 0), mean_of(points, 1));
+    let (mut suu, mut suv) = (0.0, 0.0);
+    for p in points
+    {
+        let (u, v) = (p[0] - mx, p[1] - my);
+        suu += u * u;
+        suv += u * v;
+    }
+    if suu.is_nan() || suu <= 0.0
+    {
+        return None;
+    }
+    Some((mx, my, suv / suu))
 }
 
 /// Least-squares line `y = a + b·x` through 2D points, or `None` if fewer than
 /// two distinct abscissae. Returns `(a, b)`.
+///
+/// The fit is computed on coordinates centred on the centroid, so it is
+/// translation-invariant and does not depend on the units of the data (raw
+/// normal-equation sums `n·Σx² − (Σx)²` cancel catastrophically when the points
+/// sit far from the origin, e.g. in CMM machine coordinates). The returned
+/// intercept `a` is the value at `x = 0`; for points far from the origin,
+/// evaluating residuals as `y − (a + b·x)` would cancel again, so
+/// [`straightness`] evaluates them in centred form instead of through `(a, b)`.
 pub fn least_squares_line(points: &[[f64; 2]]) -> Option<(f64, f64)> {
-    let n = points.len();
-    if n < 2
-    {
-        return None;
-    }
-    let nf = n as f64;
-    let (mut sx, mut sy, mut sxx, mut sxy) = (0.0, 0.0, 0.0, 0.0);
-    for p in points
-    {
-        sx += p[0];
-        sy += p[1];
-        sxx += p[0] * p[0];
-        sxy += p[0] * p[1];
-    }
-    let denom = nf * sxx - sx * sx;
-    if denom.abs() < 1e-14
-    {
-        return None;
-    }
-    let b = (nf * sxy - sx * sy) / denom;
-    let a = (sy - b * sx) / nf;
-    Some((a, b))
+    let (mx, my, b) = centred_line(points)?;
+    Some((my - b * mx, b))
 }
 
 fn line_residuals(points: &[[f64; 2]]) -> Vec<f64> {
-    match least_squares_line(points)
+    match centred_line(points)
     {
-        Some((a, b)) => points.iter().map(|p| p[1] - (a + b * p[0])).collect(),
+        Some((mx, my, b)) => points
+            .iter()
+            .map(|p| (p[1] - my) - b * (p[0] - mx))
+            .collect(),
         None => Vec::new(),
     }
 }
@@ -122,40 +137,46 @@ pub fn straightness_inertia(points: &[[f64; 2]]) -> f64 {
     rms(&line_residuals(points))
 }
 
-/// Least-squares plane `z = a + b·x + c·y` through 3D points, or `None` if the
-/// points are collinear / too few. Returns `(a, b, c)`.
-pub fn least_squares_plane(points: &[[f64; 3]]) -> Option<(f64, f64, f64)> {
+/// Least-squares plane in centred form: `(x̄, ȳ, z̄, b, c)`, the plane being
+/// `z − z̄ = b·(x − x̄) + c·(y − ȳ)`.
+fn centred_plane(points: &[[f64; 3]]) -> Option<(f64, f64, f64, f64, f64)> {
     if points.len() < 3
     {
         return None;
     }
-    let n = points.len() as f64;
-    let (mut sx, mut sy, mut sz) = (0.0, 0.0, 0.0);
-    let (mut sxx, mut syy, mut sxy) = (0.0, 0.0, 0.0);
-    let (mut sxz, mut syz) = (0.0, 0.0);
+    let (mx, my, mz) = (mean_of(points, 0), mean_of(points, 1), mean_of(points, 2));
+    let (mut suu, mut svv, mut suv, mut suw, mut svw) = (0.0, 0.0, 0.0, 0.0, 0.0);
     for p in points
     {
-        sx += p[0];
-        sy += p[1];
-        sz += p[2];
-        sxx += p[0] * p[0];
-        syy += p[1] * p[1];
-        sxy += p[0] * p[1];
-        sxz += p[0] * p[2];
-        syz += p[1] * p[2];
+        let (u, v, w) = (p[0] - mx, p[1] - my, p[2] - mz);
+        suu += u * u;
+        svv += v * v;
+        suv += u * v;
+        suw += u * w;
+        svw += v * w;
     }
-    let m = [[n, sx, sy], [sx, sxx, sxy], [sy, sxy, syy]];
-    let rhs = [sz, sxz, syz];
-    let s = solve3(&m, &rhs)?;
-    Some((s[0], s[1], s[2]))
+    let (b, c) = solve_centred_2x2(suu, suv, svv, suw, svw)?;
+    Some((mx, my, mz, b, c))
+}
+
+/// Least-squares plane `z = a + b·x + c·y` through 3D points, or `None` if the
+/// points are collinear / too few. Returns `(a, b, c)`.
+///
+/// Computed on centred coordinates, with a collinearity test relative to the
+/// spread of the points, so the fit is translation-invariant and independent
+/// of the units of the data. As for [`least_squares_line`], `a` is the value at
+/// the origin; [`flatness`] evaluates its residuals in centred form.
+pub fn least_squares_plane(points: &[[f64; 3]]) -> Option<(f64, f64, f64)> {
+    let (mx, my, mz, b, c) = centred_plane(points)?;
+    Some((mz - b * mx - c * my, b, c))
 }
 
 fn plane_residuals(points: &[[f64; 3]]) -> Vec<f64> {
-    match least_squares_plane(points)
+    match centred_plane(points)
     {
-        Some((a, b, c)) => points
+        Some((mx, my, mz, b, c)) => points
             .iter()
-            .map(|p| p[2] - (a + b * p[0] + c * p[1]))
+            .map(|p| (p[2] - mz) - (b * (p[0] - mx) + c * (p[1] - my)))
             .collect(),
         None => Vec::new(),
     }
@@ -172,49 +193,64 @@ pub fn flatness_inertia(points: &[[f64; 3]]) -> f64 {
 }
 
 /// Least-squares circle (Kåsa algebraic fit) through 2D points, or `None` if
-/// unfittable. Returns `(center_x, center_y, radius)`.
+/// unfittable (fewer than three points, or all points on one line). Returns
+/// `(center_x, center_y, radius)`.
+///
+/// The algebraic fit `u² + v² + D·u + E·v + F = 0` is solved on coordinates
+/// `(u, v)` centred on the centroid, where the normal equations decouple
+/// (`F = −mean(u² + v²)`) and the remaining 2×2 system has its singularity
+/// test relative to the spread of the points. Fitting raw coordinates instead
+/// makes the third-order sums cancel catastrophically for a small feature far
+/// from the origin (for a 2 mm bore at (500, 300) mm a raw-moment fit reports a
+/// roundness about 19 times the true form error).
 pub fn least_squares_circle(points: &[[f64; 2]]) -> Option<(f64, f64, f64)> {
+    let (mx, my, du, dv, r) = centred_circle(points)?;
+    Some((mx + du, my + dv, r))
+}
+
+/// Kåsa circle in centred form: `(x̄, ȳ, cu, cv, r)`, the center being
+/// `(x̄ + cu, ȳ + cv)`.
+fn centred_circle(points: &[[f64; 2]]) -> Option<(f64, f64, f64, f64, f64)> {
     let n = points.len();
     if n < 3
     {
         return None;
     }
-    let (mut sx, mut sy, mut sxx, mut syy, mut sxy) = (0.0, 0.0, 0.0, 0.0, 0.0);
-    let (mut sxz, mut syz, mut sz) = (0.0, 0.0, 0.0);
+    let (mx, my) = (mean_of(points, 0), mean_of(points, 1));
+    let (mut suu, mut svv, mut suv) = (0.0, 0.0, 0.0);
+    let (mut suz, mut svz, mut sz) = (0.0, 0.0, 0.0);
     for p in points
     {
-        let (x, y) = (p[0], p[1]);
-        let z = x * x + y * y;
-        sx += x;
-        sy += y;
-        sxx += x * x;
-        syy += y * y;
-        sxy += x * y;
-        sxz += x * z;
-        syz += y * z;
+        let (u, v) = (p[0] - mx, p[1] - my);
+        let z = u * u + v * v;
+        suu += u * u;
+        svv += v * v;
+        suv += u * v;
+        suz += u * z;
+        svz += v * z;
         sz += z;
     }
-    // Fit x²+y² + D x + E y + F = 0 (regress z = x²+y² on x, y, 1).
-    let m = [[sxx, sxy, sx], [sxy, syy, sy], [sx, sy, n as f64]];
-    let rhs = [-sxz, -syz, -sz];
-    let s = solve3(&m, &rhs)?;
-    let (d, e, f) = (s[0], s[1], s[2]);
-    let cx = -0.5 * d;
-    let cy = -0.5 * e;
-    let r2 = cx * cx + cy * cy - f;
-    if r2 < 0.0
+    // With Σu = Σv = 0 the normal equations of z + D·u + E·v + F = 0 give
+    // F = −Σz/n and [[Σuu, Σuv], [Σuv, Σvv]]·[D, E] = −[Σuz, Σvz].
+    let (d, e) = solve_centred_2x2(suu, suv, svv, -suz, -svz)?;
+    let f = -sz / n as f64;
+    let (cu, cv) = (-0.5 * d, -0.5 * e);
+    let r2 = cu * cu + cv * cv - f;
+    if !r2.is_finite() || r2 < 0.0
     {
         return None;
     }
-    Some((cx, cy, r2.sqrt()))
+    Some((mx, my, cu, cv, r2.sqrt()))
 }
 
+/// Radial deviations `|P − C| − r` from the least-squares circle, evaluated in
+/// centred coordinates.
 fn circle_residuals(points: &[[f64; 2]]) -> Vec<f64> {
-    match least_squares_circle(points)
+    match centred_circle(points)
     {
-        Some((cx, cy, r)) => points
+        Some((mx, my, cu, cv, r)) => points
             .iter()
-            .map(|p| ((p[0] - cx).powi(2) + (p[1] - cy).powi(2)).sqrt() - r)
+            .map(|p| ((p[0] - mx - cu).powi(2) + (p[1] - my - cv).powi(2)).sqrt() - r)
             .collect(),
         None => Vec::new(),
     }
@@ -233,14 +269,7 @@ pub fn roundness_inertia(points: &[[f64; 2]]) -> f64 {
 
 fn cylinder_residuals_axis_z(points: &[[f64; 3]]) -> Vec<f64> {
     let proj: Vec<[f64; 2]> = points.iter().map(|p| [p[0], p[1]]).collect();
-    match least_squares_circle(&proj)
-    {
-        Some((cx, cy, r)) => points
-            .iter()
-            .map(|p| ((p[0] - cx).powi(2) + (p[1] - cy).powi(2)).sqrt() - r)
-            .collect(),
-        None => Vec::new(),
-    }
+    circle_residuals(&proj)
 }
 
 /// Cylindricity for a cylinder whose axis is nominally along `z`: fits the
@@ -408,6 +437,124 @@ mod tests {
         assert_relative_eq!(profile_inertia(&dev), rms(&dev), epsilon = 1e-12);
         let readings = [10.02, 9.98, 10.05, 9.99];
         assert_relative_eq!(total_runout(&readings), 0.07, epsilon = 1e-12);
+    }
+
+    /// Three-lobed bore of nominal radius `r` and lobe amplitude `lobe`
+    /// (roundness `2·lobe`), centred on `center`.
+    fn lobed_bore(center: [f64; 2], r: f64, lobe: f64) -> Vec<[f64; 2]> {
+        (0..36)
+            .map(|k| {
+                let t = k as f64 / 36.0 * std::f64::consts::TAU;
+                let rho = r + lobe * (3.0 * t).cos();
+                [center[0] + rho * t.cos(), center[1] + rho * t.sin()]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn roundness_is_translation_invariant_far_from_the_origin() {
+        // 2 mm bore with a 0.1 µm three-lobe form error, in mm. At the origin
+        // and at CMM machine coordinates (500, 300) mm the form error is the
+        // same; the raw-moment Kåsa fit reported 3.85e-3 mm (19×) at the offset.
+        let at_origin = roundness(&lobed_bore([0.0, 0.0], 1.0, 1e-4));
+        let offset = roundness(&lobed_bore([500.0, 300.0], 1.0, 1e-4));
+        assert_relative_eq!(at_origin, 2e-4, max_relative = 1e-6);
+        assert_relative_eq!(offset, at_origin, max_relative = 1e-6);
+        let (cx, cy, r) = least_squares_circle(&lobed_bore([500.0, 300.0], 1.0, 1e-4)).unwrap();
+        assert!((cx - 500.0).abs() < 1e-9 && (cy - 300.0).abs() < 1e-9);
+        assert!((r - 1.0).abs() < 1e-8, "r = {r}");
+        // Cylindricity uses the same circle fit.
+        let mut cyl = Vec::new();
+        for level in 0..3
+        {
+            for p in lobed_bore([500.0, 300.0], 1.0, 1e-4)
+            {
+                cyl.push([p[0], p[1], 40.0 + level as f64]);
+            }
+        }
+        assert_relative_eq!(cylindricity(&cyl), 2e-4, max_relative = 1e-6);
+    }
+
+    /// 5×5 grid over a square of side `side` centred on `(x0, y0)`, with a
+    /// paraboloid dome of height `dome` at the corners above `z0`: flatness of
+    /// the dome is `dome` (corner) minus `0` (center).
+    fn domed_square(x0: f64, y0: f64, z0: f64, side: f64, dome: f64) -> Vec<[f64; 3]> {
+        let mut pts = Vec::new();
+        for i in 0..5
+        {
+            for j in 0..5
+            {
+                let (u, v) = ((i as f64 - 2.0) / 2.0, (j as f64 - 2.0) / 2.0);
+                pts.push([
+                    x0 + 0.5 * side * u,
+                    y0 + 0.5 * side * v,
+                    z0 + 0.5 * dome * (u * u + v * v),
+                ]);
+            }
+        }
+        pts
+    }
+
+    #[test]
+    fn flatness_is_translation_and_scale_invariant() {
+        // 0.1 mm square with a 1 nm dome, in mm, at the origin and at machine
+        // coordinates (300, 200, 80) mm. The raw normal equations gave 1.41e-2
+        // mm at the offset (about 14 000× the form error).
+        let at_origin = flatness(&domed_square(0.0, 0.0, 0.0, 0.1, 1e-6));
+        let offset = flatness(&domed_square(300.0, 200.0, 80.0, 0.1, 1e-6));
+        assert_relative_eq!(at_origin, 1e-6, max_relative = 1e-6);
+        assert_relative_eq!(offset, at_origin, max_relative = 1e-6);
+        // A 50 µm membrane with a 1 nm dome expressed in metres: the absolute
+        // 1e-14 determinant guard declared it singular and flatness returned 0.
+        let metres = flatness(&domed_square(0.0, 0.0, 0.0, 5e-5, 1e-9));
+        assert_relative_eq!(metres, 1e-9, max_relative = 1e-6);
+        let (a, b, c) = least_squares_plane(&domed_square(0.0, 0.0, 0.0, 5e-5, 1e-9)).unwrap();
+        assert!(a.is_finite() && b.abs() < 1e-9 && c.abs() < 1e-9);
+    }
+
+    #[test]
+    fn straightness_is_translation_and_scale_invariant() {
+        // 11 points with a 0.1 nm parabolic bow at 1 nm spacing, in metres:
+        // the absolute 1e-14 guard on n·Σx² − (Σx)² rejected the fit and
+        // straightness returned 0.
+        let bow = |x0: f64, y0: f64, step: f64, depth: f64| -> Vec<[f64; 2]> {
+            (0..11)
+                .map(|i| {
+                    let u = (i as f64 - 5.0) / 5.0;
+                    [x0 + 5.0 * step * u, y0 + depth * u * u]
+                })
+                .collect()
+        };
+        assert_relative_eq!(
+            straightness(&bow(0.0, 0.0, 1e-9, 1e-10)),
+            1e-10,
+            max_relative = 1e-6
+        );
+        // Far from the origin (positions in µm along a 1 m stage): the raw
+        // sums gave 1.00025e-3 instead of 1e-3.
+        let at_origin = straightness(&bow(0.0, 0.0, 1.0, 1e-3));
+        let offset = straightness(&bow(1e6, 2e3, 1.0, 1e-3));
+        assert_relative_eq!(at_origin, 1e-3, max_relative = 1e-9);
+        assert_relative_eq!(offset, at_origin, max_relative = 1e-6);
+        // The public (a, b) form still describes the same line.
+        let (a, b) = least_squares_line(&[[0.0, 1.0], [1.0, 3.0], [2.0, 5.0]]).unwrap();
+        assert_relative_eq!(a, 1.0, epsilon = 1e-12);
+        assert_relative_eq!(b, 2.0, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn degenerate_fits_are_still_rejected() {
+        // One distinct abscissa: no line.
+        assert!(least_squares_line(&[[2.0, 0.0], [2.0, 1.0], [2.0, 3.0]]).is_none());
+        assert_eq!(straightness(&[[2.0, 0.0], [2.0, 1.0]]), 0.0);
+        // Points collinear in (x, y): no plane, at any scale.
+        let collinear = |s: f64| [[0.0, 0.0, 1.0], [s, 2.0 * s, 0.0], [2.0 * s, 4.0 * s, 3.0]];
+        assert!(least_squares_plane(&collinear(1.0)).is_none());
+        assert!(least_squares_plane(&collinear(1e-9)).is_none());
+        assert!(least_squares_plane(&collinear(1e9)).is_none());
+        // Collinear points: no circle.
+        assert!(least_squares_circle(&[[0.0, 0.0], [1.0, 1.0], [2.0, 2.0]]).is_none());
+        assert!(least_squares_circle(&[[0.0, 0.0], [1.0, 1.0]]).is_none());
     }
 
     #[test]
