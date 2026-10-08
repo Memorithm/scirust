@@ -37,27 +37,44 @@ pub fn erf(x: f64) -> f64 {
 
 /// The **Rayleigh** amplitude PDF `f(x) = (x/σ²)·e^{−x²/2σ²}` for `x ≥ 0`, scale
 /// `sigma`. `0.0` for `x < 0`.
+///
+/// Evaluated through the normalised amplitude `z = x/σ` as `(z/σ)·e^{−z²/2}`, so
+/// the result does not depend on the units of `x` and `sigma`: forming `x²` and
+/// `σ²` separately underflows to `0/0` (NaN) for scales near `1e-170` and
+/// overflows to `∞/∞` (NaN) near `1e170`.
 pub fn rayleigh_pdf(x: f64, sigma: f64) -> f64 {
     if x < 0.0 || sigma <= 0.0
     {
         return 0.0;
     }
-    (x / (sigma * sigma)) * (-x * x / (2.0 * sigma * sigma)).exp()
+    let z = x / sigma;
+    (z / sigma) * (-0.5 * z * z).exp()
 }
 
 /// The Rayleigh CDF `F(x) = 1 − e^{−x²/2σ²}`.
+///
+/// Computed as `−expm1(−z²/2)` with `z = x/σ`. This keeps full relative
+/// accuracy in the lower tail, where `1 − e^{−u}` cancels (it returns exactly
+/// `0.0` once `u` drops below about `1.1e-16`), and avoids the `0/0` and `∞/∞`
+/// NaNs that squaring `x` and `σ` separately produces at extreme scales.
 pub fn rayleigh_cdf(x: f64, sigma: f64) -> f64 {
     if x <= 0.0 || sigma <= 0.0
     {
         return 0.0;
     }
-    1.0 - (-x * x / (2.0 * sigma * sigma)).exp()
+    let z = x / sigma;
+    -(-0.5 * z * z).exp_m1()
 }
 
 /// The Rayleigh quantile (inverse CDF) `x = σ·√(−2·ln(1−p))` for `p ∈ [0, 1)`.
+///
+/// `ln(1−p)` is evaluated as `ln_1p(−p)`, so small probabilities keep full
+/// relative accuracy instead of rounding `1 − p` to `1` (which returned `0.0`
+/// for every `p` below about `1.1e-16`). `p` is clamped to `[0, 1 − ε]`, so
+/// `p ≥ 1` returns a large finite amplitude rather than `∞`.
 pub fn rayleigh_quantile(p: f64, sigma: f64) -> f64 {
     let p = p.clamp(0.0, 1.0 - f64::EPSILON);
-    sigma * (-2.0 * (1.0 - p).ln()).sqrt()
+    sigma * (-2.0 * (-p).ln_1p()).sqrt()
 }
 
 // ── Weibull ─────────────────────────────────────────────────────────────────
@@ -75,18 +92,27 @@ pub fn weibull_pdf(x: f64, scale: f64, shape: f64) -> f64 {
 }
 
 /// The Weibull CDF `F(x) = 1 − e^{−(x/b)^c}`.
+///
+/// Computed as `−expm1(−(x/b)^c)`, which keeps full relative accuracy in the
+/// lower tail where `1 − e^{−u}` cancels (and returns exactly `0.0` once `u`
+/// drops below about `1.1e-16`).
 pub fn weibull_cdf(x: f64, scale: f64, shape: f64) -> f64 {
     if x <= 0.0 || scale <= 0.0 || shape <= 0.0
     {
         return 0.0;
     }
-    1.0 - (-(x / scale).powf(shape)).exp()
+    -(-(x / scale).powf(shape)).exp_m1()
 }
 
 /// The Weibull quantile `x = b·(−ln(1−p))^{1/c}` for `p ∈ [0, 1)`.
+///
+/// `ln(1−p)` is evaluated as `ln_1p(−p)`, so small probabilities keep full
+/// relative accuracy instead of rounding `1 − p` to `1` (which returned `0.0`
+/// for every `p` below about `1.1e-16`). `p` is clamped to `[0, 1 − ε]`, so
+/// `p ≥ 1` returns a large finite amplitude rather than `∞`.
 pub fn weibull_quantile(p: f64, scale: f64, shape: f64) -> f64 {
     let p = p.clamp(0.0, 1.0 - f64::EPSILON);
-    scale * (-(1.0 - p).ln()).powf(1.0 / shape)
+    scale * (-(-p).ln_1p()).powf(1.0 / shape)
 }
 
 // ── Log-normal ──────────────────────────────────────────────────────────────
@@ -188,6 +214,70 @@ mod tests {
         // PDF integrates to 1.
         let mass = integrate(1e-4, 60.0, 60_000, |x| lognormal_pdf(x, mu, sigma));
         assert!((mass - 1.0).abs() < 1e-3, "mass {mass}");
+    }
+
+    /// Relative error `|a − b| / |b|`.
+    /// Tolerances are loose (1e-11) so Miri's float noise cannot trip them;
+    /// the old formulas were off by 8e-8 to 1e-4, or returned 0.0 / NaN.
+    fn rel(a: f64, b: f64) -> f64 {
+        ((a - b) / b).abs()
+    }
+
+    #[test]
+    fn lower_tail_cdfs_keep_relative_accuracy() {
+        // F(x) ≈ x²/2σ² for x ≪ σ. The old `1 − e^{−u}` form returned 0.0
+        // here and lost about 8e-8 relative accuracy at u = 1e-9.
+        let x = 1e-9;
+        let exact = 0.5 * x * x; // σ = 1; the next series term is ~1e-37 relative
+        assert!(rayleigh_cdf(x, 1.0) > 0.0);
+        assert!(rel(rayleigh_cdf(x, 1.0), exact) < 1e-11);
+        // Weibull with u = (x/b)^c = 1e-9: F = u − u²/2 + …
+        let u: f64 = 1e-9;
+        let w = weibull_cdf(1e-6, 1.0, 1.5);
+        assert!(rel(w, u - 0.5 * u * u) < 1e-11, "weibull cdf {w}");
+        // Exponential case (c = 1) far into the lower tail.
+        assert!(rel(weibull_cdf(1e-20, 1.0, 1.0), 1e-20) < 1e-11);
+    }
+
+    #[test]
+    fn lower_tail_quantiles_keep_relative_accuracy() {
+        // −ln(1−p) = p + p²/2 + … ; the old `(1 − p).ln()` returned 0.0 for
+        // p = 1e-20 and was ~1e-4 off in relative terms at p = 1e-12.
+        for &p in &[1e-20_f64, 1e-12, 1e-8]
+        {
+            let neg_log = p + 0.5 * p * p;
+            let r = rayleigh_quantile(p, 3.0);
+            assert!(rel(r, 3.0 * (2.0 * neg_log).sqrt()) < 1e-11, "p {p}: {r}");
+            let w = weibull_quantile(p, 2.0, 0.7);
+            assert!(rel(w, 2.0 * neg_log.powf(1.0 / 0.7)) < 1e-11, "p {p}: {w}");
+        }
+        // Quantile inverts the CDF in the lower tail as well.
+        for &x in &[1e-10_f64, 1e-6, 1e-3]
+        {
+            let p = rayleigh_cdf(x, 1.0);
+            assert!(rel(rayleigh_quantile(p, 1.0), x) < 1e-11, "x {x}");
+            let p = weibull_cdf(x, 1.0, 1.5);
+            assert!(rel(weibull_quantile(p, 1.0, 1.5), x) < 1e-11, "x {x}");
+        }
+    }
+
+    #[test]
+    fn rayleigh_is_finite_and_scale_invariant_at_extreme_scales() {
+        // Squaring x and σ separately gave 0/0 or ∞/∞ (NaN) at these scales.
+        let cdf_one = 1.0 - (-0.5_f64).exp();
+        let pdf_one = (-0.5_f64).exp();
+        for &s in &[1e-170_f64, 1e-100, 1.0, 1e100, 1e170]
+        {
+            let c = rayleigh_cdf(s, s);
+            assert!(rel(c, cdf_one) < 1e-11, "scale {s}: cdf {c}");
+            // f(x; σ) = f(x/σ; 1)/σ.
+            let d = rayleigh_pdf(s, s);
+            assert!(
+                d.is_finite() && rel(d * s, pdf_one) < 1e-11,
+                "scale {s}: pdf {d}"
+            );
+            assert!(rel(rayleigh_quantile(cdf_one, s), s) < 1e-11, "scale {s}");
+        }
     }
 
     #[test]
