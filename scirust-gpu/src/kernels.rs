@@ -177,7 +177,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     } else if (p.op == 6u) { // elu
         y = select(p.param * (exp(x) - 1.0), x, x >= 0.0);
     } else if (p.op == 7u) { // softplus
-        y = log(1.0 + exp(x));
+        // max(x,0) + ln(1+e^{-|x|}): equal to ln(1+e^x) but never overflows.
+        y = max(x, 0.0) + log(1.0 + exp(-abs(x)));
     } else if (p.op == 8u) { // sqrt
         y = sqrt(max(x, 0.0));
     } else {                  // exp

@@ -3,6 +3,9 @@
 use crate::kernels::EwOp;
 
 /// Apply an activation function elementwise (CPU reference, deterministic).
+///
+/// `Softplus` uses the overflow-free form `max(x, 0) + ln(1 + e^{-|x|})`, so it
+/// stays finite for every finite input; `Elu` uses `alpha = 1`.
 pub fn cpu_activation(data: &[f32], op: EwOp) -> Vec<f32> {
     data.iter()
         .map(|&x| match op
@@ -35,10 +38,15 @@ pub fn cpu_activation(data: &[f32], op: EwOp) -> Vec<f32> {
                 }
                 else
                 {
-                    1.0 * (x.exp() - 1.0)
+                    // `exp_m1` keeps full relative precision for small |x|,
+                    // where `exp(x) - 1` cancels.
+                    x.exp_m1()
                 }
             },
-            EwOp::Softplus => (1.0 + x.exp()).ln(),
+            // softplus(x) = ln(1 + e^x) = max(x, 0) + ln(1 + e^{-|x|}).
+            // The rewritten form never overflows (e^x is inf in f32 for
+            // x > ~88.7) and `ln_1p` keeps precision in the far negative tail.
+            EwOp::Softplus => x.max(0.0) + (-x.abs()).exp().ln_1p(),
             EwOp::Sqrt => x.max(0.0).sqrt(),
             EwOp::Exp => x.exp(),
         })
@@ -1115,6 +1123,51 @@ mod tests {
         assert!(out[0] < 0.001);
         assert!((out[1] - 0.5).abs() < 1e-6);
         assert!(out[2] > 0.999);
+    }
+
+    #[test]
+    fn test_cpu_activation_softplus_large_inputs_stay_finite() {
+        // Regression: ln(1 + e^x) overflowed to +inf for x > ~88.7 in f32.
+        // softplus(x) = x + ln(1 + e^{-x}), which rounds to x in f32 here.
+        let data = vec![89.0f32, 100.0, 1000.0, f32::MAX];
+        let out = cpu_activation(&data, EwOp::Softplus);
+        for (x, y) in data.iter().zip(&out)
+        {
+            assert!(y.is_finite(), "softplus({x}) = {y}");
+            assert!(
+                (y - x).abs() <= f32::EPSILON * x.abs(),
+                "softplus({x}) = {y}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_cpu_activation_softplus_matches_f64_reference() {
+        // Moderate inputs keep their value; the far negative tail keeps
+        // relative precision (softplus(x) ~ e^x) instead of flushing to 0.
+        let data = vec![-80.0f32, -30.0, -5.0, -1.0, 0.0, 0.5, 3.0, 20.0, 80.0];
+        let out = cpu_activation(&data, EwOp::Softplus);
+        for (&x, &y) in data.iter().zip(&out)
+        {
+            let xr = f64::from(x);
+            let r = xr.max(0.0) + (-xr.abs()).exp().ln_1p();
+            let rel = ((f64::from(y) - r) / r).abs();
+            assert!(rel < 1e-6, "softplus({x}) = {y}, reference {r}, rel {rel}");
+        }
+    }
+
+    #[test]
+    fn test_cpu_activation_elu_small_negative_keeps_precision() {
+        // Regression: exp(x) - 1 cancels for small |x| (relative error ~2e-4
+        // at x = -1e-4 in f32); exp_m1 keeps it at f32 rounding level.
+        let data = vec![-1e-4f32, -1e-6, -0.5, -10.0];
+        let out = cpu_activation(&data, EwOp::Elu);
+        for (&x, &y) in data.iter().zip(&out)
+        {
+            let r = f64::from(x).exp_m1();
+            let rel = ((f64::from(y) - r) / r).abs();
+            assert!(rel < 1e-6, "elu({x}) = {y}, reference {r}, rel {rel}");
+        }
     }
 
     #[test]
