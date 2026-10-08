@@ -84,6 +84,10 @@ fn main() {
     assert_eq!(banks.len(), 2048, "BANK records must be unique");
 
     let mut queries = HashSet::new();
+    let mut outputs = HashSet::new();
+    // The v1 fixture interleaves each schedule's QUERY block with that
+    // schedule's OUTPUT blocks. Keep the consumer order identical to the
+    // SML-owned generator and the frozen contract.
     for schedule in SCHEDULES
     {
         for position in 0..BANK_WORDS
@@ -101,12 +105,7 @@ fn main() {
             );
             cursor += 1;
         }
-    }
-    assert_eq!(queries.len(), QUERY_ROWS, "unexpected QUERY count");
 
-    let mut outputs = HashSet::new();
-    for schedule in SCHEDULES
-    {
         for density in DENSITIES
         {
             for position in 0..BANK_WORDS
@@ -127,6 +126,7 @@ fn main() {
             }
         }
     }
+    assert_eq!(queries.len(), QUERY_ROWS, "unexpected QUERY count");
     assert_eq!(outputs.len(), OUTPUT_ROWS, "unexpected OUTPUT count");
 
     let end: Vec<&str> = lines[cursor].split(',').collect();
