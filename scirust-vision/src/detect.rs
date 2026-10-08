@@ -45,11 +45,13 @@ pub fn cfar_mask(image: &Image, guard: usize, train: usize, k: f64) -> Image {
     let mut mask = Image::new(w, h);
     let outer = (guard + train) as isize;
     let guard = guard as isize;
+    // Training-cell values of the pixel under test, reused across pixels.
+    let mut ring: Vec<f64> = Vec::new();
     for y in 0..h as isize
     {
         for x in 0..w as isize
         {
-            let (mut sum, mut sumsq, mut n) = (0.0, 0.0, 0usize);
+            ring.clear();
             for dy in -outer..=outer
             {
                 for dx in -outer..=outer
@@ -62,20 +64,34 @@ pub fn cfar_mask(image: &Image, guard: usize, train: usize, k: f64) -> Image {
                     let (ix, iy) = (x + dx, y + dy);
                     if ix >= 0 && iy >= 0 && (ix as usize) < w && (iy as usize) < h
                     {
-                        let v = image.get(ix as usize, iy as usize);
-                        sum += v;
-                        sumsq += v * v;
-                        n += 1;
+                        ring.push(image.get(ix as usize, iy as usize));
                     }
                 }
             }
-            if n < 4
+            if ring.len() < 4
             {
                 continue;
             }
-            let mean = sum / n as f64;
-            let std = (sumsq / n as f64 - mean * mean).max(0.0).sqrt();
-            if image.get(x as usize, y as usize) > mean + k * std
+            // Local statistics on data shifted by one training cell, with a
+            // two-pass (corrected) variance. The one-pass `E[v²] − mean²` form
+            // cancels catastrophically on a bright pedestal: at a level of 1e9
+            // with unit-scale noise, `mean²` is ~1e18 and its rounding error
+            // (~1e2) swamps the true variance, so the threshold collapsed to the
+            // mean (false alarms everywhere) or blew up (targets missed).
+            // Shifting makes the arithmetic depend only on differences between
+            // cells, so adding a constant pedestal leaves the mask unchanged.
+            let shift = ring[0];
+            let n = ring.len() as f64;
+            let mean_d = ring.iter().map(|&v| v - shift).sum::<f64>() / n;
+            let (mut ss, mut s) = (0.0, 0.0);
+            for &v in &ring
+            {
+                let e = (v - shift) - mean_d;
+                ss += e * e;
+                s += e;
+            }
+            let std = ((ss - s * s / n) / n).max(0.0).sqrt();
+            if image.get(x as usize, y as usize) - shift > mean_d + k * std
             {
                 mask.set(x as usize, y as usize, 1.0);
             }
@@ -201,6 +217,53 @@ mod tests {
         img.set(30, 28, 25.0);
         let dets = detect_targets(&img, 1, 3, 5.0);
         assert_eq!(dets.len(), 2, "{dets:?}");
+    }
+
+    /// Uniform noise in `[0, 1)` quantized to multiples of 1/1024, so adding a
+    /// pedestal up to 2^40 is exact and the tests isolate the detector's own
+    /// arithmetic from input rounding.
+    fn quantized_noise(w: usize, h: usize, seed: u64, pedestal: f64) -> Image {
+        let mut rng = Lcg(seed);
+        let data: Vec<f64> = (0..(w * h))
+            .map(|_| pedestal + (rng.unit() * 1024.0).floor() / 1024.0)
+            .collect();
+        Image::from_vec(w, h, data)
+    }
+
+    #[test]
+    fn detects_a_faint_target_on_a_very_bright_noisy_pedestal() {
+        // Regression: the local variance used to be computed as E[v²] − mean²,
+        // which at a 1e9 pedestal loses the unit-scale noise variance to
+        // rounding (mean² ≈ 1e18 has an ulp of 128), so the threshold collapsed
+        // to the mean or exploded. A +10 target (~35 noise σ) on noise with
+        // |v − mean| ≤ 1.8σ must give exactly one detection at k = 6.
+        let mut img = quantized_noise(48, 48, 0x0B12_6E7D, 1.0e9);
+        img.set(24, 24, img.get(24, 24) + 10.0);
+        let dets = detect_targets(&img, 1, 4, 6.0);
+        assert_eq!(dets.len(), 1, "{dets:?}");
+        assert!((dets[0].x - 24.0).abs() < 0.5 && (dets[0].y - 24.0).abs() < 0.5);
+        assert_eq!(dets[0].pixels, 1);
+    }
+
+    #[test]
+    fn mask_is_unchanged_by_a_constant_pedestal() {
+        // CFAR is meant to ride the local level: adding an exactly representable
+        // constant to every pixel must not change which pixels are flagged.
+        let low = quantized_noise(40, 40, 0x5EED_CFA8, 0.0);
+        let mut flagged = 0;
+        for &pedestal in &[1.0e6, 2.0_f64.powi(30), 1.0e12]
+        {
+            let high = quantized_noise(40, 40, 0x5EED_CFA8, pedestal);
+            let (a, b) = (cfar_mask(&low, 1, 3, 1.5), cfar_mask(&high, 1, 3, 1.5));
+            let changed = a.data.iter().zip(&b.data).filter(|(p, q)| p != q).count();
+            assert_eq!(
+                changed, 0,
+                "{changed} pixels changed at pedestal {pedestal:e}"
+            );
+            flagged = a.data.iter().filter(|&&m| m > 0.0).count();
+        }
+        // The comparison is not vacuous: k = 1.5 flags a few percent of pixels.
+        assert!(flagged > 10, "only {flagged} pixels flagged");
     }
 
     #[test]
