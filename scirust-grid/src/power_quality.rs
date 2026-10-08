@@ -45,6 +45,34 @@ pub fn classify_voltage(rms: f64, nominal: f64) -> VoltageEvent {
 }
 
 /// One-cycle sliding RMS of `signal`, `samples_per_cycle` wide.
+///
+/// Returns one value per window start, `signal.len() - w + 1` values in total,
+/// where `w = samples_per_cycle.max(1)`; an input shorter than one window gives
+/// an empty vector. Runs in `O(n)` time with `O(n)` auxiliary storage.
+///
+/// Each window's sum of squares is assembled from at most two partial sums of
+/// non-negative terms (the tail of one `w`-aligned block plus the head of the
+/// next), never by adding the incoming sample and subtracting the outgoing one.
+/// The result is therefore never negative, an all-zero window gives exactly
+/// `0.0`, and a non-finite sample only affects the windows that contain it.
+///
+/// # Examples
+///
+/// A supply interruption after a normal cycle reads as zero volts, not `NaN`:
+///
+/// ```
+/// use scirust_grid::cycle_rms;
+/// let spc = 64;
+/// let mut wave: Vec<f64> = (0..spc)
+///     .map(|i| 325.27 * (2.0 * std::f64::consts::PI * i as f64 / spc as f64).sin())
+///     .collect();
+/// wave.extend(std::iter::repeat(0.0).take(2 * spc));
+/// let rms = cycle_rms(&wave, spc);
+/// assert_eq!(rms.len(), 2 * spc + 1);
+/// assert!((rms[0] - 325.27 / 2.0_f64.sqrt()).abs() < 1e-9);
+/// assert_eq!(rms[spc], 0.0);
+/// assert_eq!(*rms.last().unwrap(), 0.0);
+/// ```
 pub fn cycle_rms(signal: &[f64], samples_per_cycle: usize) -> Vec<f64> {
     let w = samples_per_cycle.max(1);
     let n = signal.len();
@@ -52,15 +80,41 @@ pub fn cycle_rms(signal: &[f64], samples_per_cycle: usize) -> Vec<f64> {
     {
         return Vec::new();
     }
-    let mut out = Vec::with_capacity(n - w + 1);
-    let mut sq_sum: f64 = signal[..w].iter().map(|x| x * x).sum();
-    out.push((sq_sum / w as f64).sqrt());
-    for i in w..n
+    // head[i]: sum of squares from the start of i's w-aligned block up to i.
+    // tail[i]: sum of squares from i to the end of its block (or of the signal).
+    let mut head = vec![0.0_f64; n];
+    let mut tail = vec![0.0_f64; n];
+    for block_start in (0..n).step_by(w)
     {
-        sq_sum += signal[i] * signal[i] - signal[i - w] * signal[i - w];
-        out.push((sq_sum / w as f64).sqrt());
+        let block_end = (block_start + w).min(n);
+        let mut acc = 0.0;
+        for i in block_start..block_end
+        {
+            acc += signal[i] * signal[i];
+            head[i] = acc;
+        }
+        acc = 0.0;
+        for i in (block_start..block_end).rev()
+        {
+            acc += signal[i] * signal[i];
+            tail[i] = acc;
+        }
     }
-    out
+    (0..=n - w)
+        .map(|start| {
+            // A window starting mid-block is the tail of that block plus the
+            // head of the next one; an aligned window is one whole block.
+            let sq_sum = if start % w == 0
+            {
+                tail[start]
+            }
+            else
+            {
+                tail[start] + head[start + w - 1]
+            };
+            (sq_sum / w as f64).sqrt()
+        })
+        .collect()
 }
 
 /// A detected voltage event over a contiguous span of RMS windows.
@@ -158,5 +212,93 @@ mod tests {
         let wave = make_wave(spc * 20, spc, |_| 1.0);
         let nominal_rms = 1.0 / 2.0_f64.sqrt();
         assert!(detect_events(&wave, nominal_rms, spc).is_empty());
+    }
+
+    /// Direct per-window reference: sum of squares of exactly that window.
+    fn direct_rms(signal: &[f64], w: usize) -> Vec<f64> {
+        signal
+            .windows(w)
+            .map(|win| (win.iter().map(|x| x * x).sum::<f64>() / w as f64).sqrt())
+            .collect()
+    }
+
+    #[test]
+    fn interruption_after_normal_supply_reads_zero_not_nan() {
+        // Regression: the running sum (add incoming square, subtract outgoing
+        // square) did not return to exactly zero once the window held only the
+        // interruption's zero samples. It settled slightly below zero, so every
+        // later window was sqrt(negative) = NaN, which classify_voltage maps to
+        // Normal: a 20-cycle loss of supply produced no event at all.
+        for spc in [64_usize, 128, 256]
+        {
+            let n = spc * 40;
+            let wave = make_wave(n, spc, |i| if i < spc * 20 { 325.27 } else { 0.0 });
+            let rms = cycle_rms(&wave, spc);
+            assert!(rms.iter().all(|r| r.is_finite()), "spc {spc}: NaN in RMS");
+            for (k, r) in rms.iter().enumerate().skip(spc * 20)
+            {
+                assert_eq!(*r, 0.0, "spc {spc}: window {k} of an all-zero span");
+            }
+            let nominal = 230.0;
+            let events = detect_events(&wave, nominal, spc);
+            let interruptions: Vec<_> = events
+                .iter()
+                .filter(|e| e.event == VoltageEvent::Interruption)
+                .collect();
+            assert_eq!(interruptions.len(), 1, "spc {spc}: events {events:?}");
+            assert_eq!(interruptions[0].end, rms.len(), "spc {spc}");
+            assert_eq!(interruptions[0].extreme_ratio, 0.0, "spc {spc}");
+        }
+    }
+
+    #[test]
+    fn sliding_rms_matches_direct_window_sums() {
+        // Includes a 6 kV surge on a 230 V supply, a sag and an interruption,
+        // and window widths that do and do not divide the signal length.
+        let spc = 100;
+        let mut wave = make_wave(spc * 30 + 37, spc, |i| match i / spc
+        {
+            5..=9 => 0.4 * 325.27,
+            15..=19 => 0.0,
+            _ => 325.27,
+        });
+        wave[spc * 12 + 3] = 6000.0;
+        for w in [1_usize, 7, spc, spc + 13]
+        {
+            let fast = cycle_rms(&wave, w);
+            let reference = direct_rms(&wave, w);
+            assert_eq!(fast.len(), reference.len());
+            for (k, (a, b)) in fast.iter().zip(&reference).enumerate()
+            {
+                assert!(*a >= 0.0, "w {w}: window {k} negative or NaN: {a}");
+                assert!(
+                    (a - b).abs() <= 1e-12 * b.max(1.0),
+                    "w {w}: window {k}: {a} vs {b}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn non_finite_sample_only_affects_windows_that_contain_it() {
+        let spc = 32;
+        let mut wave = make_wave(spc * 6, spc, |_| 1.0);
+        let bad = spc * 2 + 5;
+        wave[bad] = f64::NAN;
+        let rms = cycle_rms(&wave, spc);
+        for (k, r) in rms.iter().enumerate()
+        {
+            let contains_bad = k <= bad && bad < k + spc;
+            assert_eq!(r.is_nan(), contains_bad, "window {k}: {r}");
+        }
+    }
+
+    #[test]
+    fn short_or_degenerate_inputs() {
+        assert!(cycle_rms(&[1.0, 2.0], 3).is_empty());
+        assert!(cycle_rms(&[], 4).is_empty());
+        // samples_per_cycle = 0 is treated as 1: each sample's magnitude.
+        assert_eq!(cycle_rms(&[-3.0, 4.0], 0), vec![3.0, 4.0]);
+        assert_eq!(cycle_rms(&[3.0, 4.0], 2), vec![(12.5_f64).sqrt()]);
     }
 }
