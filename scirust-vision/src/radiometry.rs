@@ -34,6 +34,13 @@ const WIEN_B: f64 = 2.897_771_955e-3;
 /// Spectral radiance of a blackbody, Planck's law
 /// `L(λ, T) = 2hc²/λ⁵ · 1/(exp(hc/λk_BT) − 1)` in W·m⁻²·sr⁻¹·m⁻¹, for wavelength
 /// `wavelength` (m) and temperature `temperature` (K).
+///
+/// The Bose–Einstein factor `1/(eˣ − 1)` is evaluated as `e⁻ˣ/(1 − e⁻ˣ)` with
+/// `exp_m1`, so the Wien tail (`x = hc/λk_BT` above ≈ 709, where `eˣ`
+/// overflows `f64`) still yields the small but representable radiance instead
+/// of a flushed zero, and the Rayleigh–Jeans limit (`x → 0`) keeps full
+/// relative precision instead of cancelling in `eˣ − 1`. Non-positive
+/// wavelength or temperature yields `0`.
 pub fn planck_radiance(wavelength: f64, temperature: f64) -> f64 {
     if wavelength <= 0.0 || temperature <= 0.0
     {
@@ -41,20 +48,73 @@ pub fn planck_radiance(wavelength: f64, temperature: f64) -> f64 {
     }
     let c1 = 2.0 * PLANCK_H * C_LIGHT * C_LIGHT;
     let x = PLANCK_H * C_LIGHT / (wavelength * K_B * temperature);
-    c1 / (wavelength.powi(5) * (x.exp() - 1.0))
+    let prefactor = c1 / wavelength.powi(5);
+    if x < WIEN_TAIL_X
+    {
+        let occupancy = bose_einstein_occupancy(x);
+        if !occupancy.is_finite()
+        {
+            // `x` underflowed to zero: use the Rayleigh–Jeans form `2ck_BT/λ⁴`.
+            return 2.0 * C_LIGHT * K_B * temperature / wavelength.powi(4);
+        }
+        return prefactor * occupancy;
+    }
+    // Wien tail: `e⁻ˣ` alone would be subnormal (or zero) even though the
+    // product with the prefactor is representable, so apply it in two halves
+    // to keep every intermediate normal. Here `1 − e⁻ˣ` is 1 to full precision.
+    let half = (-0.5 * x).exp();
+    if half == 0.0
+    {
+        return 0.0;
+    }
+    if prefactor.is_finite()
+    {
+        return prefactor * half * half / -(-x).exp_m1();
+    }
+    // `λ⁵` underflowed (absurdly short wavelength): work in log space.
+    (c1.ln() - 5.0 * wavelength.ln() - x).exp() / -(-x).exp_m1()
+}
+
+/// Above this `x = hc/λk_BT`, `e⁻ˣ` approaches the subnormal range, so
+/// [`planck_radiance`] splits the exponential to keep relative precision.
+const WIEN_TAIL_X: f64 = 600.0;
+
+/// The Bose–Einstein occupancy `1/(eˣ − 1)` for `x > 0`, written as
+/// `e⁻ˣ/(1 − e⁻ˣ)` so it neither overflows for large `x` nor cancels for
+/// small `x`.
+fn bose_einstein_occupancy(x: f64) -> f64 {
+    (-x).exp() / -(-x).exp_m1()
+}
+
+/// `x·eˣ/(eˣ − 1) = x/(1 − e⁻ˣ)` for `x ≥ 0`, the dimensionless factor in
+/// `∂L/∂T`; tends to `1` as `x → 0` and to `x` for large `x`.
+fn planck_dt_factor(x: f64) -> f64 {
+    if x == 0.0
+    {
+        return 1.0;
+    }
+    x / -(-x).exp_m1()
 }
 
 /// The temperature derivative `∂L/∂T` of the Planck spectral radiance, in
 /// W·m⁻²·sr⁻¹·m⁻¹·K⁻¹. Analytic: `∂L/∂T = L · x·eˣ / (T·(eˣ − 1))` with
-/// `x = hc/λk_BT`.
+/// `x = hc/λk_BT`, evaluated as `L · x/(T·(1 − e⁻ˣ))` so it stays finite
+/// (and tends to `0`) in the Wien tail where `eˣ` overflows, rather than
+/// forming `∞/∞`. Non-positive wavelength or temperature yields `0`.
 pub fn planck_radiance_dt(wavelength: f64, temperature: f64) -> f64 {
     if wavelength <= 0.0 || temperature <= 0.0
     {
         return 0.0;
     }
+    let radiance = planck_radiance(wavelength, temperature);
+    if radiance == 0.0
+    {
+        // Radiance underflowed in the deep Wien tail (where `x` may even be
+        // infinite); the derivative is equally negligible.
+        return 0.0;
+    }
     let x = PLANCK_H * C_LIGHT / (wavelength * K_B * temperature);
-    let ex = x.exp();
-    planck_radiance(wavelength, temperature) * x * ex / (temperature * (ex - 1.0))
+    radiance * planck_dt_factor(x) / temperature
 }
 
 /// The hemispherical radiant exitance of a blackbody, Stefan–Boltzmann
@@ -229,6 +289,86 @@ mod tests {
         assert!((netd(2.0, 16e-10, 1e5, 3e10, 0.8, 5.0) / base - 0.5).abs() < 1e-9);
         // Degenerate contrast ⇒ infinite NETD.
         assert!(netd(2.0, 4e-10, 1e5, 3e10, 0.8, 0.0).is_infinite());
+    }
+
+    /// Relative error helper for comparisons against mpmath references.
+    fn rel_err(got: f64, want: f64) -> f64 {
+        ((got - want) / want).abs()
+    }
+
+    #[test]
+    fn planck_wien_tail_stays_finite_where_exp_overflows() {
+        // λ = 1 µm, T = 20 K ⇒ x = hc/λk_BT ≈ 719.4 > ln(f64::MAX) ≈ 709.8, so
+        // `exp(x)` overflows. Before the fix the radiance flushed to 0 and
+        // ∂L/∂T became `0 · ∞/∞ = NaN`. References: mpmath, 50 digits.
+        let (l, t) = (1e-6, 20.0);
+        let radiance = planck_radiance(l, t);
+        let derivative = planck_radiance_dt(l, t);
+        assert!(
+            rel_err(radiance, 4.461_677_095_938_368_5e-299) < 1e-12,
+            "L = {radiance}"
+        );
+        assert!(
+            rel_err(derivative, 1.604_839_460_131_256_3e-297) < 1e-12,
+            "dL/dT = {derivative}"
+        );
+    }
+
+    #[test]
+    fn thermal_contrast_over_a_wide_band_is_finite_for_cold_scenes() {
+        // A wide band starting in the UV at T = 200 K puts the first
+        // quadrature node at x ≈ 719 (overflowing `exp`). Before the fix one
+        // NaN sample poisoned the whole integral, and NETD turned NaN too.
+        // Over (almost) all wavelengths ∫ ∂L/∂T dλ = (dM/dT)/π = 4σT³/π.
+        let t = 200.0;
+        let contrast = thermal_contrast(1e-7, 2e-4, t, 20_000);
+        assert!(contrast.is_finite(), "contrast = {contrast}");
+        let expect = exitance_derivative(t) / PI;
+        assert!(rel_err(contrast, expect) < 1e-3, "{contrast} vs {expect}");
+        let sensitivity = netd(2.0, 4e-10, 1e5, 3e10, 0.8, contrast);
+        assert!(sensitivity.is_finite() && sensitivity > 0.0);
+    }
+
+    #[test]
+    fn planck_rayleigh_jeans_limit_keeps_relative_precision() {
+        // λ = 1 km, T = 10⁴ K ⇒ x ≈ 1.44e-9: `exp(x) − 1` cancels (the old code
+        // was off by about 2e-9 relative here); `exp_m1` keeps full precision.
+        let (l, t) = (1e3, 1e4);
+        let radiance = planck_radiance(l, t);
+        let derivative = planck_radiance_dt(l, t);
+        assert!(
+            rel_err(radiance, 8.278_163_140_949_625e-23) < 1e-12,
+            "L = {radiance}"
+        );
+        assert!(
+            rel_err(derivative, 8.278_163_146_904_84e-27) < 1e-12,
+            "dL/dT = {derivative}"
+        );
+    }
+
+    #[test]
+    fn planck_matches_mpmath_in_the_thermal_infrared() {
+        // Ordinary regime (x ≈ 4.8) is unchanged by the reformulation.
+        let (l, t) = (10e-6, 300.0);
+        assert!(rel_err(planck_radiance(l, t), 9_924_033.330_070_695) < 1e-12);
+        assert!(rel_err(planck_radiance_dt(l, t), 159_971.567_251_321_94) < 1e-12);
+    }
+
+    #[test]
+    fn planck_extreme_inputs_never_produce_nan() {
+        for &(l, t) in &[(1e-70, 1.0), (1e-9, 1e-3), (1e70, 1e10), (1e-6, 1e-300)]
+        {
+            let radiance = planck_radiance(l, t);
+            let derivative = planck_radiance_dt(l, t);
+            assert!(
+                !radiance.is_nan() && radiance >= 0.0,
+                "L({l}, {t}) = {radiance}"
+            );
+            assert!(
+                !derivative.is_nan() && derivative >= 0.0,
+                "dL/dT({l}, {t}) = {derivative}"
+            );
+        }
     }
 
     #[test]
