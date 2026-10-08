@@ -672,15 +672,6 @@ impl Zipfian {
         }
         acc
     }
-    /// `Σ_{j=1..n} j^(power)` with the same deterministic order.
-    fn power_sum(&self, power: f64) -> f64 {
-        let mut acc = 0.0;
-        for j in (1..=self.n).rev()
-        {
-            acc += (j as f64).powf(power);
-        }
-        acc
-    }
 }
 
 impl DiscreteDistribution for Zipfian {
@@ -723,12 +714,38 @@ impl DiscreteDistribution for Zipfian {
         (acc / self.h).min(1.0)
     }
     fn mean(&self) -> f64 {
-        // Σ k·k^(−s) / H = H(n, s−1) / H(n, s).
-        self.power_sum(1.0 - self.s) / self.h
+        // Σ k·k^(−s) / H = H(n, s−1) / H(n, s), written as 1 + the excess
+        // over the mode k = 1 so the excess is summed directly.
+        1.0 + self.mean_excess()
     }
     fn variance(&self) -> f64 {
-        let m = self.mean();
-        self.power_sum(2.0 - self.s) / self.h - m * m
+        // Two-pass central moment about the mode-shifted mean:
+        // Var = Σ ((k−1) − d)²·k^(−s) / H with d = mean − 1. Every term is
+        // non-negative, so the result is ≥ 0 and keeps its relative accuracy.
+        // The textbook `H(n, s−2)/H(n, s) − mean²` cancels once s is large
+        // (true variance ≈ 2^(−s)): it returned 0 at s = 60 and a negative
+        // value (NaN std_dev) at s ≈ 53.5.
+        let d = self.mean_excess();
+        let mut acc = 0.0;
+        for j in (1..=self.n).rev()
+        {
+            let dev = (j - 1) as f64 - d;
+            acc += dev * dev * (j as f64).powf(-self.s);
+        }
+        acc / self.h
+    }
+}
+
+impl Zipfian {
+    /// `mean − 1 = Σ_{k=1..n} (k−1)·k^(−s) / H(n, s)`, summed directly
+    /// (non-negative terms, same deterministic order as [`Self::harmonic`]).
+    fn mean_excess(&self) -> f64 {
+        let mut acc = 0.0;
+        for j in (1..=self.n).rev()
+        {
+            acc += (j - 1) as f64 * (j as f64).powf(-self.s);
+        }
+        acc / self.h
     }
 }
 
@@ -2284,6 +2301,41 @@ mod tests {
         let u = Zipfian::new(0.0, 10);
         assert!(close(u.pmf(7), 0.1, 1e-14));
         assert!(close(u.cdf(10), 1.0, 1e-15));
+    }
+
+    #[test]
+    fn zipfian_variance_no_cancellation_at_large_exponent() {
+        // References: mpmath (50 digits), central second moment summed
+        // directly. The old `H(n, s−2)/H(n, s) − mean²` gave 0.0 at s = 60
+        // and −2.2e−16 (so a NaN std_dev) at s = 53.5.
+        let z = Zipfian::new(60.0, 10);
+        assert!(rel_close(z.variance(), 8.673_617_380_827_63e-19, 1e-12));
+        assert!(z.std_dev().is_finite() && z.std_dev() > 0.0);
+        let z = Zipfian::new(40.0, 10);
+        assert!(rel_close(z.variance(), 9.094_950_307_892_538e-13, 1e-12));
+        let z = Zipfian::new(30.0, 5);
+        assert!(rel_close(z.variance(), 9.313_420_084_471_484e-10, 1e-12));
+        for s10 in 300..800
+        {
+            let s = f64::from(s10) / 10.0;
+            for n in [2_u64, 3, 10, 100]
+            {
+                let z = Zipfian::new(s, n);
+                assert!(
+                    z.variance() > 0.0,
+                    "variance must stay positive: s = {s}, n = {n}"
+                );
+                assert!(!z.std_dev().is_nan());
+            }
+        }
+        // Moderate exponents and the uniform case are unchanged.
+        assert!(close(
+            Zipfian::new(1.5, 1000).variance(),
+            7_688.522_687_156_412,
+            1e-12
+        ));
+        assert!(close(Zipfian::new(0.0, 7).variance(), 4.0, 1e-14));
+        assert_eq!(Zipfian::new(2.0, 1).variance(), 0.0);
     }
 
     #[test]
