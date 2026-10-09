@@ -1,9 +1,13 @@
 //! Méthode de Nelder-Mead (simplex downhill).
 //!
 //! ## Sécurité numérique
-//! - Vérification que le simplex n'est pas aplati : si `diam < 1e-14`, on stoppe
+//! - Vérification que le simplex n'est pas aplati : le diamètre est comparé à
+//!   `tol.abs + tol.rel · x_scale` (échelle des coordonnées du simplex), pas à
+//!   un seuil absolu `1e-14` qui déclarait « déjà convergé » tout problème
+//!   dont les coordonnées sont naturellement plus petites que `1e-14`.
 //! - check_finite sur les points du simplex et les valeurs de f
-//! - Détection de colinéarité : si centroid == worst, on réinitialise le simplex
+//! - Détection de colinéarité : si centroid ≈ worst *à l'échelle du problème*,
+//!   on réinitialise le simplex
 //! - Plus de `.unwrap()` sur `partial_cmp`
 
 use crate::{Solution, SolverError, SolverResult, Tolerance};
@@ -53,6 +57,17 @@ fn simplex_diameter(simplex: &[Vec<f64>]) -> f64 {
         }
     }
     diam
+}
+
+/// Largest absolute coordinate across every vertex — the natural length scale
+/// of the current simplex. Used so diameter / degeneracy cutoffs stay
+/// meaningful when the minimizer sits near the origin or at a tiny physical
+/// scale (micrometres, probabilities, …).
+fn simplex_coord_scale(simplex: &[Vec<f64>]) -> f64 {
+    simplex
+        .iter()
+        .flat_map(|p| p.iter())
+        .fold(0.0_f64, |acc, &v| acc.max(v.abs()))
 }
 
 /// Nelder-Mead. `f: R^n → R` sans dérivée.
@@ -128,15 +143,22 @@ where
         let spread = fvals[worst] - fvals[best];
         last_spread = spread;
         let diam = simplex_diameter(&simplex);
+        let x_scale = simplex_coord_scale(&simplex);
+        // Collapse floor in parameter space: absolute floor from the caller
+        // plus a relative share of the coordinate scale. A fixed `1e-14` here
+        // used to accept the *initial* simplex of any problem whose natural
+        // length is below that floor (e.g. a quadratic centred at `1e-16`)
+        // and return a wrong vertex without iterating.
+        let diam_floor = tol.abs + tol.rel * x_scale;
 
         if spread < tol.abs && diam < tol.abs + tol.rel
         {
             return Ok(Solution::new(simplex.swap_remove(best), k, spread));
         }
 
-        if diam < 1e-14
+        if diam < diam_floor
         {
-            warn!(target: "solver", "Nelder-Mead: simplex collapsed (diam={diam:.3e}) at iteration {k}");
+            warn!(target: "solver", "Nelder-Mead: simplex collapsed (diam={diam:.3e}, scale={x_scale:.3e}) at iteration {k}");
             return Ok(Solution::new(simplex[best].clone(), k, spread));
         }
 
@@ -154,11 +176,16 @@ where
             centroid[d] /= n as f64;
         }
 
-        // Vérifier que centroid ≠ worst (simplex non dégénéré)
+        // Vérifier que centroid ≠ worst (simplex non dégénéré).
+        // Degeneracy is relative to the coordinate scale: a fixed `1e-14`
+        // declared every micrometre-scale simplex degenerate (all pairwise
+        // gaps being `< 1e-14`), which wiped the best vertex via the
+        // reinitialisation below. On a unit-scale problem this stays ≈1e-14.
+        let deg_tol = 1e-14 * x_scale.max(diam).max(f64::MIN_POSITIVE);
         let is_degenerate = centroid
             .iter()
             .zip(&simplex[worst])
-            .all(|(c, w)| (c - w).abs() < 1e-14);
+            .all(|(c, w)| (c - w).abs() < deg_tol);
         if is_degenerate
         {
             warn!(target: "solver", "Nelder-Mead: degenerate simplex at iteration {k} — reinitializing");
@@ -342,5 +369,38 @@ mod tests {
         .unwrap();
         let fv = (s.value[0] - 2.0).abs() + (s.value[0] + 3.0).abs();
         assert!((fv - 5.0).abs() < 1e-3, "fv={fv}");
+    }
+
+    /// Regression: an absolute `diam < 1e-14` floor treated the initial
+    /// simplex of a micrometre-scale quadratic as already collapsed and
+    /// returned a vertex that is not the minimizer.
+    #[test]
+    fn nelder_mead_small_scale_quadratic() {
+        let target = 1e-16;
+        let s = nelder_mead(
+            |x| (x[0] - target).powi(2) + (x[1] - target).powi(2),
+            vec![0.0, 0.0],
+            target,
+            Tolerance {
+                // Absolute f-spread floor below the initial spread (~1e-32) so
+                // the first-iteration acceptance path cannot fire on the
+                // unoptimized simplex; relative diam floor is what lets the
+                // search actually run at this scale.
+                abs: 1e-40,
+                rel: 1e-3,
+                max_iter: 2000,
+            },
+        )
+        .unwrap();
+        assert!(
+            (s.value[0] - target).abs() < 0.1 * target,
+            "x0 got {} want ~{target}",
+            s.value[0]
+        );
+        assert!(
+            (s.value[1] - target).abs() < 0.1 * target,
+            "x1 got {} want ~{target}",
+            s.value[1]
+        );
     }
 }
