@@ -20,6 +20,11 @@
 //!   `SolverError::Singular` rather than being silently patched
 //! - A step is only ever accepted when it actually reduces the cost
 //!   (`ρ > 0`); rejected steps just grow `λ` and retry from the same point
+//! - Stationarity of `g = Jᵀr` is scale-aware: when `|g₀|_∞ ≥ tol.abs` the
+//!   classical absolute `|g|_∞ < tol.abs` test is kept; when the initial
+//!   gradient is already below `tol.abs` (tiny-scale residual
+//!   `r ↦ s·r ⇒ g ↦ s²·g` with `|s| ≲ √tol.abs`), the test becomes relative
+//!   `|g|_∞ ≤ tol.rel · |g₀|_∞` so a far start cannot look converged.
 
 use crate::linalg::{self, Matrix};
 use crate::{Solution, SolverError, SolverResult, Tolerance};
@@ -33,6 +38,29 @@ fn check_finite(value: f64, location: &str) -> Result<(), SolverError> {
         return Err(SolverError::NanDetected { iter: 0, value });
     }
     Ok(())
+}
+
+/// Scale-aware stationarity test for `g = Jᵀr`.
+///
+/// Under a uniform residual rescaling `r ↦ s·r` one has `g ↦ s²·g`, so a
+/// fixed absolute `|g|_∞ < tol.abs` floor falsely accepts any start once
+/// `|s| ≲ √tol.abs`. When the initial gradient is already below `tol.abs`,
+/// the test switches to a relative reduction against `|g₀|`; otherwise the
+/// classical absolute floor is kept (so well-scaled problems keep the same
+/// terminal accuracy as before).
+fn gradient_stationary(g_inf: f64, g0_inf: f64, tol: Tolerance) -> bool {
+    if g_inf == 0.0 || g0_inf == 0.0
+    {
+        return true;
+    }
+    if g0_inf >= tol.abs
+    {
+        g_inf < tol.abs
+    }
+    else
+    {
+        g_inf <= tol.rel * g0_inf
+    }
 }
 
 /// Evaluate `r(x)` and its Jacobian `J` (m×n) together, one autodiff pass per
@@ -127,8 +155,8 @@ where
     compute_gradient_and_hessian(&jac, &r, &mut g, &mut h);
 
     let mut d_diag: Vec<f64> = (0..n).map(|i| h[(i, i)]).collect();
-    let g_inf = linalg::norm_inf(&g);
-    if g_inf < tol.abs
+    let g0_inf = linalg::norm_inf(&g);
+    if gradient_stationary(g0_inf, g0_inf, tol)
     {
         return Ok(Solution::new(x, 0, cost));
     }
@@ -192,7 +220,7 @@ where
             compute_gradient_and_hessian(&jac, &r, &mut g, &mut h);
             d_diag = (0..n).map(|i| h[(i, i)]).collect();
 
-            if linalg::norm_inf(&g) < tol.abs
+            if gradient_stationary(linalg::norm_inf(&g), g0_inf, tol)
             {
                 return Ok(Solution::new(x, k + 1, cost));
             }
@@ -329,6 +357,38 @@ mod tests {
         // AᵀA = [[5,1],[1,10]], Aᵀb = [13, 32] -> x = [2, 3].
         assert_relative_eq!(s.value[0], 2.0, epsilon = 1e-9);
         assert_relative_eq!(s.value[1], 3.0, epsilon = 1e-9);
+    }
+
+    /// Regression: an absolute `|g|_∞ < tol.abs` check on the least-squares
+    /// gradient falsely accepted a far-from-optimum start when the residual
+    /// was measured in tiny units. For `r(x) = s·(x − x★)` the gradient is
+    /// `g = s²·(x − x★)`, so any scale `s ≲ √tol.abs` made even an O(1)
+    /// displacement look "converged" and LM returned the start point at
+    /// iteration 0. When `|g₀| < tol.abs` the stationarity test is now
+    /// relative to `|g₀|`.
+    #[test]
+    fn tiny_scale_residual_does_not_false_converge_via_absolute_gradient() {
+        let scale = 1e-8_f64;
+        let x_star = 3.0_f64;
+        let s = levenberg_marquardt(
+            |x, out| {
+                out[0] = (x[0] - x_star) * scale;
+            },
+            vec![0.0],
+            1,
+            Tolerance::new(1e-10, 1e-12, 200),
+        )
+        .expect("tiny-scale linear residual must be solvable");
+        assert!(
+            (s.value[0] - x_star).abs() < 1e-6 * (1.0 + x_star.abs()),
+            "expected x≈{x_star}, got {:?} (iters={})",
+            s.value,
+            s.info.iterations
+        );
+        assert!(
+            s.info.iterations > 0,
+            "must actually iterate; absolute |g| floor used to return at iter 0"
+        );
     }
 
     #[test]
