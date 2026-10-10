@@ -17,6 +17,16 @@
 //! Fenêtre de mémoire non monotone (`MEMORY`), facteur de rétrécissement du
 //! backtracking (`0.5`) et nombre max de retours en arrière (`MAX_BACKTRACK`)
 //! tous fixes — aucun critère temporel.
+//!
+//! ## Sécurité numérique
+//! Le pas spectral de Barzilai–Borwein `α = ‖s‖² / (s·y)` a la dimension
+//! d'une inverse de courbure. Les garde-fous `ALPHA_MIN` / `ALPHA_MAX` sont
+//! donc volontairement larges (`1e-30` … `1e30`, cf. Birgin–Martínez–Raydan) :
+//! un clamp absolu plus serré (`1e-10` … `1e10`) forçait un pas trop grand
+//! sur les quadratiques raides (`k ≳ 1e10`) et trop petit sur les
+//! quadratiques plates (`k ≲ 1e-10`), empêchant la convergence. La recherche
+//! linéaire d'Armijo et la projection sur la boîte restent les garde-fous
+//! actifs contre les pas extrêmes.
 
 use crate::linalg::{dot, norm2};
 use crate::{ConvergenceInfo, Solution, SolverError, SolverResult, Tolerance};
@@ -24,8 +34,13 @@ use crate::{ConvergenceInfo, Solution, SolverError, SolverResult, Tolerance};
 const MEMORY: usize = 10;
 const GAMMA: f64 = 1e-4;
 const MAX_BACKTRACK: usize = 30;
-const ALPHA_MIN: f64 = 1e-10;
-const ALPHA_MAX: f64 = 1e10;
+/// Lower safeguard on the Barzilai–Borwein spectral step (1/curvature).
+/// Must stay far below the curvature of stiff but well-posed objectives —
+/// see `spg_finds_minimum_of_stiff_quadratic`.
+const ALPHA_MIN: f64 = 1e-30;
+/// Upper safeguard on the spectral step. Symmetric of `ALPHA_MIN` for flat
+/// objectives — see `spg_finds_minimum_of_flat_quadratic`.
+const ALPHA_MAX: f64 = 1e30;
 
 fn project_box(x: &[f64], lower: &[f64], upper: &[f64]) -> Vec<f64> {
     x.iter()
@@ -240,5 +255,48 @@ mod tests {
         let grad = |x: &[f64]| vec![2.0 * x[0]];
         let res = spg(f, grad, vec![0.0], &[1.0], &[-1.0], Tolerance::default());
         assert!(res.is_err());
+    }
+
+    /// Regression: the Barzilai–Borwein step α = ‖s‖² / (s·y) equals 1/k for
+    /// the quadratic ½k‖x − x*‖². Absolute clamps α ∈ [1e-10, 1e10] forced
+    /// α = 1e-10 on a well-conditioned stiff problem (k = 1e12 ⇒ α* = 1e-12),
+    /// so the projected step overshot, Armijo rejected every trial, and SPG
+    /// returned NoConvergence instead of the obvious minimum inside the box.
+    #[test]
+    fn spg_finds_minimum_of_stiff_quadratic() {
+        let k = 1e12_f64;
+        let f = move |x: &[f64]| 0.5 * k * ((x[0] - 1.0).powi(2) + (x[1] - 2.0).powi(2));
+        let grad = move |x: &[f64]| vec![k * (x[0] - 1.0), k * (x[1] - 2.0)];
+        let sol = spg(
+            f,
+            grad,
+            vec![0.0, 0.0],
+            &[-5.0, -5.0],
+            &[5.0, 5.0],
+            Tolerance::new(1e-8, 1e-8, 200),
+        )
+        .expect("stiff box-constrained quadratic must converge");
+        assert_relative_eq!(sol.value[0], 1.0, epsilon = 1e-5);
+        assert_relative_eq!(sol.value[1], 2.0, epsilon = 1e-5);
+    }
+
+    /// Same clamp bug on the flat side: k = 1e-12 ⇒ α* = 1e12, which the old
+    /// ALPHA_MAX = 1e10 truncated so the spectral step crawled instead of
+    /// taking the Newton-like BB step.
+    #[test]
+    fn spg_finds_minimum_of_flat_quadratic() {
+        let k = 1e-12_f64;
+        let f = move |x: &[f64]| 0.5 * k * (x[0] - 1.0).powi(2);
+        let grad = move |x: &[f64]| vec![k * (x[0] - 1.0)];
+        let sol = spg(
+            f,
+            grad,
+            vec![0.0],
+            &[-5.0],
+            &[5.0],
+            Tolerance::new(1e-8, 1e-8, 50),
+        )
+        .expect("flat box-constrained quadratic must converge");
+        assert_relative_eq!(sol.value[0], 1.0, epsilon = 1e-5);
     }
 }
