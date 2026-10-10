@@ -19,6 +19,12 @@
 //! directement comme « combinaison affine des sorties passées de `g` qui
 //! annule au mieux le résidu combiné ».
 //!
+//! ## Stopping test
+//! Converged when `‖g(x) − x‖₂ ≤ tol.abs + tol.rel · ‖x‖₂`. The relative
+//! term has no `max(‖x‖, 1)` floor, so `tol.rel` stays relative for
+//! small-scale fixed points; a fixed point at the origin is reached through
+//! `tol.abs`.
+//!
 //! ## Déterminisme
 //! Fenêtre de mémoire `m` fixe, moindres carrés résolus par une QR
 //! déterministe (pas d'aléa), nombre max d'itérations fixe.
@@ -81,7 +87,10 @@ where
     for k in 0..tol.max_iter
     {
         let residual = norm2(&fx);
-        if residual <= tol.abs + tol.rel * norm2(&x).max(1.0)
+        // Relative term scales with ‖x‖ itself: a `max(‖x‖, 1)` floor would
+        // turn `tol.rel` into an absolute tolerance for ‖x‖ < 1 and accept
+        // a start that is 100 % away from a small-scale fixed point.
+        if residual <= tol.abs + tol.rel * norm2(&x)
         {
             return Ok(Solution {
                 value: x,
@@ -211,6 +220,56 @@ mod tests {
             "Anderson ({}) should not need more iterations than plain Picard ({plain})",
             sol.info.iterations
         );
+    }
+
+    /// Regression: the relative term of the stopping test used
+    /// `tol.rel · max(‖x‖, 1)`, so `tol.rel` silently acted as an absolute
+    /// tolerance whenever `‖x‖ < 1`. With the default tolerance
+    /// (`abs = 1e-10`, `rel = 1e-8`) the threshold was `≈1.01e-8`, and a fixed
+    /// point at `x★ = 2e-9` was "found" at the start `x0 = 0` after zero
+    /// iterations (100 % relative error).
+    #[test]
+    fn small_scale_fixed_point_is_not_accepted_at_the_start() {
+        let x_star = 2e-9_f64;
+        // g(x) = x★ + 0.5·(x − x★): contraction with fixed point x★.
+        let g = move |x: &[f64]| vec![x_star + 0.5 * (x[0] - x_star)];
+        let sol = anderson_accelerate(g, vec![0.0], 3, Tolerance::default()).unwrap();
+        assert!(
+            sol.info.iterations > 0,
+            "must iterate; the start x0 = 0 is a 100 % error (got {:?})",
+            sol.value
+        );
+        assert_relative_eq!(sol.value[0], x_star, max_relative = 1e-6);
+    }
+
+    /// Same regression in 2-D with a coupled linear map at micro-scale.
+    #[test]
+    fn small_scale_linear_map_converges_to_true_fixed_point() {
+        // g(x) = A x + s·b with A = [[0.4, 0.1], [0.2, 0.3]], b = [1, 2].
+        let s = 1e-9_f64;
+        let g = move |x: &[f64]| {
+            vec![
+                0.4 * x[0] + 0.1 * x[1] + s,
+                0.2 * x[0] + 0.3 * x[1] + 2.0 * s,
+            ]
+        };
+        let sol = anderson_accelerate(g, vec![0.0, 0.0], 4, Tolerance::default()).unwrap();
+        // (I − A) x = s·b  =>  x = s·[0.9/0.4, 1.4/0.4] = s·[2.25, 3.5].
+        assert_relative_eq!(sol.value[0], 2.25 * s, max_relative = 1e-6);
+        assert_relative_eq!(sol.value[1], 3.5 * s, max_relative = 1e-6);
+    }
+
+    /// A fixed point at the origin still converges through the absolute floor.
+    #[test]
+    fn fixed_point_at_origin_still_converges_via_absolute_floor() {
+        let sol = anderson_accelerate(
+            |x: &[f64]| vec![0.5 * x[0].sin()],
+            vec![1.0],
+            3,
+            Tolerance::default(),
+        )
+        .unwrap();
+        assert!(sol.value[0].abs() < 1e-9, "got {:?}", sol.value);
     }
 
     #[test]
