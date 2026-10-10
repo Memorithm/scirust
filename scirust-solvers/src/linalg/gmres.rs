@@ -15,14 +15,22 @@
 //! ## Déterminisme
 //! Nombre max d'itérations et tolérance fixes (pas de critère d'arrêt basé
 //! sur le temps écoulé) ; orthogonalisation séquentielle à ordre de colonnes
-//! fixe ; rupture heureuse (« happy breakdown ») détectée par seuil fixe
-//! plutôt que laissée diverger.
+//! fixe ; rupture heureuse (« happy breakdown ») détectée par un seuil
+//! relatif à l'échelle de ‖M⁻¹A vⱼ‖ plutôt que laissée diverger.
 
 use crate::linalg::precond::identity_precond;
 use crate::linalg::{axpy, dot, norm2};
 use crate::{ConvergenceInfo, Solution, SolverError, SolverResult, Tolerance};
 use tracing::warn;
 
+// Dimensionless happy-breakdown / pivot threshold. Arnoldi builds unit
+// vectors V, so the Hessenberg subdiagonal h_{j+1,j} (= ‖w‖ after modified
+// Gram-Schmidt on M⁻¹A v_j) and the subsequent R diagonal both scale with
+// ‖M⁻¹A‖. Comparing them to a fixed absolute epsilon declared any regular
+// small-scale system (e.g. capacitances in Farads, ~1e-12) singular — the
+// same class of bug already fixed for CG (`PIVOT_EPS_REL`) and BiCGSTAB
+// (`BREAKDOWN_EPS`). Normalizing each check by a quantity that scales with
+// ‖M⁻¹A‖ turns the test into a relative measure of Krylov dependence.
 const HAPPY_BREAKDOWN_EPS: f64 = 1e-13;
 
 fn check_finite(value: f64, iter: usize) -> SolverResult<()> {
@@ -155,6 +163,7 @@ where
         g[0] = beta;
 
         let mut k_done = 0;
+        let mut h_scale = 0.0f64;
         for j in 0..m
         {
             total_iters += 1;
@@ -163,6 +172,11 @@ where
             let mut w = vec![0.0; n];
             precond(&av, &mut w);
             check_finite_slice(&w, total_iters)?;
+
+            // Scale of M⁻¹A v_j before orthogonalization — scales with ‖M⁻¹A‖
+            // because v_j is unit. Used as the relative reference for the
+            // happy-breakdown and Givens-zero tests on this column.
+            let w_scale = norm2(&w).max(1e-300);
 
             // Arnoldi : Gram-Schmidt modifié, strictement séquentiel.
             let mut hj = vec![0.0; j + 2];
@@ -177,7 +191,7 @@ where
             check_finite(hnorm, total_iters)?;
             hj[j + 1] = hnorm;
 
-            let breakdown = hnorm <= HAPPY_BREAKDOWN_EPS;
+            let breakdown = hnorm <= HAPPY_BREAKDOWN_EPS * w_scale;
             if breakdown
             {
                 v.push(vec![0.0; n]);
@@ -195,7 +209,7 @@ where
                 hj[i] = temp;
             }
             let denom = (hj[j] * hj[j] + hj[j + 1] * hj[j + 1]).sqrt();
-            let (c, s) = if denom < HAPPY_BREAKDOWN_EPS
+            let (c, s) = if denom <= HAPPY_BREAKDOWN_EPS * w_scale
             {
                 (1.0, 0.0)
             }
@@ -207,6 +221,12 @@ where
             sn[j] = s;
             hj[j] = c * hj[j] + s * hj[j + 1];
             hj[j + 1] = 0.0;
+            // Track the Hessenberg / R magnitude so the later triangular
+            // pivot test stays relative to ‖M⁻¹A‖, not a fixed absolute.
+            for &hij in &hj
+            {
+                h_scale = h_scale.max(hij.abs());
+            }
             h.push(hj);
 
             g[j + 1] = -sn[j] * g[j];
@@ -221,6 +241,7 @@ where
         }
 
         // Résout le système triangulaire supérieur k_done×k_done : R·y = g.
+        let piv_tol = HAPPY_BREAKDOWN_EPS * h_scale.max(1e-300);
         let mut y = vec![0.0; k_done];
         for i in (0..k_done).rev()
         {
@@ -230,7 +251,7 @@ where
                 s -= h[jj][i] * y[jj];
             }
             let diag = h[i][i];
-            if diag.abs() < HAPPY_BREAKDOWN_EPS
+            if diag.abs() < piv_tol
             {
                 return Err(SolverError::Singular {
                     row: i,
@@ -354,6 +375,48 @@ mod tests {
             assert_relative_eq!(*xi, *ti, epsilon = 1e-6);
         }
         assert!(prec.info.iterations <= unprec.info.iterations);
+    }
+
+    #[test]
+    fn gmres_solves_a_tiny_scale_system_without_false_breakdown() {
+        // Regression: HAPPY_BREAKDOWN_EPS was a fixed absolute 1e-13 compared
+        // directly against the Arnoldi Hessenberg subdiagonal and the R
+        // diagonal — both scale with ‖A‖ because the Krylov basis is unit-
+        // normalised. The same regular tridiagonal used by
+        // `gmres_on_spd_matches_direct_solve`, scaled to a tiny physical
+        // magnitude (e.g. Farad-scale capacitances), was reported Singular
+        // even though it is perfectly well-conditioned (scaling does not
+        // change the condition number). Pure-relative tolerance so the
+        // small absolute residual of x₀ = 0 does not look converged before
+        // Arnoldi runs.
+        let scale = 1e-14;
+        let n = 4;
+        let mat = Matrix::from_fn(n, n, |i, j| {
+            if i == j
+            {
+                4.0 * scale
+            }
+            else if (i as isize - j as isize).abs() == 1
+            {
+                -scale
+            }
+            else
+            {
+                0.0
+            }
+        });
+        let x_true = vec![1.0, 2.0, 3.0, 4.0];
+        let b = mat.matvec(&x_true).unwrap();
+        let tol = Tolerance::new(0.0, 1e-10, 200);
+        let sol = gmres(
+            |x, y| y.copy_from_slice(&mat.matvec(x).unwrap()),
+            &b,
+            vec![0.0; n],
+            n,
+            tol,
+        )
+        .expect("a regular system at a tiny physical scale must not be reported singular");
+        assert_relative_eq!(sol.value.as_slice(), x_true.as_slice(), max_relative = 1e-6);
     }
 
     #[test]
