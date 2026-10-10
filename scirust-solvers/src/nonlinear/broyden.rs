@@ -3,7 +3,12 @@
 //! ## Sécurité numérique
 //! - `check_finite` après chaque évaluation de F
 //! - Vérification NaN sur le pas de correction `delta`
-//! - Stagnation détectée : si `step_norm` < 1e-16, on stoppe
+//! - Résidu exact (`‖F‖ = 0`) ou `‖F‖ < tol.abs` → solution acceptée
+//! - Convergence en pas : `‖δ‖ < tol.abs + tol.rel · ‖x‖`, testée avant
+//!   toute détection de stagnation
+//! - Stagnation : si le pas ne change plus `x` en `f64` → `StepUnderflow`
+//!   (plus de seuil absolu `‖δ‖ < 1e-16`, qui abortait les systèmes
+//!   micrométriques bien conditionnés)
 //! - `.unwrap()` sur `matvec` et `solve` remplacé par propagation `?`
 //! - Réinitialisation de la jacobienne si singulière (DF)
 
@@ -55,7 +60,7 @@ where
     f(&x, &mut fx);
 
     let res0 = linalg::norm_inf(&fx);
-    if res0 < tol.abs
+    if res0 == 0.0 || res0 < tol.abs
     {
         return Ok(Solution::new(x, 0, res0));
     }
@@ -91,11 +96,6 @@ where
         }
 
         let step_norm = linalg::norm_inf(&delta);
-        if step_norm < 1e-16
-        {
-            warn!(target: "solver", "Broyden: step underflow {step_norm:.3e} at iteration {k}");
-            return Err(SolverError::StepUnderflow { step: step_norm });
-        }
 
         // x_{k+1} = x_k + delta
         let mut x_new = x.clone();
@@ -103,6 +103,19 @@ where
         {
             x_new[i] += delta[i];
             check_finite(x_new[i], &format!("x_new[{i}] Broyden k={k}"))?;
+        }
+
+        // Convergence before stagnation — relative to ‖x‖, not a fixed 1e-16.
+        if step_norm < tol.abs + tol.rel * linalg::norm_inf(&x_new)
+        {
+            let mut fx_new = vec![0.0; n];
+            f(&x_new, &mut fx_new);
+            return Ok(Solution::new(x_new, k + 1, linalg::norm_inf(&fx_new)));
+        }
+        if x_new == x
+        {
+            warn!(target: "solver", "Broyden: step {step_norm:.3e} no longer moves x at iteration {k}");
+            return Err(SolverError::StepUnderflow { step: step_norm });
         }
 
         let mut fx_new = vec![0.0; n];
@@ -115,7 +128,7 @@ where
         let res = linalg::norm_inf(&fx_new);
         last_res = res;
 
-        if res < tol.abs || step_norm < tol.abs + tol.rel * linalg::norm_inf(&x_new)
+        if res == 0.0 || res < tol.abs
         {
             return Ok(Solution::new(x_new, k + 1, res));
         }
@@ -142,7 +155,9 @@ where
         };
 
         let denom = linalg::dot(&delta, &delta);
-        if denom > 1e-30
+        // Any nonzero step can update B; a fixed 1e-30 floor skipped the
+        // rank-1 correction on micrometre-scale steps (‖δ‖² ≪ 1e-30).
+        if denom > 0.0
         {
             for i in 0..n
             {
@@ -206,5 +221,31 @@ mod tests {
         {
             assert_relative_eq!(*v, 1.0, epsilon = 1e-6);
         }
+    }
+
+    /// Regression: an absolute `step_norm < 1e-16` floor aborted Broyden on a
+    /// well-conditioned micrometre-scale linear system before any update.
+    #[test]
+    fn broyden_solves_a_tiny_scale_linear_system() {
+        let target = 1e-18;
+        let s = broyden(
+            move |x, out| {
+                out[0] = x[0] - target;
+                out[1] = x[1] - 2.0 * target;
+            },
+            vec![2.0 * target, 4.0 * target],
+            Tolerance {
+                abs: 1e-30,
+                rel: 1e-12,
+                max_iter: 20,
+            },
+        )
+        .expect("a regular tiny-scale system must not abort with StepUnderflow");
+        assert!((s.value[0] - target).abs() <= 1e-30, "x0={}", s.value[0]);
+        assert!(
+            (s.value[1] - 2.0 * target).abs() <= 1e-30,
+            "x1={}",
+            s.value[1]
+        );
     }
 }

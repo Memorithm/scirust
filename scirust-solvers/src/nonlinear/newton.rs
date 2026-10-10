@@ -2,7 +2,13 @@
 //!
 //! ## Sécurité numérique
 //! - `check_finite` sur F et J à chaque itération
-//! - Détection de stagnation : pas < 1e-16 → StepUnderflow
+//! - Résidu exact (`‖F‖ = 0`) ou `‖F‖ < tol.abs` → solution acceptée
+//! - Convergence en pas : `‖δ‖ < tol.abs + tol.rel · ‖x‖`, testée avant
+//!   toute détection de stagnation
+//! - Stagnation : si le pas ne change plus `x` en `f64` sans que la
+//!   tolérance soit atteinte → `SolverError::StepUnderflow`. Le critère
+//!   n'est pas un seuil absolu (l'ancien `‖δ‖ < 1e-16` abortait les
+//!   systèmes micrométriques bien conditionnés)
 //! - Pas de `.unwrap()` — propagation d'erreur via `?`
 //! - Newton avec backtracking si le résidu augmente (linesearch simple)
 //!
@@ -62,7 +68,7 @@ where
 
         let res = linalg::norm_inf(&fx);
         last_res = res;
-        if res < tol.abs
+        if res == 0.0 || res < tol.abs
         {
             return Ok(Solution::new(x, k, res));
         }
@@ -80,11 +86,9 @@ where
         }
 
         let step_norm = linalg::norm_inf(&delta);
-        if step_norm < 1e-16
-        {
-            warn!(target: "solver", "Newton: step underflow {step_norm:.3e} at iteration {k}");
-            return Err(SolverError::StepUnderflow { step: step_norm });
-        }
+        // Convergence on the Newton step is checked after the linesearch
+        // update below (relative to ‖x‖). An absolute ‖δ‖ < 1e-16 floor used
+        // to abort here on well-conditioned micrometre-scale systems.
 
         // Mise à jour avec backtracking linesearch simple
         // On essaie d'abord le pas complet, on réduit de moitié si le résidu augmente
@@ -149,9 +153,10 @@ where
         }
 
         let final_norm = linalg::norm_inf(&fx);
+        let x_norm = linalg::norm_inf(&x);
         let final_step = linalg::norm_inf(&delta);
 
-        if final_norm < tol.abs || final_step < tol.abs + tol.rel * linalg::norm_inf(&x)
+        if final_norm == 0.0 || final_norm < tol.abs || final_step < tol.abs + tol.rel * x_norm
         {
             // Dernière évaluation propre
             for i in 0..n
@@ -161,6 +166,14 @@ where
             f(&buf_in, &mut buf_out);
             let res_final = buf_out.iter().fold(0.0f64, |a, d| a.max(d.value.abs()));
             return Ok(Solution::new(x, k + 1, res_final));
+        }
+
+        // Stagnation: the full Newton step no longer moves any coordinate in
+        // f64 (tolerance finer than machine precision at this scale).
+        if delta.iter().all(|&d| d == 0.0) || step_norm == 0.0
+        {
+            warn!(target: "solver", "Newton: step {step_norm:.3e} no longer moves x at iteration {k}");
+            return Err(SolverError::StepUnderflow { step: step_norm });
         }
     }
 
@@ -195,7 +208,7 @@ where
         }
 
         let res = linalg::norm_inf(&fx);
-        if res < tol.abs
+        if res == 0.0 || res < tol.abs
         {
             return Ok(Solution::new(x, k, res));
         }
@@ -222,23 +235,25 @@ where
         }
 
         let step_norm = linalg::norm_inf(&delta);
-        if step_norm < 1e-16
-        {
-            warn!(target: "solver", "Newton(J): step underflow {step_norm:.3e} at iteration {k}");
-            return Err(SolverError::StepUnderflow { step: step_norm });
-        }
-
+        let mut x_new = x.clone();
         for i in 0..n
         {
-            x[i] += delta[i];
-            check_finite(x[i], &format!("x[{i}] Newton(J) k={k}"))?;
+            x_new[i] += delta[i];
+            check_finite(x_new[i], &format!("x[{i}] Newton(J) k={k}"))?;
         }
 
-        if step_norm < tol.abs + tol.rel * linalg::norm_inf(&x)
+        // Convergence before stagnation — relative to ‖x‖, not a fixed 1e-16.
+        if step_norm < tol.abs + tol.rel * linalg::norm_inf(&x_new)
         {
-            f(&x, &mut fx);
-            return Ok(Solution::new(x, k + 1, linalg::norm_inf(&fx)));
+            f(&x_new, &mut fx);
+            return Ok(Solution::new(x_new, k + 1, linalg::norm_inf(&fx)));
         }
+        if x_new == x
+        {
+            warn!(target: "solver", "Newton(J): step {step_norm:.3e} no longer moves x at iteration {k}");
+            return Err(SolverError::StepUnderflow { step: step_norm });
+        }
+        x = x_new;
     }
 
     f(&x, &mut fx);
@@ -303,5 +318,70 @@ mod tests {
         let f1 = (-s.value[0]).exp() + (-s.value[1]).exp() - 1.0001;
         assert!(f0.abs() < 1e-6);
         assert!(f1.abs() < 1e-6);
+    }
+
+    /// Regression: an absolute `step_norm < 1e-16` floor aborted Newton on a
+    /// well-conditioned micrometre-scale linear system before any update.
+    /// The Newton step equals the (tiny) residual; it must not be treated as
+    /// underflow when it still moves `x` in `f64` and the tolerance has not
+    /// been met.
+    #[test]
+    fn newton_jac_solves_a_tiny_scale_linear_system() {
+        let target = 1e-18;
+        let s = newton_system_jac(
+            move |x, out| {
+                out[0] = x[0] - target;
+                out[1] = x[1] - 2.0 * target;
+            },
+            |_x, j| {
+                for i in 0..2
+                {
+                    for jj in 0..2
+                    {
+                        j[(i, jj)] = 0.0;
+                    }
+                }
+                j[(0, 0)] = 1.0;
+                j[(1, 1)] = 1.0;
+            },
+            vec![2.0 * target, 4.0 * target],
+            Tolerance {
+                abs: 1e-30,
+                rel: 1e-12,
+                max_iter: 20,
+            },
+        )
+        .expect("a regular tiny-scale system must not abort with StepUnderflow");
+        assert!((s.value[0] - target).abs() <= 1e-30, "x0={}", s.value[0]);
+        assert!(
+            (s.value[1] - 2.0 * target).abs() <= 1e-30,
+            "x1={}",
+            s.value[1]
+        );
+    }
+
+    /// Same absolute-step regression through the autodiff Newton entry point.
+    #[test]
+    fn newton_system_solves_a_tiny_scale_linear_system() {
+        let target = 1e-18;
+        let s = newton_system(
+            move |x, out| {
+                out[0] = x[0] - Dual::primal(target);
+                out[1] = x[1] - Dual::primal(2.0 * target);
+            },
+            vec![2.0 * target, 4.0 * target],
+            Tolerance {
+                abs: 1e-30,
+                rel: 1e-12,
+                max_iter: 20,
+            },
+        )
+        .expect("a regular tiny-scale system must not abort with StepUnderflow");
+        assert!((s.value[0] - target).abs() <= 1e-30, "x0={}", s.value[0]);
+        assert!(
+            (s.value[1] - 2.0 * target).abs() <= 1e-30,
+            "x1={}",
+            s.value[1]
+        );
     }
 }
