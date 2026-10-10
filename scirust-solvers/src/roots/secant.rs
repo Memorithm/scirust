@@ -2,7 +2,12 @@
 //! deux points pour approximer la pente. Ordre de convergence ≈ 1.618.
 //!
 //! ## Sécurité numérique
-//! - Racine exacte (`f(x1) == 0`) ou `|f(x1)| < tol.abs` → solution acceptée.
+//! - Stationnarité du résidu scale-aware : si `|f₁⁰| ≥ tol.abs` on garde le
+//!   critère absolu classique `|f| < tol.abs` ; si `|f₁⁰|` est déjà sous
+//!   `tol.abs` (fonction mesurée en unités minuscules, `f ↦ s·f` avec
+//!   `|s| ≲ tol.abs`), le test devient relatif `|f| ≤ tol.rel · |f₁⁰|` pour
+//!   qu'un départ loin de la racine ne paraisse pas convergé.
+//! - Racine exacte (`f(x1) == 0`) → solution acceptée.
 //! - Sécante horizontale (`f(x1) == f(x0)`) → `StepUnderflow`. Pas de seuil
 //!   absolu sur `|f(x1) − f(x0)|` : il dépend des unités de `f`.
 //! - Convergence : `|x2 − x1| < tol.abs + tol.rel · |x2|`, testée avant la
@@ -22,6 +27,29 @@ fn check_finite(v: f64, _label: &str) -> Result<(), SolverError> {
     Ok(())
 }
 
+/// Scale-aware stationarity test for the scalar residual `|f(x)|`.
+///
+/// Under a uniform residual rescaling `f ↦ s·f`, a fixed absolute
+/// `|f| < tol.abs` floor falsely accepts any start once `|s| ≲ tol.abs`
+/// (e.g. `1e-20·(x² − 2)` with the default `tol.abs = 1e-10`). When the
+/// initial residual is already below `tol.abs`, the test switches to a
+/// relative reduction against `|f₁⁰|`; otherwise the classical absolute
+/// floor is kept (so well-scaled problems keep the same terminal accuracy).
+fn residual_stationary(res: f64, res0: f64, tol: Tolerance) -> bool {
+    if res == 0.0 || res0 == 0.0
+    {
+        return true;
+    }
+    if res0 >= tol.abs
+    {
+        res < tol.abs
+    }
+    else
+    {
+        res <= tol.rel * res0
+    }
+}
+
 /// Cherche une racine en partant de deux estimations `x0, x1`.
 pub fn secant<F: Fn(f64) -> f64>(
     f: F,
@@ -34,11 +62,14 @@ pub fn secant<F: Fn(f64) -> f64>(
     check_finite(f0, "f(x0)")?;
     check_finite(f1, "f(x1)")?;
 
+    let res0 = f1.abs();
+
     for k in 0..tol.max_iter
     {
-        if f1 == 0.0 || f1.abs() < tol.abs
+        let res = f1.abs();
+        if residual_stationary(res, res0, tol)
         {
-            return Ok(Solution::new(x1, k, f1.abs()));
+            return Ok(Solution::new(x1, k, res));
         }
 
         let denom = f1 - f0;
@@ -130,6 +161,23 @@ mod tests {
     fn secant_small_scale_function() {
         let tol = Tolerance::new(1e-60, 1e-12, 200);
         let s = secant(|x| (x * x - 2.0) * 1e-35, 1.0, 2.0, tol).unwrap();
+        assert_relative_eq!(s.value, 2.0_f64.sqrt(), max_relative = 1e-10);
+    }
+
+    /// Regression: an absolute `|f| < tol.abs` check falsely accepted a
+    /// far-from-root start when the residual was measured in tiny units.
+    /// For `f(x) = s·(x² − 2)` any scale `s ≲ tol.abs` made even an O(1)
+    /// distance to `√2` look "converged" at iteration 0 (e.g. `x1 = 2`).
+    /// When `|f₁⁰| < tol.abs` the stationarity test is now relative to `|f₁⁰|`.
+    #[test]
+    fn tiny_scale_residual_does_not_false_converge_via_absolute_f() {
+        let scale = 1e-20_f64;
+        let tol = Tolerance::new(1e-10, 1e-12, 200);
+        let s = secant(|x| (x * x - 2.0) * scale, 1.0, 2.0, tol).unwrap();
+        assert!(
+            s.info.iterations > 0,
+            "must actually iterate; absolute |f| floor used to return at iter 0 with x1=2"
+        );
         assert_relative_eq!(s.value, 2.0_f64.sqrt(), max_relative = 1e-10);
     }
 
