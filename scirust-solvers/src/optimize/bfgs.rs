@@ -6,7 +6,9 @@
 //!   on réinitialise H = I
 //! - Courbure relative `sy > 1e-12 · ‖s‖ · ‖y‖` avant mise à jour rang-2
 //!   (évite divisions par zéro sans dépendre de l'échelle absolue de `s`/`y`)
-//! - Backtracking Armijo avec plancher `alpha < 1e-20` → StepUnderflow
+//! - Backtracking Armijo : stagnation si le pas d'essai ne déplace plus `x`
+//!   en `f64` → StepUnderflow (plus de plancher absolu `alpha < 1e-20`, qui
+//!   abortait les objectifs raides dont le pas Armijo optimal est ≪ 1e-20)
 //! - Plus de `.unwrap()` sur matvec (remplacé par produit manuel)
 
 use crate::linalg::{self, Matrix};
@@ -110,6 +112,16 @@ where
             for i in 0..n
             {
                 x_new[i] = x[i] + alpha * p[i];
+                check_finite(x_new[i], &format!("x_new[{i}] alpha={alpha}"))?;
+            }
+            // Stagnation before Armijo: alpha so small the trial no longer
+            // moves x in f64. An absolute `alpha < 1e-20` floor used to abort
+            // here on stiff but well-posed objectives (Lipschitz L ≳ 1e20 ⇒
+            // Armijo step ≈ 1/L ≪ 1e-20).
+            if alpha < 1.0 && x_new == x
+            {
+                warn!(target: "solver", "BFGS: backtracking step no longer moves x at iteration {k}");
+                return Err(SolverError::StepUnderflow { step: alpha });
             }
             fx_new = eval_fg(&x_new, &mut buf, &mut grad_new);
 
@@ -123,11 +135,6 @@ where
                 break;
             }
             alpha *= 0.5;
-            if alpha < 1e-20
-            {
-                warn!(target: "solver", "BFGS: backtracking underflow at iteration {k}");
-                return Err(SolverError::StepUnderflow { step: alpha });
-            }
         }
 
         // Mises à jour BFGS
@@ -283,5 +290,30 @@ mod tests {
             "expected relative error < 1e-4, got ({e0}, {e1}) at {:?}",
             s.value
         );
+    }
+
+    /// Regression: an absolute `alpha < 1e-20` Armijo floor aborted BFGS on a
+    /// stiff quadratic before any accepted step. With H₀ = I the first search
+    /// direction is −∇f, so the optimal Armijo step is again 1/k; k = 1e22
+    /// needs α ≈ 1e-22 and must not be treated as underflow.
+    #[test]
+    fn bfgs_finds_minimum_of_stiff_quadratic() {
+        let k = 1e22_f64;
+        let sol = bfgs(
+            move |x: &[Dual]| {
+                let d0 = x[0] - Dual::primal(1.0);
+                let d1 = x[1] - Dual::primal(2.0);
+                (d0 * d0 + d1 * d1) * Dual::primal(0.5 * k)
+            },
+            vec![0.0, 0.0],
+            Tolerance {
+                abs: 1e-8,
+                rel: 1e-8,
+                max_iter: 200,
+            },
+        )
+        .expect("stiff quadratic must not abort with StepUnderflow");
+        assert_relative_eq!(sol.value[0], 1.0, epsilon = 1e-5);
+        assert_relative_eq!(sol.value[1], 2.0, epsilon = 1e-5);
     }
 }
