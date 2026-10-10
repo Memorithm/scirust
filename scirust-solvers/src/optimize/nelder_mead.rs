@@ -2,9 +2,9 @@
 //!
 //! ## Sécurité numérique
 //! - Vérification que le simplex n'est pas aplati : le diamètre est comparé à
-//!   `tol.abs + tol.rel · x_scale` (échelle des coordonnées du simplex), pas à
-//!   un seuil absolu `1e-14` qui déclarait « déjà convergé » tout problème
-//!   dont les coordonnées sont naturellement plus petites que `1e-14`.
+//!   `tol.abs + tol.rel · x_scale` (échelle des coordonnées du simplex) pour
+//!   l'acceptation *et* le collapse — pas à `tol.abs + tol.rel` (où `tol.rel`
+//!   était traité comme une longueur absolue) ni à un seuil fixe `1e-14`.
 //! - check_finite sur les points du simplex et les valeurs de f
 //! - Détection de colinéarité : si centroid ≈ worst *à l'échelle du problème*,
 //!   on réinitialise le simplex
@@ -151,7 +151,13 @@ where
         // and return a wrong vertex without iterating.
         let diam_floor = tol.abs + tol.rel * x_scale;
 
-        if spread < tol.abs && diam < tol.abs + tol.rel
+        // Diameter acceptance must use the same scale-aware floor as the
+        // collapse test below. The previous `diam < tol.abs + tol.rel` treated
+        // the dimensionless `tol.rel` as an absolute length, so any simplex
+        // whose f-spread was already below `tol.abs` (typical for tiny-scale
+        // quadratics) was accepted on iteration 0 even when the diameter was
+        // still O(problem scale) — returning a wrong vertex.
+        if spread < tol.abs && diam < diam_floor
         {
             return Ok(Solution::new(simplex.swap_remove(best), k, spread));
         }
@@ -399,6 +405,38 @@ mod tests {
         );
         assert!(
             (s.value[1] - target).abs() < 0.1 * target,
+            "x1 got {} want ~{target}",
+            s.value[1]
+        );
+    }
+
+    /// Regression: the early acceptance test used `diam < tol.abs + tol.rel`,
+    /// treating dimensionless `tol.rel` as an absolute length. For a
+    /// picometre-scale quadratic the initial f-spread (~1e-24) sits below a
+    /// modest `tol.abs` while the diameter is still O(target); the buggy
+    /// check accepted iteration 0 and returned a vertex with one coordinate
+    /// still at 0. The diameter floor is now `tol.abs + tol.rel · x_scale`.
+    #[test]
+    fn nelder_mead_acceptance_uses_relative_diameter() {
+        let target = 1e-12_f64;
+        let s = nelder_mead(
+            |x| (x[0] - target).powi(2) + (x[1] - target).powi(2),
+            vec![0.0, 0.0],
+            target,
+            Tolerance {
+                abs: 1e-22,
+                rel: 1e-4,
+                max_iter: 2000,
+            },
+        )
+        .expect("picometre-scale quadratic must not be accepted on the initial simplex");
+        assert!(
+            (s.value[0] - target).abs() < 0.01 * target,
+            "x0 got {} want ~{target}",
+            s.value[0]
+        );
+        assert!(
+            (s.value[1] - target).abs() < 0.01 * target,
             "x1 got {} want ~{target}",
             s.value[1]
         );
