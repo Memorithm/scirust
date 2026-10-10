@@ -27,6 +27,13 @@
 //! quadratiques plates (`k ≲ 1e-10`), empêchant la convergence. La recherche
 //! linéaire d'Armijo et la projection sur la boîte restent les garde-fous
 //! actifs contre les pas extrêmes.
+//!
+//! ## Stopping test
+//! Converged when the projected step satisfies
+//! `‖P(x − α∇f) − x‖₂ ≤ tol.abs + tol.rel · ‖x‖₂`. The relative term has
+//! no `max(‖x‖, 1)` floor, so `tol.rel` stays relative for small-scale
+//! box-constrained problems; a minimum at the origin is still reached
+//! through `tol.abs`.
 
 use crate::linalg::{dot, norm2};
 use crate::{ConvergenceInfo, Solution, SolverError, SolverResult, Tolerance};
@@ -120,7 +127,11 @@ where
         }
         let dnorm = norm2(&d);
 
-        if dnorm <= tol.abs + tol.rel * norm2(&x).max(1.0)
+        // Relative term scales with ‖x‖ itself: a `max(‖x‖, 1)` floor would
+        // turn `tol.rel` into an absolute tolerance for ‖x‖ < 1 and accept
+        // a start that is still far from a small-scale box-constrained
+        // minimum (projected step truncated by tight bounds).
+        if dnorm <= tol.abs + tol.rel * norm2(&x)
         {
             return Ok(Solution {
                 value: x,
@@ -298,5 +309,64 @@ mod tests {
         )
         .expect("flat box-constrained quadratic must converge");
         assert_relative_eq!(sol.value[0], 1.0, epsilon = 1e-5);
+    }
+
+    /// Regression: the stopping test used `tol.rel · max(‖x‖, 1)`, which
+    /// turns `tol.rel` into an absolute floor whenever ‖x‖ < 1. With
+    /// `Tolerance::default()` the threshold is ≈ `1.01e-8`. On a micrometre-
+    /// scale quadratic whose box truncates the first projected step to that
+    /// magnitude, the buggy check accepted `x₀ = 0` at iteration 0 (100 %
+    /// error) instead of walking to `x★`. The relative term is now
+    /// `tol.rel · ‖x‖` with no floor.
+    #[test]
+    fn small_scale_box_minimum_is_not_accepted_at_the_start() {
+        let x_star = 2e-9_f64;
+        let f = move |x: &[f64]| 0.5 * (x[0] - x_star).powi(2);
+        let grad = move |x: &[f64]| vec![x[0] - x_star];
+        // Tight box: initial α = 1/|g₀| ≈ 5e8 would step to ~1, but projection
+        // truncates to the upper bound 1e-8 — exactly the floored threshold.
+        let sol = spg(f, grad, vec![0.0], &[-1e-8], &[1e-8], Tolerance::default())
+            .expect("small-scale box quadratic must converge");
+        assert!(
+            sol.info.iterations > 0,
+            "buggy max(|x|,1) floor accepts the start at iteration 0"
+        );
+        assert_relative_eq!(sol.value[0], x_star, max_relative = 1e-6);
+    }
+
+    /// Same floor bug in 2-D: projected first step lands at the box corner
+    /// with ‖d‖₂ ≈ 9.9e-9 while ‖x₀‖ = 0, so the floored test stops immediately.
+    #[test]
+    fn small_scale_2d_box_converges_to_true_minimum() {
+        let x_star = [2.25e-9_f64, 3.5e-9];
+        let f = move |x: &[f64]| 0.5 * ((x[0] - x_star[0]).powi(2) + (x[1] - x_star[1]).powi(2));
+        let grad = move |x: &[f64]| vec![x[0] - x_star[0], x[1] - x_star[1]];
+        // Bound 7e-9 so ‖d₀‖₂ = √2·7e-9 ≈ 9.9e-9 ≤ floored threshold 1.01e-8
+        // (with 1e-8 the corner step already exceeds the floor and slips past
+        // iteration 0).
+        let sol = spg(
+            f,
+            grad,
+            vec![0.0, 0.0],
+            &[-7e-9, -7e-9],
+            &[7e-9, 7e-9],
+            Tolerance::default(),
+        )
+        .expect("small-scale 2-D box quadratic must converge");
+        assert!(sol.info.iterations > 0);
+        assert_relative_eq!(sol.value[0], x_star[0], max_relative = 1e-6);
+        assert_relative_eq!(sol.value[1], x_star[1], max_relative = 1e-6);
+    }
+
+    /// Origin minimum must still be accepted via `tol.abs` once the projected
+    /// step is below the absolute floor (no relative contribution at x = 0).
+    #[test]
+    fn minimum_at_origin_still_converges_via_absolute_floor() {
+        let f = |x: &[f64]| 0.5 * x[0] * x[0];
+        let grad = |x: &[f64]| vec![x[0]];
+        let sol = spg(f, grad, vec![1e-4], &[-1.0], &[1.0], Tolerance::default())
+            .expect("origin minimum must converge");
+        assert!(sol.value[0].abs() < 1e-8);
+        assert!(sol.info.converged);
     }
 }
