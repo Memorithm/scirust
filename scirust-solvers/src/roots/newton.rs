@@ -1,7 +1,12 @@
 //! Méthode de Newton 1D avec dérivée (autodiff ou explicite).
 //!
 //! ## Sécurité numérique
-//! - Racine exacte (`f(x) == 0`) ou `|f(x)| < tol.abs` → solution acceptée.
+//! - Stationnarité du résidu scale-aware : si `|f₀| ≥ tol.abs` on garde le
+//!   critère absolu classique `|f| < tol.abs` ; si `|f₀|` est déjà sous
+//!   `tol.abs` (fonction mesurée en unités minuscules, `f ↦ s·f` avec
+//!   `|s| ≲ tol.abs`), le test devient relatif `|f| ≤ tol.rel · |f₀|` pour
+//!   qu'un départ loin de la racine ne paraisse pas convergé.
+//! - Racine exacte (`f(x) == 0`) → solution acceptée.
 //! - Dérivée nulle (`f'(x) == 0`) ou pas `f(x)/f'(x)` non fini →
 //!   `SolverError::ZeroDerivative`. Il n'y a pas de seuil absolu sur `|f'|` :
 //!   une pente de `1e-18` est légitime (par ex. `ln(x) − 40` près de `x ≈ 2,35e17`).
@@ -40,12 +45,36 @@ fn newton_step(fx: f64, dfx: f64) -> Option<f64> {
     step.is_finite().then_some(step)
 }
 
+/// Scale-aware stationarity test for the scalar residual `|f(x)|`.
+///
+/// Under a uniform residual rescaling `f ↦ s·f`, a fixed absolute
+/// `|f| < tol.abs` floor falsely accepts any start once `|s| ≲ tol.abs`
+/// (e.g. `1e-20·(x² − 2)` with the default `tol.abs = 1e-10`). When the
+/// initial residual is already below `tol.abs`, the test switches to a
+/// relative reduction against `|f₀|`; otherwise the classical absolute
+/// floor is kept (so well-scaled problems keep the same terminal accuracy).
+fn residual_stationary(res: f64, res0: f64, tol: Tolerance) -> bool {
+    if res == 0.0 || res0 == 0.0
+    {
+        return true;
+    }
+    if res0 >= tol.abs
+    {
+        res < tol.abs
+    }
+    else
+    {
+        res <= tol.rel * res0
+    }
+}
+
 /// Newton avec dérivée calculée automatiquement par dual numbers.
 pub fn newton<F>(f: F, x0: f64, tol: Tolerance) -> SolverResult<Solution<f64>>
 where
     F: Fn(Dual) -> Dual,
 {
     let mut x = x0;
+    let mut f0 = f64::NAN;
     for k in 0..tol.max_iter
     {
         let d = f(Dual::new(x, 1.0));
@@ -54,9 +83,14 @@ where
         check_finite(fx, "fx")?;
         check_finite(dfx, "dfx")?;
 
-        if fx == 0.0 || fx.abs() < tol.abs
+        let res = fx.abs();
+        if k == 0
         {
-            return Ok(Solution::new(x, k, fx.abs()));
+            f0 = res;
+        }
+        if residual_stationary(res, f0, tol)
+        {
+            return Ok(Solution::new(x, k, res));
         }
         let Some(step) = newton_step(fx, dfx)
         else
@@ -97,6 +131,7 @@ where
     G: Fn(f64) -> f64,
 {
     let mut x = x0;
+    let mut f0 = f64::NAN;
     for k in 0..tol.max_iter
     {
         let fx = f(x);
@@ -104,9 +139,14 @@ where
         check_finite(fx, "fx")?;
         check_finite(dfx, "dfx")?;
 
-        if fx == 0.0 || fx.abs() < tol.abs
+        let res = fx.abs();
+        if k == 0
         {
-            return Ok(Solution::new(x, k, fx.abs()));
+            f0 = res;
+        }
+        if residual_stationary(res, f0, tol)
+        {
+            return Ok(Solution::new(x, k, res));
         }
         let Some(step) = newton_step(fx, dfx)
         else
@@ -211,6 +251,30 @@ mod tests {
                 .unwrap_or_else(|e| panic!("c = {c}: {e:?}"));
             assert_relative_eq!(s.value, root, max_relative = 4e-15);
         }
+    }
+
+    /// Regression: an absolute `|f| < tol.abs` check falsely accepted a
+    /// far-from-root start when the residual was measured in tiny units.
+    /// For `f(x) = s·(x² − 2)` any scale `s ≲ tol.abs` made even an O(1)
+    /// distance to `√2` look "converged" at iteration 0. When `|f₀| < tol.abs`
+    /// the stationarity test is now relative to `|f₀|`.
+    #[test]
+    fn tiny_scale_residual_does_not_false_converge_via_absolute_f() {
+        let scale = 1e-20_f64;
+        let tol = Tolerance::new(1e-10, 1e-12, 200);
+        let s = newton(|x: Dual| (x * x - 2.0) * scale, 1.0, tol).unwrap();
+        assert!(
+            s.info.iterations > 0,
+            "must actually iterate; absolute |f| floor used to return at iter 0 with x=1"
+        );
+        assert_relative_eq!(s.value, 2.0_f64.sqrt(), max_relative = 1e-10);
+        let s = newton_with_derivative(|x| (x * x - 2.0) * scale, |x| 2.0 * scale * x, 1.0, tol)
+            .unwrap();
+        assert!(
+            s.info.iterations > 0,
+            "must actually iterate; absolute |f| floor used to return at iter 0 with x=1"
+        );
+        assert_relative_eq!(s.value, 2.0_f64.sqrt(), max_relative = 1e-10);
     }
 
     #[test]
