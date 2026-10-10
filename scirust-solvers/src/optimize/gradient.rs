@@ -3,7 +3,9 @@
 //! ## Sécurité numérique
 //! - check_finite sur gradient, pas, valeur de f
 //! - Détection de NaN dans x_new avant évaluation de f
-//! - Line search sous `1e-20` → StepUnderflow
+//! - Backtracking Armijo : stagnation si le pas d'essai ne déplace plus `x`
+//!   en `f64` → StepUnderflow. Plus de plancher absolu `alpha < 1e-20`, qui
+//!   abortait les quadratiques raides (`L ≳ 1e20`, pas Armijo optimal ≈ 1/L).
 
 use crate::linalg;
 use crate::{Solution, SolverError, SolverResult, Tolerance};
@@ -81,6 +83,15 @@ where
                 x_new[i] = x[i] - alpha * grad[i];
                 check_finite(x_new[i], &format!("x_new[{i}] alpha={alpha}"))?;
             }
+            // Stagnation before Armijo: alpha so small the trial no longer
+            // moves x in f64. An absolute `alpha < 1e-20` floor used to abort
+            // here on stiff but well-posed quadratics (Lipschitz L ≳ 1e20 ⇒
+            // Armijo step ≈ 1/L ≪ 1e-20).
+            if alpha < 1.0 && x_new == x
+            {
+                warn!(target: "solver", "GD: backtracking step no longer moves x at iteration {k}");
+                return Err(SolverError::StepUnderflow { step: alpha });
+            }
             fx_new = eval(&x_new, &mut buf, &mut grad_new);
 
             for gi in &grad_new
@@ -93,11 +104,6 @@ where
                 break;
             }
             alpha *= 0.5;
-            if alpha < 1e-20
-            {
-                warn!(target: "solver", "GD: backtracking underflow at iteration {k}");
-                return Err(SolverError::StepUnderflow { step: alpha });
-            }
         }
 
         let step_norm = alpha * gnorm;
@@ -161,5 +167,31 @@ mod tests {
             let f_final = f_value(s.value[0], s.value[1]);
             assert!(f_final < 0.2, "f_final should be small: {f_final}");
         }
+    }
+
+    /// Regression: an absolute `alpha < 1e-20` Armijo floor aborted gradient
+    /// descent on a stiff but well-conditioned quadratic. For
+    /// f(x) = ½k‖x − x*‖² the optimal step is 1/k; with k = 1e22 that is
+    /// 1e-22, below the old floor, so every backtrack returned StepUnderflow
+    /// instead of the obvious minimum.
+    #[test]
+    fn gd_finds_minimum_of_stiff_quadratic() {
+        let k = 1e22_f64;
+        let sol = gradient_descent(
+            move |x: &[Dual]| {
+                let d0 = x[0] - Dual::primal(1.0);
+                let d1 = x[1] - Dual::primal(2.0);
+                (d0 * d0 + d1 * d1) * Dual::primal(0.5 * k)
+            },
+            vec![0.0, 0.0],
+            Tolerance {
+                abs: 1e-8,
+                rel: 1e-8,
+                max_iter: 200,
+            },
+        )
+        .expect("stiff quadratic must not abort with StepUnderflow");
+        assert_relative_eq!(sol.value[0], 1.0, epsilon = 1e-5);
+        assert_relative_eq!(sol.value[1], 2.0, epsilon = 1e-5);
     }
 }
