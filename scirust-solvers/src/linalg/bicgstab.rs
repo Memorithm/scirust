@@ -30,6 +30,12 @@ use tracing::warn;
 // test into a cosine-like, scale-invariant measure (Cauchy–Schwarz bounds it
 // to [-1, 1]) — this is the normalization Barrett et al., "Templates for the
 // Solution of Linear Systems" (1994), use for breakdown detection.
+//
+// `omega = (t·s) / ‖t‖²` has units of 1/‖A‖ (same as `alpha`), so an absolute
+// `|omega| < BREAKDOWN_EPS` floor falsely declared large-scale but regular
+// systems singular (e.g. stiffness entries ~1e14). The omega guard is therefore
+// relative to `|alpha|`, and the freshly computed omega is guarded by the
+// cosine `|t·s| / (‖t‖‖s‖)` instead of an absolute `‖t‖²` floor.
 const BREAKDOWN_EPS: f64 = 1e-13;
 
 fn check_finite(value: f64, iter: usize) -> SolverResult<()> {
@@ -142,7 +148,9 @@ where
         }
         else
         {
-            if omega.abs() < BREAKDOWN_EPS
+            // `omega` and `alpha` both scale as 1/‖A‖; compare them relatively
+            // so a large-scale regular system is not declared singular.
+            if omega.abs() < BREAKDOWN_EPS * alpha.abs().max(f64::MIN_POSITIVE)
             {
                 warn!(target: "solver", "BiCGSTAB breakdown: omega ≈ 0 at iteration {k}");
                 return Err(SolverError::Singular {
@@ -208,7 +216,21 @@ where
         matvec(&s_hat, &mut t);
 
         let tt = dot(&t, &t);
-        omega = if tt > 1e-300 { dot(&t, &s) / tt } else { 0.0 };
+        let ts = dot(&t, &s);
+        check_finite(tt, k)?;
+        check_finite(ts, k)?;
+        let t_norm = tt.sqrt().max(1e-300);
+        let s_norm_t = s_norm.max(1e-300);
+        // Cosine of the angle between t and s — scale-invariant. An absolute
+        // `tt > 1e-300` floor used to force omega = 0 on tiny t and then trip
+        // the next-iteration absolute omega check; the cosine catches the
+        // genuine orthogonal breakdown without depending on ‖A‖.
+        if tt <= 1e-300 || (ts / (t_norm * s_norm_t)).abs() < BREAKDOWN_EPS
+        {
+            warn!(target: "solver", "BiCGSTAB breakdown: omega ≈ 0 at iteration {k}");
+            return Err(SolverError::Singular { row: k, pivot: ts });
+        }
+        omega = ts / tt;
         check_finite(omega, k)?;
 
         for i in 0..n
@@ -391,6 +413,45 @@ mod tests {
         )
         .expect("a regular system with a tiny ‖b‖ must not be reported singular");
         assert_relative_eq!(sol.value.as_slice(), b.as_slice(), epsilon = 1e-9);
+    }
+
+    #[test]
+    fn bicgstab_solves_a_large_scale_system_without_false_omega_breakdown() {
+        // Regression: `|omega| < BREAKDOWN_EPS` was an absolute floor, but
+        // omega = (t·s)/‖t‖² scales as 1/‖A‖. A diagonally-dominant system
+        // with entries ~1e14 (e.g. Pa-scale stiffness) produced omega ≈ 1e-14
+        // and was reported Singular even though the condition number is
+        // unchanged by the scaling. Pure-relative tolerance so convergence
+        // is not masked by an absolute residual floor.
+        let scale = 1e14;
+        let a = Matrix::from_row_major(
+            3,
+            3,
+            vec![
+                10.0 * scale,
+                1.0 * scale,
+                0.0,
+                1.0 * scale,
+                8.0 * scale,
+                1.0 * scale,
+                0.0,
+                1.0 * scale,
+                6.0 * scale,
+            ],
+        );
+        let x_true = vec![1.0, -2.0, 3.0];
+        let b = a.matvec(&x_true).unwrap();
+        let sol = bicgstab(
+            |x, y| y.copy_from_slice(&a.matvec(x).unwrap()),
+            &b,
+            vec![0.0; 3],
+            Tolerance::new(0.0, 1e-10, 200),
+        )
+        .expect("a regular large-scale system must not be reported singular via omega");
+        for (xi, ti) in sol.value.iter().zip(&x_true)
+        {
+            assert_relative_eq!(*xi, *ti, epsilon = 1e-6);
+        }
     }
 
     /// A `max_iter` too small to converge must report `NoConvergence` with
