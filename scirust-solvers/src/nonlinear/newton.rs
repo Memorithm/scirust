@@ -2,7 +2,11 @@
 //!
 //! ## Sécurité numérique
 //! - `check_finite` sur F et J à chaque itération
-//! - Résidu exact (`‖F‖ = 0`) ou `‖F‖ < tol.abs` → solution acceptée
+//! - Stationarity of `F` is scale-aware: when `|F₀|_∞ ≥ tol.abs` the
+//!   classical absolute `|F|_∞ < tol.abs` test is kept; when the initial
+//!   residual is already below `tol.abs` (tiny-scale `F ↦ s·F` with
+//!   `|s| ≲ tol.abs`), the test becomes relative `|F|_∞ ≤ tol.rel · |F₀|_∞`
+//!   so a far start cannot look converged
 //! - Convergence en pas : `‖δ‖ < tol.abs + tol.rel · ‖x‖`, testée avant
 //!   toute détection de stagnation
 //! - Stagnation : si le pas ne change plus `x` en `f64` sans que la
@@ -29,6 +33,28 @@ fn check_finite(value: f64, _location: &str) -> Result<(), SolverError> {
     Ok(())
 }
 
+/// Scale-aware residual stationarity for nonlinear Newton.
+///
+/// Under a uniform residual rescaling `F ↦ s·F` a fixed absolute
+/// `|F|_∞ < tol.abs` floor falsely accepts any start once `|s| ≲ tol.abs`.
+/// When the initial residual is already below `tol.abs`, the test switches
+/// to a relative reduction against `|F₀|`; otherwise the classical absolute
+/// floor is kept (so well-scaled problems keep the same terminal accuracy).
+fn residual_stationary(res: f64, res0: f64, tol: Tolerance) -> bool {
+    if res == 0.0 || res0 == 0.0
+    {
+        return true;
+    }
+    if res0 >= tol.abs
+    {
+        res < tol.abs
+    }
+    else
+    {
+        res <= tol.rel * res0
+    }
+}
+
 /// Newton multivarié avec jacobienne automatique via dual numbers.
 pub fn newton_system<F>(f: F, x0: Vec<f64>, tol: Tolerance) -> SolverResult<Solution<Vec<f64>>>
 where
@@ -41,6 +67,7 @@ where
     let mut fx = vec![0.0; n];
     let mut jac = Matrix::zeros(n, n);
     let mut last_res = f64::INFINITY;
+    let mut res0 = f64::NAN;
 
     for k in 0..tol.max_iter
     {
@@ -68,7 +95,11 @@ where
 
         let res = linalg::norm_inf(&fx);
         last_res = res;
-        if res == 0.0 || res < tol.abs
+        if k == 0
+        {
+            res0 = res;
+        }
+        if residual_stationary(res, res0, tol)
         {
             return Ok(Solution::new(x, k, res));
         }
@@ -156,7 +187,7 @@ where
         let x_norm = linalg::norm_inf(&x);
         let final_step = linalg::norm_inf(&delta);
 
-        if final_norm == 0.0 || final_norm < tol.abs || final_step < tol.abs + tol.rel * x_norm
+        if residual_stationary(final_norm, res0, tol) || final_step < tol.abs + tol.rel * x_norm
         {
             // Dernière évaluation propre
             for i in 0..n
@@ -198,6 +229,7 @@ where
     let mut x = x0;
     let mut fx = vec![0.0; n];
     let mut j_mat = Matrix::zeros(n, n);
+    let mut res0 = f64::NAN;
 
     for k in 0..tol.max_iter
     {
@@ -208,7 +240,11 @@ where
         }
 
         let res = linalg::norm_inf(&fx);
-        if res == 0.0 || res < tol.abs
+        if k == 0
+        {
+            res0 = res;
+        }
+        if residual_stationary(res, res0, tol)
         {
             return Ok(Solution::new(x, k, res));
         }
@@ -383,5 +419,80 @@ mod tests {
             "x1={}",
             s.value[1]
         );
+    }
+
+    /// Regression: an absolute `|F|_∞ < tol.abs` check falsely accepted a
+    /// far-from-root start when the residual was measured in tiny units.
+    /// For `F(x) = s·(x − x★)` any scale `s ≲ tol.abs` made an O(1)
+    /// displacement look "converged" and Newton returned the start at
+    /// iteration 0. When `|F₀| < tol.abs` stationarity is now relative to
+    /// `|F₀|`.
+    #[test]
+    fn tiny_scale_residual_does_not_false_converge_via_absolute_norm() {
+        let scale = 1e-12_f64;
+        let x_star = 3.0_f64;
+        let s = newton_system(
+            move |x, out| {
+                out[0] = (x[0] - Dual::primal(x_star)) * Dual::primal(scale);
+            },
+            vec![0.0],
+            Tolerance::new(1e-10, 1e-12, 50),
+        )
+        .expect("tiny-scale linear residual must be solvable");
+        assert!(
+            (s.value[0] - x_star).abs() < 1e-9 * (1.0 + x_star.abs()),
+            "expected x≈{x_star}, got {:?} (iters={})",
+            s.value,
+            s.info.iterations
+        );
+        assert!(
+            s.info.iterations > 0,
+            "must actually iterate; absolute |F| floor used to return at iter 0"
+        );
+    }
+
+    /// Same absolute-residual regression through the explicit-Jacobian entry.
+    #[test]
+    fn tiny_scale_residual_newton_jac_does_not_false_converge() {
+        let scale = 1e-12_f64;
+        let x_star = 3.0_f64;
+        let s = newton_system_jac(
+            move |x, out| {
+                out[0] = scale * (x[0] - x_star);
+            },
+            move |_x, j| {
+                j[(0, 0)] = scale;
+            },
+            vec![0.0],
+            Tolerance::new(1e-10, 1e-12, 50),
+        )
+        .expect("tiny-scale linear residual must be solvable");
+        assert!(
+            (s.value[0] - x_star).abs() < 1e-9 * (1.0 + x_star.abs()),
+            "expected x≈{x_star}, got {:?} (iters={})",
+            s.value,
+            s.info.iterations
+        );
+        assert!(
+            s.info.iterations > 0,
+            "must actually iterate; absolute |F| floor used to return at iter 0"
+        );
+    }
+
+    /// Already-at-root must still exit immediately (iters == 0).
+    #[test]
+    fn converges_immediately_when_x0_is_already_the_root() {
+        let s = newton_system(
+            |x, out| {
+                out[0] = x[0] - Dual::primal(3.0);
+                out[1] = x[1] - Dual::primal(4.0);
+            },
+            vec![3.0, 4.0],
+            Tolerance::default(),
+        )
+        .unwrap();
+        assert_eq!(s.info.iterations, 0);
+        assert_relative_eq!(s.value[0], 3.0, epsilon = 1e-12);
+        assert_relative_eq!(s.value[1], 4.0, epsilon = 1e-12);
     }
 }
