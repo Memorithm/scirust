@@ -4,11 +4,53 @@
 //! moitiés `[a, m]` et `[m, b]`. Si la différence entre la somme des deux
 //! et la valeur globale est dans la tolérance, on accepte. Sinon, on
 //! subdivise récursivement chaque moitié.
+//!
+//! - Tolérance scale-aware : si l'échelle initiale
+//!   `(b−a)·max(|f(a)|, |f(b)|, |f(m)|)` est `≥ tol`, on garde le critère
+//!   absolu classique `|err| < tol` ; si l'intégrande est déjà mesurée en
+//!   unités minuscules (`f ↦ s·f` avec `|s|·(b−a) ≲ tol`), le test devient
+//!   relatif `|err| ≤ 10⁻⁸ · scale₀` (budget aussi subdivisé par moitié),
+//!   pour ne pas accepter une estimation grossière dont l'erreur absolue
+//!   est petite seulement parce que `f` l'est.
 
 use crate::{SolverError, SolverResult};
 
+/// Relative factor used when the integrand scale sits below `tol`.
+/// Matches [`crate::Tolerance::default`].rel.
+const ERR_REL: f64 = 1e-8;
+
+/// Scale-aware acceptance for a Richardson error estimate.
+///
+/// Under a uniform residual rescaling `f ↦ s·f`, a fixed absolute
+/// `|err| < tol` floor falsely accepts the coarsest panel once
+/// `|s|·(b−a) ≲ tol` (e.g. a Lorentzian peak scaled by `1e-20` with the
+/// common `tol = 1e-10` returns a value ~4× too large). When the initial
+/// integrand scale is already below `tol`, the test switches to a relative
+/// criterion against that scale. `tol` is the per-interval absolute budget
+/// (halved on subdivision); `tol0` is the caller-facing absolute floor used
+/// only to choose absolute vs relative mode.
+fn error_acceptable(err: f64, scale0: f64, tol: f64, tol0: f64) -> bool {
+    let e = err.abs();
+    if scale0 >= tol0 || scale0 == 0.0
+    {
+        e < tol
+    }
+    else
+    {
+        // Same halving schedule as the absolute budget: each half-interval
+        // receives half of the relative allowance.
+        let rel_tol = ERR_REL * scale0 * (tol / tol0);
+        e <= rel_tol
+    }
+}
+
 /// Intègre `f` sur `[a, b]` par Simpson adaptatif.
-/// `tol` : tolérance absolue cible sur l'estimation d'erreur.
+///
+/// `tol` : tolérance absolue cible sur l'estimation d'erreur lorsque
+/// l'intégrande est d'échelle `≳ tol`. Si `(b−a)·max(|f|)` aux nœuds
+/// initiaux est déjà sous `tol`, l'acceptation bascule sur un critère
+/// relatif (`≈ 10⁻⁸` de cette échelle) — un plancher absolu seul
+/// accepterait n'importe quelle estimation grossière.
 /// `max_depth` : profondeur maximale de récursion (en pratique 30 suffit).
 pub fn simpson_adaptive<F: Fn(f64) -> f64>(
     f: F,
@@ -28,7 +70,8 @@ pub fn simpson_adaptive<F: Fn(f64) -> f64>(
     let m = 0.5 * (a + b);
     let fm = eval_finite(&f, m)?;
     let whole = simpson_step(a, b, fa, fb, fm);
-    let val = recurse(&f, a, b, fa, fb, fm, whole, tol, max_depth)?;
+    let scale0 = (b - a) * fa.abs().max(fb.abs()).max(fm.abs());
+    let val = recurse(&f, a, b, fa, fb, fm, whole, tol, tol, scale0, max_depth)?;
     Ok(sign * val)
 }
 
@@ -75,6 +118,8 @@ fn recurse<F: Fn(f64) -> f64>(
     fm: f64,
     whole: f64,
     tol: f64,
+    tol0: f64,
+    scale0: f64,
     depth: usize,
 ) -> SolverResult<f64> {
     let m = 0.5 * (a + b);
@@ -86,15 +131,38 @@ fn recurse<F: Fn(f64) -> f64>(
     let right = simpson_step(m, b, fm, fb, frm);
     let sum = left + right;
     let err = (sum - whole) / 15.0; // estimateur de Richardson
-    if depth == 0 || err.abs() < tol
+    if depth == 0 || error_acceptable(err, scale0, tol, tol0)
     {
         Ok(sum + err)
     }
     else
     {
         let half_tol = tol * 0.5;
-        Ok(recurse(f, a, m, fa, fm, flm, left, half_tol, depth - 1)?
-            + recurse(f, m, b, fm, fb, frm, right, half_tol, depth - 1)?)
+        Ok(recurse(
+            f,
+            a,
+            m,
+            fa,
+            fm,
+            flm,
+            left,
+            half_tol,
+            tol0,
+            scale0,
+            depth - 1,
+        )? + recurse(
+            f,
+            m,
+            b,
+            fm,
+            fb,
+            frm,
+            right,
+            half_tol,
+            tol0,
+            scale0,
+            depth - 1,
+        )?)
     }
 }
 
@@ -122,7 +190,8 @@ pub fn simpson_adaptive_strict<F: Fn(f64) -> f64>(
     let m = 0.5 * (a + b);
     let fm = eval_finite(&f, m)?;
     let whole = simpson_step(a, b, fa, fb, fm);
-    recurse_strict(&f, a, b, fa, fb, fm, whole, tol, max_depth).map(|v| sign * v)
+    let scale0 = (b - a) * fa.abs().max(fb.abs()).max(fm.abs());
+    recurse_strict(&f, a, b, fa, fb, fm, whole, tol, tol, scale0, max_depth).map(|v| sign * v)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -135,6 +204,8 @@ fn recurse_strict<F: Fn(f64) -> f64>(
     fm: f64,
     whole: f64,
     tol: f64,
+    tol0: f64,
+    scale0: f64,
     depth: usize,
 ) -> SolverResult<f64> {
     let m = 0.5 * (a + b);
@@ -146,7 +217,7 @@ fn recurse_strict<F: Fn(f64) -> f64>(
     let right = simpson_step(m, b, fm, fb, frm);
     let sum = left + right;
     let err = (sum - whole) / 15.0;
-    if err.abs() < tol
+    if error_acceptable(err, scale0, tol, tol0)
     {
         return Ok(sum + err);
     }
@@ -158,10 +229,31 @@ fn recurse_strict<F: Fn(f64) -> f64>(
         )));
     }
     let half_tol = tol * 0.5;
-    Ok(
-        recurse_strict(f, a, m, fa, fm, flm, left, half_tol, depth - 1)?
-            + recurse_strict(f, m, b, fm, fb, frm, right, half_tol, depth - 1)?,
-    )
+    Ok(recurse_strict(
+        f,
+        a,
+        m,
+        fa,
+        fm,
+        flm,
+        left,
+        half_tol,
+        tol0,
+        scale0,
+        depth - 1,
+    )? + recurse_strict(
+        f,
+        m,
+        b,
+        fm,
+        fb,
+        frm,
+        right,
+        half_tol,
+        tol0,
+        scale0,
+        depth - 1,
+    )?)
 }
 
 #[cfg(test)]
@@ -231,5 +323,39 @@ mod tests {
         assert!(simpson_adaptive(|x| x, 0.0, 1.0, 0.0, 10).is_err());
         assert!(simpson_adaptive(|x| x, f64::NAN, 1.0, 1e-6, 10).is_err());
         assert!(simpson_adaptive(|_| f64::NAN, 0.0, 1.0, 1e-6, 10).is_err());
+    }
+
+    /// Regression: an absolute `|err| < tol` check falsely accepted the
+    /// coarsest Simpson panel when the integrand was measured in tiny units.
+    /// For `f(x) = s / (ε² + (x − ½)²)` on `[0, 1]` any scale `s ≲ tol`
+    /// made the Richardson error look "small" in absolute terms while the
+    /// peak was still unresolved, returning a value several times too large
+    /// instead of refining toward `s · (2/ε)·arctan(1/(2ε))`. When the
+    /// initial scale `(b−a)·max(|f|)` is below `tol`, acceptance is now
+    /// relative to that scale.
+    #[test]
+    fn tiny_scale_peak_does_not_false_converge_via_absolute_err() {
+        let eps2 = 1e-4_f64;
+        let s = 1e-20_f64;
+        let tol = 1e-10_f64;
+        let f = |x: f64| s / (eps2 + (x - 0.5).powi(2));
+        let exact = s * (2.0 / eps2.sqrt()) * (0.5 / eps2.sqrt()).atan();
+        let v = simpson_adaptive(f, 0.0, 1.0, tol, 30).expect("must refine via relative err");
+        // Absolute floor alone returned ~4× the truth; require 1e-6 relative.
+        assert!(
+            (v - exact).abs() <= 1e-6 * exact.abs(),
+            "got {v:e}, exact {exact:e}, rel {}",
+            (v - exact).abs() / exact.abs()
+        );
+    }
+
+    #[test]
+    fn tiny_scale_peak_strict_matches_adaptive() {
+        let eps2 = 1e-4_f64;
+        let s = 1e-20_f64;
+        let f = |x: f64| s / (eps2 + (x - 0.5).powi(2));
+        let exact = s * (2.0 / eps2.sqrt()) * (0.5 / eps2.sqrt()).atan();
+        let v = simpson_adaptive_strict(f, 0.0, 1.0, 1e-10, 30).unwrap();
+        assert!((v - exact).abs() <= 1e-6 * exact.abs());
     }
 }
