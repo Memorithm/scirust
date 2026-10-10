@@ -11,14 +11,12 @@ use super::Matrix;
 use crate::{SolverError, SolverResult};
 use tracing::warn;
 
-/// Seuil de NaN/Inf.
-const FINITE_EPS: f64 = 1e-15;
-
 /// Given the largest-magnitude entry seen so far and the matrix size,
-/// returns the pivot-rejection threshold `n · eps · max|·|` (Golub & Van
-/// Loan, *Matrix Computations*, §3.4.6) — relative to scale rather than a
-/// fixed absolute constant, so a regular system at a small physical scale
-/// isn't declared singular.
+/// returns the scale-relative threshold `n · eps · max|·|` (Golub & Van
+/// Loan, *Matrix Computations*, §3.4.6). Used both for Householder column
+/// norms during factorization and for back-substitution pivots, so a
+/// regular system at a small physical scale is neither left unfactored
+/// nor declared singular.
 fn pivot_tol(n: usize, max_abs: f64) -> f64 {
     (n as f64) * f64::EPSILON * max_abs.max(1e-300)
 }
@@ -109,6 +107,17 @@ pub fn qr_decompose(mut a: Matrix) -> SolverResult<Qr> {
     let p = m.min(n);
     let mut tau = vec![0.0; p];
 
+    // Scale of A — Householder must treat a column as zero relative to
+    // ‖A‖_∞, not against a fixed absolute 1e-15 (which skips every column
+    // of a regular Farad-scale matrix and leaves R = triu(A)).
+    let mut max_abs = 0.0f64;
+    for &x in a.data()
+    {
+        check_finite(x)?;
+        max_abs = max_abs.max(x.abs());
+    }
+    let col_tol = pivot_tol(m.max(n), max_abs);
+
     for k in 0..p
     {
         // Calcule la norme de a[k..m, k]
@@ -122,16 +131,17 @@ pub fn qr_decompose(mut a: Matrix) -> SolverResult<Qr> {
         check_finite(sigma_sq)?;
 
         let sigma = sigma_sq.sqrt();
-        if sigma < FINITE_EPS
+        if sigma <= col_tol
         {
-            // Colonne déjà à zéro → R[k,k] = 0, on saute le pivot
+            // Colonne numériquement nulle à l'échelle de A → R[k,k] = 0
             tau[k] = 0.0;
+            a[(k, k)] = 0.0;
             continue;
         }
         let akk = a[(k, k)];
         let alpha = if akk >= 0.0 { -sigma } else { sigma };
         let diff = akk - alpha;
-        if diff.abs() < FINITE_EPS
+        if diff.abs() <= col_tol
         {
             tau[k] = 0.0;
             a[(k, k)] = alpha;
@@ -364,11 +374,13 @@ mod tests {
 
     #[test]
     fn qr_solve_square_at_a_tiny_physical_scale() -> SolverResult<()> {
-        // Regression test for a P1 audit finding: FINITE_EPS was a fixed
-        // absolute 1e-15 compared directly against R's diagonal (which scales
-        // linearly with A) — the same regular system as `qr_solve_square`
-        // above, scaled down, was declared singular even though it is
-        // perfectly well-conditioned.
+        // Regression: Householder compared column norms to a fixed absolute
+        // 1e-15, so every column of a regular Farad-scale (~1e-17) matrix was
+        // treated as already zero. Factorization then left R = triu(A) and
+        // the solve returned a wrong x (≈ [-1.5, 0, 2.5] instead of [1,1,1]).
+        // Back-substitution already used a relative pivot; the factorization
+        // threshold must match. Checking x (not only |Ax−b|) is required —
+        // an absolute residual of 1e-9 is vacuously true at this scale.
         let scale = 1e-17;
         let a = Matrix::from_row_major(
             3,
@@ -381,10 +393,14 @@ mod tests {
         let b = vec![6.0 * scale, 15.0 * scale, 25.0 * scale];
         let qr = qr_decompose(a.clone())?;
         let x = solve_qr_least_squares(&qr, &b)?;
+        // Must recover the scale-invariant solution of the unscaled system.
+        assert_relative_eq!(x[0], 1.0, epsilon = 1e-8);
+        assert_relative_eq!(x[1], 1.0, epsilon = 1e-8);
+        assert_relative_eq!(x[2], 1.0, epsilon = 1e-8);
         let ax = a.matvec(&x)?;
         for (axi, bi) in ax.iter().zip(&b)
         {
-            assert_relative_eq!(*axi, *bi, epsilon = 1e-9, max_relative = 1e-6);
+            assert_relative_eq!(*axi, *bi, max_relative = 1e-6);
         }
         Ok(())
     }
