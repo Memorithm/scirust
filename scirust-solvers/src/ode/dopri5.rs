@@ -4,9 +4,12 @@
 //! ## Sécurité numérique
 //! - `check_finite` après chaque évaluation de dérivée (k1..k7)
 //! - Backup du dernier état valide (`last_good_y`) pour rollback
-//! - Pas de temps plancher `MIN_STEP = 1e-14` — StepUnderflow sinon
+//! - Pas de temps plancher **relatif** à l'échelle temporelle
+//!   (`~100·ε·max(|t|, |t_end−t0|)`) — plus de seuil absolu `1e-14` qui
+//!   abortait les intégrations à l'échelle femtoseconde / picoseconde
 //! - `MAX_REJECTIONS = 100` — boucle infinie impossible
-//! - Division par zéro dans `err / sc` protégée par `atol.max(1e-15)`
+//! - Division par zéro dans `err / sc` protégée par un plancher minuscule
+//!   (`1e-300`), sans forcer `atol` au-dessus de `1e-15`
 //!
 //! 7 évaluations par pas (FSAL : la 7e devient k1 du pas suivant).
 //! C'est l'algorithme de `scipy.integrate.RK45` et `Matlab ode45`.
@@ -18,8 +21,9 @@ use tracing::warn;
 /// Nombre maximal de rejets consécutifs avant abandon.
 const MAX_REJECTIONS: usize = 100;
 
-/// Pas de temps minimum absolu (évite division par zéro et boucle infinie).
-const MIN_STEP: f64 = 1e-14;
+/// Multiplier for the scale-relative step floor (`~100` ulps of the time scale).
+/// An absolute `1e-14` here used to abort femtosecond / picosecond problems.
+const MIN_STEP_ULPS: f64 = 100.0;
 
 const SAFETY: f64 = 0.9;
 const MIN_FACTOR: f64 = 0.2;
@@ -33,6 +37,14 @@ fn check_finite(value: f64, _location: &str) -> Result<(), SolverError> {
         return Err(SolverError::NanDetected { iter: 0, value });
     }
     Ok(())
+}
+
+/// Smallest step still meaningful at the current time scale. Relative to
+/// `max(|t|, |t_span|)` so a regular ODE in femtoseconds is not aborted by a
+/// fixed absolute floor, while still cutting off pathological reject loops
+/// once `h` falls below ~100 ulps of the clock.
+fn min_step(t: f64, t_span: f64) -> f64 {
+    MIN_STEP_ULPS * f64::EPSILON * t.abs().max(t_span.abs()).max(f64::MIN_POSITIVE)
 }
 
 #[derive(Debug, Clone)]
@@ -141,7 +153,10 @@ where
 
     let mut t = t0;
     let mut y = y0;
-    let mut h = h_init.max(MIN_STEP).min(t_end - t0);
+    let t_span = t_end - t0;
+    // Do not bump `h_init` up to an absolute floor: a femtosecond span with a
+    // matching `h_init` must be allowed to start at that scale.
+    let mut h = h_init.min(t_span);
     let mut accepted = 0usize;
     let mut rejected = 0usize;
     let mut consecutive_rejections = 0usize;
@@ -262,7 +277,10 @@ where
             let err =
                 h * (E1 * k1[i] + E3 * k3[i] + E4 * k4[i] + E5 * k5[i] + E6 * k6[i] + E7 * k7[i]);
             check_finite(err, &format!("err[{i}]"))?;
-            let sc = atol.max(1e-15) + rtol * y[i].abs().max(ynew[i].abs());
+            // Standard Hairer scale: atol + rtol·max(|y|,|ynew|). A forced
+            // `atol.max(1e-15)` floor used to dominate any state below that
+            // magnitude (e.g. attomole concentrations) and mute relative control.
+            let sc = (atol + rtol * y[i].abs().max(ynew[i].abs())).max(1e-300);
             err_norm += (err / sc).powi(2);
         }
         err_norm = (err_norm / n as f64).sqrt();
@@ -302,12 +320,13 @@ where
             check_finite(factor, "factor_reject")?;
             h *= factor;
 
-            if h < MIN_STEP
+            let h_floor = min_step(t, t_span);
+            if h < h_floor
             {
                 warn!(
                     target: "solver",
-                    "DOPRI5: step underflow h={:.3e} at t={} — restoring backup from t={}",
-                    h, t, last_good_t
+                    "DOPRI5: step underflow h={:.3e} (floor={:.3e}) at t={} — restoring backup from t={}",
+                    h, h_floor, t, last_good_t
                 );
                 return Err(SolverError::BackupRestored {
                     iter: accepted,
@@ -418,5 +437,36 @@ mod tests {
         assert!(dopri5(f, 0.0, 1.0, vec![1.0], f64::NAN, 1e-9, 0.1).is_err());
         assert!(dopri5(f, 0.0, 1.0, vec![1.0], 0.0, 0.0, 0.1).is_err());
         assert!(dopri5(f, 0.0, 1.0, vec![f64::NAN], 1e-6, 1e-9, 0.1).is_err());
+    }
+
+    /// Regression: an absolute `MIN_STEP = 1e-14` floor aborted DOPRI5 on any
+    /// problem whose natural time unit sits below that threshold. A regular
+    /// exponential decay `y' = −y/τ` with `τ = 1e-15` (femtosecond chemistry,
+    /// RC transients in SI seconds, …) over `[0, 5τ]` is well-conditioned but
+    /// was reported `BackupRestored` / step underflow after the first rejected
+    /// trial. The floor is now relative to the time scale.
+    #[test]
+    fn integrates_a_femtosecond_scale_decay_without_step_underflow() {
+        let tau = 1e-15_f64;
+        let t_end = 5.0 * tau;
+        let r = dopri5(
+            move |_, y, dy| dy[0] = -y[0] / tau,
+            0.0,
+            t_end,
+            vec![1.0],
+            1e-6,
+            1e-9,
+            tau * 0.1,
+        )
+        .expect("a regular ODE at a femtosecond time scale must not hit step underflow");
+        assert_relative_eq!(*r.t.last().unwrap(), t_end, epsilon = 1e-18);
+        let yf = r.y.last().unwrap()[0];
+        let expect = (-5.0_f64).exp();
+        assert!(
+            (yf - expect).abs() / expect < 1e-4,
+            "yf={yf}, expect={expect}, rel={}",
+            (yf - expect).abs() / expect
+        );
+        assert!(r.accepted > 0);
     }
 }
