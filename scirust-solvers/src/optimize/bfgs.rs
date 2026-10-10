@@ -9,6 +9,11 @@
 //! - Backtracking Armijo : stagnation si le pas d'essai ne déplace plus `x`
 //!   en `f64` → StepUnderflow (plus de plancher absolu `alpha < 1e-20`, qui
 //!   abortait les objectifs raides dont le pas Armijo optimal est ≪ 1e-20)
+//! - Stationarity of `g = ∇f` is scale-aware: when `|g₀|_∞ ≥ tol.abs` the
+//!   classical absolute `|g|_∞ < tol.abs` test is kept; when the initial
+//!   gradient is already below `tol.abs` (micrometre-scale quadratic,
+//!   `|x★| ≲ tol.abs`), the test becomes relative to `|g₀|` — an absolute
+//!   floor alone accepted any O(`|x★|`) start at iteration 0
 //! - Plus de `.unwrap()` sur matvec (remplacé par produit manuel)
 
 use crate::linalg::{self, Matrix};
@@ -22,6 +27,29 @@ fn check_finite(v: f64, _label: &str) -> Result<(), SolverError> {
         return Err(SolverError::NanDetected { iter: 0, value: v });
     }
     Ok(())
+}
+
+/// Scale-aware stationarity test for `g = ∇f`.
+///
+/// Under a uniform coordinate rescaling that keeps the quadratic shape
+/// (`x★ ↦ s·x★` with start at 0), one has `g ↦ s·g`, so a fixed absolute
+/// `|g|_∞ < tol.abs` floor falsely accepts any start once `|x★| ≲ tol.abs`.
+/// When the initial gradient is already below `tol.abs`, the test switches
+/// to a relative reduction against `|g₀|`; otherwise the classical absolute
+/// floor is kept (so well-scaled problems keep the same terminal accuracy).
+fn gradient_stationary(g_inf: f64, g0_inf: f64, tol: Tolerance) -> bool {
+    if g_inf == 0.0 || g0_inf == 0.0
+    {
+        return true;
+    }
+    if g0_inf >= tol.abs
+    {
+        g_inf < tol.abs
+    }
+    else
+    {
+        g_inf <= tol.rel * g0_inf
+    }
 }
 
 /// BFGS avec line search backtracking (Armijo). Gradient via autodiff Dual.
@@ -64,13 +92,14 @@ where
     }
 
     let mut h = Matrix::identity(n);
-    let mut last_gnorm = linalg::norm_inf(&grad);
+    let g0_inf = linalg::norm_inf(&grad);
+    let mut last_gnorm = g0_inf;
 
     for k in 0..tol.max_iter
     {
         let gnorm = linalg::norm_inf(&grad);
         last_gnorm = gnorm;
-        if gnorm < tol.abs
+        if gradient_stationary(gnorm, g0_inf, tol)
         {
             return Ok(Solution::new(x, k, gnorm));
         }
@@ -289,6 +318,43 @@ mod tests {
             e0 < 1e-4 && e1 < 1e-4,
             "expected relative error < 1e-4, got ({e0}, {e1}) at {:?}",
             s.value
+        );
+    }
+
+    /// Regression: an absolute `|g|_∞ < tol.abs` check falsely accepted a
+    /// micrometre-scale quadratic at the origin. For
+    /// `f(x) = ½‖x − x★‖²` with `|x★| ≲ tol.abs` and start at 0, the gradient
+    /// is `g = x − x★`, so `|g₀| = |x★|` sits below `tol.abs` and the buggy
+    /// test returned the origin at iteration 0. When `|g₀| < tol.abs` the
+    /// stationarity test is now relative to `|g₀|`.
+    #[test]
+    fn tiny_scale_quadratic_does_not_false_converge_via_absolute_gradient() {
+        let x_star = 1e-16_f64;
+        let y_star = 2e-16_f64;
+        let sol = bfgs(
+            move |x: &[Dual]| {
+                let d0 = x[0] - Dual::primal(x_star);
+                let d1 = x[1] - Dual::primal(y_star);
+                (d0 * d0 + d1 * d1) * Dual::primal(0.5)
+            },
+            vec![0.0, 0.0],
+            Tolerance::new(1e-10, 1e-12, 200),
+        )
+        .expect("tiny-scale quadratic must not false-converge at the origin");
+        assert!(
+            (sol.value[0] - x_star).abs() < 1e-18,
+            "x0={} want {x_star}",
+            sol.value[0]
+        );
+        assert!(
+            (sol.value[1] - y_star).abs() < 1e-18,
+            "x1={} want {y_star}",
+            sol.value[1]
+        );
+        assert!(
+            sol.info.iterations > 0,
+            "must take at least one step, got {}",
+            sol.info.iterations
         );
     }
 
