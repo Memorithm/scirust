@@ -3,7 +3,11 @@
 //! ## Sécurité numérique
 //! - `check_finite` après chaque évaluation de F
 //! - Vérification NaN sur le pas de correction `delta`
-//! - Résidu exact (`‖F‖ = 0`) ou `‖F‖ < tol.abs` → solution acceptée
+//! - Stationarity of `F` is scale-aware: when `|F₀|_∞ ≥ tol.abs` the
+//!   classical absolute `|F|_∞ < tol.abs` test is kept; when the initial
+//!   residual is already below `tol.abs` (tiny-scale `F ↦ s·F` with
+//!   `|s| ≲ tol.abs`), the test becomes relative `|F|_∞ ≤ tol.rel · |F₀|_∞`
+//!   so a far start cannot look converged
 //! - Convergence en pas : `‖δ‖ < tol.abs + tol.rel · ‖x‖`, testée avant
 //!   toute détection de stagnation
 //! - Stagnation : si le pas ne change plus `x` en `f64` → `StepUnderflow`
@@ -24,6 +28,28 @@ fn check_finite(value: f64, _label: &str) -> Result<(), SolverError> {
         return Err(SolverError::NanDetected { iter: 0, value });
     }
     Ok(())
+}
+
+/// Scale-aware residual stationarity for Broyden.
+///
+/// Under a uniform residual rescaling `F ↦ s·F` a fixed absolute
+/// `|F|_∞ < tol.abs` floor falsely accepts any start once `|s| ≲ tol.abs`.
+/// When the initial residual is already below `tol.abs`, the test switches
+/// to a relative reduction against `|F₀|`; otherwise the classical absolute
+/// floor is kept (so well-scaled problems keep the same terminal accuracy).
+fn residual_stationary(res: f64, res0: f64, tol: Tolerance) -> bool {
+    if res == 0.0 || res0 == 0.0
+    {
+        return true;
+    }
+    if res0 >= tol.abs
+    {
+        res < tol.abs
+    }
+    else
+    {
+        res <= tol.rel * res0
+    }
 }
 
 /// Calcule la jacobienne par différences finies au point `x`.
@@ -60,7 +86,7 @@ where
     f(&x, &mut fx);
 
     let res0 = linalg::norm_inf(&fx);
-    if res0 == 0.0 || res0 < tol.abs
+    if residual_stationary(res0, res0, tol)
     {
         return Ok(Solution::new(x, 0, res0));
     }
@@ -128,7 +154,7 @@ where
         let res = linalg::norm_inf(&fx_new);
         last_res = res;
 
-        if res == 0.0 || res < tol.abs
+        if residual_stationary(res, res0, tol)
         {
             return Ok(Solution::new(x_new, k + 1, res));
         }
@@ -247,5 +273,85 @@ mod tests {
             "x1={}",
             s.value[1]
         );
+    }
+
+    /// Regression: an absolute `|F|_∞ < tol.abs` check falsely accepted a
+    /// far-from-root start when the residual was measured in tiny units.
+    /// For `F(x) = s·(x − x★)` any scale `s ≲ tol.abs` made an O(1)
+    /// displacement look "converged" and Broyden returned the start at
+    /// iteration 0. When `|F₀| < tol.abs` stationarity is now relative to
+    /// `|F₀|`.
+    #[test]
+    fn tiny_scale_residual_does_not_false_converge_via_absolute_norm() {
+        let scale = 1e-12_f64;
+        let x_star = 3.0_f64;
+        let s = broyden(
+            move |x, out| {
+                out[0] = scale * (x[0] - x_star);
+            },
+            vec![0.0],
+            Tolerance::new(1e-10, 1e-12, 50),
+        )
+        .expect("tiny-scale linear residual must be solvable");
+        assert!(
+            (s.value[0] - x_star).abs() < 1e-9 * (1.0 + x_star.abs()),
+            "expected x≈{x_star}, got {:?} (iters={})",
+            s.value,
+            s.info.iterations
+        );
+        assert!(
+            s.info.iterations > 0,
+            "must actually iterate; absolute |F| floor used to return at iter 0"
+        );
+    }
+
+    /// Same absolute-residual regression on a 2-D scaled linear system.
+    #[test]
+    fn tiny_scale_residual_2d_does_not_false_converge_via_absolute_norm() {
+        let scale = 1e-12_f64;
+        let x_star = 3.0_f64;
+        let y_star = 4.0_f64;
+        let s = broyden(
+            move |x, out| {
+                out[0] = scale * (x[0] - x_star);
+                out[1] = scale * (x[1] - y_star);
+            },
+            vec![0.0, 0.0],
+            Tolerance::new(1e-10, 1e-12, 50),
+        )
+        .expect("tiny-scale 2-D residual must be solvable");
+        assert!(
+            (s.value[0] - x_star).abs() < 1e-9 * (1.0 + x_star.abs()),
+            "expected x≈{x_star}, got {:?} (iters={})",
+            s.value,
+            s.info.iterations
+        );
+        assert!(
+            (s.value[1] - y_star).abs() < 1e-9 * (1.0 + y_star.abs()),
+            "expected y≈{y_star}, got {:?} (iters={})",
+            s.value,
+            s.info.iterations
+        );
+        assert!(
+            s.info.iterations > 0,
+            "must actually iterate; absolute |F| floor used to return at iter 0"
+        );
+    }
+
+    /// Already-at-root must still exit immediately (iters == 0).
+    #[test]
+    fn converges_immediately_when_x0_is_already_the_root() {
+        let s = broyden(
+            |x, out| {
+                out[0] = x[0] - 3.0;
+                out[1] = x[1] - 4.0;
+            },
+            vec![3.0, 4.0],
+            Tolerance::default(),
+        )
+        .unwrap();
+        assert_eq!(s.info.iterations, 0);
+        assert_relative_eq!(s.value[0], 3.0, epsilon = 1e-12);
+        assert_relative_eq!(s.value[1], 4.0, epsilon = 1e-12);
     }
 }
