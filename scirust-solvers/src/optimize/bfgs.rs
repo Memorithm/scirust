@@ -4,7 +4,8 @@
 //! - `check_finite` sur gradient, direction, pas
 //! - Guard de positivité : si `H` devient non-définie positive (dir_deriv ≥ 0),
 //!   on réinitialise H = I
-//! - `sy > 1e-12` requis avant mise à jour rang-2 (évite divisions par zéro)
+//! - Courbure relative `sy > 1e-12 · ‖s‖ · ‖y‖` avant mise à jour rang-2
+//!   (évite divisions par zéro sans dépendre de l'échelle absolue de `s`/`y`)
 //! - Backtracking Armijo avec plancher `alpha < 1e-20` → StepUnderflow
 //! - Plus de `.unwrap()` sur matvec (remplacé par produit manuel)
 
@@ -141,8 +142,15 @@ where
         }
 
         let sy: f64 = linalg::dot(&s_vec, &y_vec);
+        // Curvature must be meaningfully positive relative to ‖s‖·‖y‖. An
+        // absolute `sy > 1e-12` floor skipped every update along the weak
+        // eigendirection of ill-conditioned micrometre-scale quadratics
+        // (‖s‖·‖y‖ ≪ 1e-12 even when the angle between s and y is fine).
+        let s_norm = linalg::norm2(&s_vec);
+        let y_norm = linalg::norm2(&y_vec);
+        let sy_floor = 1e-12 * s_norm * y_norm.max(f64::MIN_POSITIVE);
 
-        if sy > 1e-12
+        if sy > sy_floor
         {
             let rho = 1.0 / sy;
             check_finite(rho, "rho")?;
@@ -180,7 +188,7 @@ where
         }
         else
         {
-            warn!(target: "solver", "BFGS: sy={sy:.3e} too small at iteration {k} — skipping Hessian update");
+            warn!(target: "solver", "BFGS: sy={sy:.3e} below relative floor {sy_floor:.3e} at iteration {k} — skipping Hessian update");
         }
 
         x = x_new;
@@ -243,5 +251,37 @@ mod tests {
         .unwrap();
         let v = (s.value[0] - 3.0).powi(2) + (s.value[1] - 2.0).powi(2);
         assert!(v < 1e-8, "didn't reach (3,2): {:?}", s.value);
+    }
+
+    /// Regression: an absolute `sy > 1e-12` floor skipped every BFGS update
+    /// along the weak eigendirection of an ill-conditioned quadratic once the
+    /// coordinate scale dropped below ~1e-6 (micrometre-scale least squares).
+    /// Relative curvature `sy > ε · ‖s‖ · ‖y‖` keeps the update at any scale.
+    #[test]
+    fn bfgs_illconditioned_micrometre_scale() {
+        let a = 1e-7_f64;
+        let s = bfgs(
+            move |x: &[Dual]| {
+                let dx = x[0] - Dual::primal(a);
+                let dy = x[1] - Dual::primal(a);
+                dx * dx * 1e4 + dy * dy
+            },
+            vec![0.0, 0.0],
+            Tolerance {
+                // Gradient scale near the optimum is O(1e4 · δx); ask for
+                // about 1e-6 relative accuracy on the position.
+                abs: 1e4 * a * 1e-6,
+                rel: 1e-8,
+                max_iter: 200,
+            },
+        )
+        .expect("BFGS should converge on a tiny-scale ill-conditioned quadratic");
+        let e0 = (s.value[0] - a).abs() / a;
+        let e1 = (s.value[1] - a).abs() / a;
+        assert!(
+            e0 < 1e-4 && e1 < 1e-4,
+            "expected relative error < 1e-4, got ({e0}, {e1}) at {:?}",
+            s.value
+        );
     }
 }
