@@ -6,6 +6,11 @@
 //! - Backtracking Armijo : stagnation si le pas d'essai ne déplace plus `x`
 //!   en `f64` → StepUnderflow. Plus de plancher absolu `alpha < 1e-20`, qui
 //!   abortait les quadratiques raides (`L ≳ 1e20`, pas Armijo optimal ≈ 1/L).
+//! - Stationarité de `g = ∇f` scale-aware : si `|g₀|_∞ ≥ tol.abs` le test
+//!   absolu classique `|g|_∞ < tol.abs` est conservé ; si le gradient initial
+//!   est déjà sous `tol.abs` (quadratique à coordonnées micrométriques,
+//!   `|x★| ≲ tol.abs`), le test devient relatif à `|g₀|` — un plancher
+//!   absolu seul acceptait tout départ O(`|x★|`) à l'itération 0.
 
 use crate::linalg;
 use crate::{Solution, SolverError, SolverResult, Tolerance};
@@ -18,6 +23,29 @@ fn check_finite(v: f64, _label: &str) -> Result<(), SolverError> {
         return Err(SolverError::NanDetected { iter: 0, value: v });
     }
     Ok(())
+}
+
+/// Scale-aware stationarity test for `g = ∇f`.
+///
+/// Under a uniform coordinate rescaling that keeps the quadratic shape
+/// (`x★ ↦ s·x★` with start at 0), one has `g ↦ s·g`, so a fixed absolute
+/// `|g|_∞ < tol.abs` floor falsely accepts any start once `|x★| ≲ tol.abs`.
+/// When the initial gradient is already below `tol.abs`, the test switches
+/// to a relative reduction against `|g₀|`; otherwise the classical absolute
+/// floor is kept (so well-scaled problems keep the same terminal accuracy).
+fn gradient_stationary(g_inf: f64, g0_inf: f64, tol: Tolerance) -> bool {
+    if g_inf == 0.0 || g0_inf == 0.0
+    {
+        return true;
+    }
+    if g0_inf >= tol.abs
+    {
+        g_inf < tol.abs
+    }
+    else
+    {
+        g_inf <= tol.rel * g0_inf
+    }
 }
 
 /// Descente de gradient avec line search. `f: R^n → R` avec Dual.
@@ -57,13 +85,14 @@ where
     {
         check_finite(*gi, "grad[0]")?;
     }
-    let mut last_gnorm = linalg::norm_inf(&grad);
+    let g0_inf = linalg::norm_inf(&grad);
+    let mut last_gnorm = g0_inf;
 
     for k in 0..tol.max_iter
     {
         let gnorm = linalg::norm_inf(&grad);
         last_gnorm = gnorm;
-        if gnorm < tol.abs
+        if gradient_stationary(gnorm, g0_inf, tol)
         {
             return Ok(Solution::new(x, k, gnorm));
         }
@@ -193,5 +222,60 @@ mod tests {
         .expect("stiff quadratic must not abort with StepUnderflow");
         assert_relative_eq!(sol.value[0], 1.0, epsilon = 1e-5);
         assert_relative_eq!(sol.value[1], 2.0, epsilon = 1e-5);
+    }
+
+    /// Regression: an absolute `|g|_∞ < tol.abs` check falsely accepted a
+    /// far-from-optimum start on a micrometre-scale quadratic. For
+    /// `f(x) = ½‖x − x★‖²` with `|x★| ≲ tol.abs` and start at 0, the gradient
+    /// is `g = x − x★`, so `|g₀| = |x★|` sits below `tol.abs` and the buggy
+    /// test returned the origin at iteration 0. When `|g₀| < tol.abs` the
+    /// stationarity test is now relative to `|g₀|`.
+    #[test]
+    fn tiny_scale_quadratic_does_not_false_converge_via_absolute_gradient() {
+        let x_star = 1e-16_f64;
+        let y_star = 2e-16_f64;
+        let sol = gradient_descent(
+            move |x: &[Dual]| {
+                let d0 = x[0] - Dual::primal(x_star);
+                let d1 = x[1] - Dual::primal(y_star);
+                (d0 * d0 + d1 * d1) * Dual::primal(0.5)
+            },
+            vec![0.0, 0.0],
+            Tolerance::new(1e-10, 1e-12, 200),
+        )
+        .expect("micrometre-scale quadratic must be solvable");
+        assert!(
+            sol.info.iterations > 0,
+            "must actually iterate; absolute |g| floor used to return at iter 0 with x=origin"
+        );
+        assert!(
+            (sol.value[0] - x_star).abs() < 1e-18,
+            "expected x≈{x_star}, got {:?} (iters={})",
+            sol.value,
+            sol.info.iterations
+        );
+        assert!(
+            (sol.value[1] - y_star).abs() < 1e-18,
+            "expected y≈{y_star}, got {:?} (iters={})",
+            sol.value,
+            sol.info.iterations
+        );
+    }
+
+    #[test]
+    fn converges_immediately_when_x0_is_already_the_minimizer() {
+        let sol = gradient_descent(
+            |x: &[Dual]| {
+                let d0 = x[0] - Dual::primal(3.0);
+                let d1 = x[1] - Dual::primal(-1.0);
+                d0 * d0 + d1 * d1
+            },
+            vec![3.0, -1.0],
+            Tolerance::default(),
+        )
+        .unwrap();
+        assert_eq!(sol.info.iterations, 0);
+        assert_relative_eq!(sol.value[0], 3.0, epsilon = 1e-12);
+        assert_relative_eq!(sol.value[1], -1.0, epsilon = 1e-12);
     }
 }
