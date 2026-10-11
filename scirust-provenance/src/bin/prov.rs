@@ -105,10 +105,7 @@ fn parse(rest: &[String]) -> Result<Args, String> {
             "--root" => a.root = Some(next(&mut it, "--root")?),
             "--journal" => a.journal = Some(next(&mut it, "--journal")?),
             "--record-out" => a.record_out = Some(next(&mut it, "--record-out")?),
-            "--published-record" =>
-            {
-                a.published_record = Some(next(&mut it, "--published-record")?)
-            },
+            "--published-record" => a.published_record = Some(next(&mut it, "--published-record")?),
             "--leaf" =>
             {
                 a.leaf = next(&mut it, "--leaf")?
@@ -208,8 +205,7 @@ fn record_line(root: &Hash, leaf: u32, digest: &Hash) -> String {
 }
 
 fn decode_hash(value: &str, field: &str) -> Result<Hash, String> {
-    let bytes = hashsig::hex_decode(value)
-        .ok_or_else(|| format!("{field} is not valid hex"))?;
+    let bytes = hashsig::hex_decode(value).ok_or_else(|| format!("{field} is not valid hex"))?;
     if bytes.len() != 32
     {
         return Err(format!("{field} must be 32 bytes"));
@@ -239,7 +235,13 @@ fn reserve_ots_leaf(journal: &Path, root: &Hash, leaf: u32, digest: &Hash) -> Re
     {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(e) => return Err(format!("cannot read OTS journal {}: {e}", journal.display())),
+        Err(e) =>
+        {
+            return Err(format!(
+                "cannot read OTS journal {}: {e}",
+                journal.display()
+            ));
+        },
     };
     for (index, line) in existing.lines().enumerate()
     {
@@ -272,9 +274,17 @@ fn reserve_ots_leaf(journal: &Path, root: &Hash, leaf: u32, digest: &Hash) -> Re
         .map_err(|e| format!("cannot sync OTS journal {}: {e}", journal.display()))
 }
 
-fn write_published_record(path: &Path, root: &Hash, leaf: u32, digest: &Hash) -> Result<(), String> {
+fn write_published_record(
+    path: &Path,
+    root: &Hash,
+    leaf: u32,
+    digest: &Hash,
+) -> Result<(), String> {
     let expected = record_line(root, leaf, digest);
-    match std::fs::OpenOptions::new().write(true).create_new(true).open(path)
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
     {
         Ok(mut file) =>
         {
@@ -285,8 +295,9 @@ fn write_published_record(path: &Path, root: &Hash, leaf: u32, digest: &Hash) ->
         },
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists =>
         {
-            let current = std::fs::read_to_string(path)
-                .map_err(|read| format!("cannot read published record {}: {read}", path.display()))?;
+            let current = std::fs::read_to_string(path).map_err(|read| {
+                format!("cannot read published record {}: {read}", path.display())
+            })?;
             if current == expected
             {
                 Ok(())
@@ -299,7 +310,10 @@ fn write_published_record(path: &Path, root: &Hash, leaf: u32, digest: &Hash) ->
                 ))
             }
         },
-        Err(e) => Err(format!("cannot create published record {}: {e}", path.display())),
+        Err(e) => Err(format!(
+            "cannot create published record {}: {e}",
+            path.display()
+        )),
     }
 }
 
