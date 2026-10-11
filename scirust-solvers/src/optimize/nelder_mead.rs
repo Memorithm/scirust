@@ -1,10 +1,14 @@
 //! Méthode de Nelder-Mead (simplex downhill).
 //!
 //! ## Sécurité numérique
-//! - Vérification que le simplex n'est pas aplati : le diamètre est comparé à
-//!   `tol.abs + tol.rel · x_scale` (échelle des coordonnées du simplex) pour
-//!   l'acceptation *et* le collapse — pas à `tol.abs + tol.rel` (où `tol.rel`
-//!   était traité comme une longueur absolue) ni à un seuil fixe `1e-14`.
+//! - Vérification que le simplex n'est pas aplati : le diamètre (acceptation
+//!   *et* collapse) et le spread de `f` sont scale-aware. Quand l'échelle
+//!   initiale des coordonnées (resp. le spread initial) est `≥ tol.abs`, on
+//!   garde le critère classique `diam < tol.abs + tol.rel · x_scale` /
+//!   `spread < tol.abs` ; sinon le plancher absolu `tol.abs` dominerait
+//!   l'échelle du problème (micromètres, picomètres) et accepterait le
+//!   simplex initial — on bascule alors en relatif
+//!   `diam ≤ tol.rel · x_scale` / `spread ≤ tol.rel · spread₀`.
 //! - check_finite sur les points du simplex et les valeurs de f
 //! - Détection de colinéarité : si centroid ≈ worst *à l'échelle du problème*,
 //!   on réinitialise le simplex
@@ -70,6 +74,51 @@ fn simplex_coord_scale(simplex: &[Vec<f64>]) -> f64 {
         .fold(0.0_f64, |acc, &v| acc.max(v.abs()))
 }
 
+/// Scale-aware f-spread stationarity.
+///
+/// Under a tiny-scale quadratic (`|x★| ≲ tol.abs`) the initial f-spread
+/// already sits below `tol.abs`, so a fixed absolute `spread < tol.abs`
+/// check is vacuously true on the unoptimized simplex. When `spread0` is
+/// already below `tol.abs`, the test switches to a relative reduction
+/// against `spread0`; otherwise the classical absolute floor is kept.
+fn spread_stationary(spread: f64, spread0: f64, tol: Tolerance) -> bool {
+    if spread == 0.0 || spread0 == 0.0
+    {
+        return true;
+    }
+    if spread0 >= tol.abs
+    {
+        spread < tol.abs
+    }
+    else
+    {
+        spread <= tol.rel * spread0
+    }
+}
+
+/// Scale-aware simplex diameter floor (acceptance and collapse).
+///
+/// `diam < tol.abs + tol.rel · x_scale` is dominated by `tol.abs` whenever
+/// the coordinate scale is ≲ `tol.abs` (default `1e-10`), so any
+/// micrometre-scale initial simplex looks collapsed and is returned without
+/// iterating. When the initial coordinate scale is already below `tol.abs`,
+/// the floor becomes relative `tol.rel · x_scale`; otherwise the classical
+/// abs+rel floor is kept.
+fn diameter_collapsed(diam: f64, x_scale: f64, x_scale0: f64, tol: Tolerance) -> bool {
+    if diam == 0.0
+    {
+        return true;
+    }
+    if x_scale0 >= tol.abs || x_scale0 == 0.0
+    {
+        diam < tol.abs + tol.rel * x_scale
+    }
+    else
+    {
+        diam <= tol.rel * x_scale.max(f64::MIN_POSITIVE)
+    }
+}
+
 /// Nelder-Mead. `f: R^n → R` sans dérivée.
 pub fn nelder_mead<F>(
     f: F,
@@ -125,6 +174,13 @@ where
     let sigma = 0.5;
 
     let mut last_spread = f64::INFINITY;
+    let (f_lo0, f_hi0) = fvals
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &v| {
+            (lo.min(v), hi.max(v))
+        });
+    let spread0 = f_hi0 - f_lo0;
+    let x_scale0 = simplex_coord_scale(&simplex);
 
     for k in 0..tol.max_iter
     {
@@ -144,25 +200,16 @@ where
         last_spread = spread;
         let diam = simplex_diameter(&simplex);
         let x_scale = simplex_coord_scale(&simplex);
-        // Collapse floor in parameter space: absolute floor from the caller
-        // plus a relative share of the coordinate scale. A fixed `1e-14` here
-        // used to accept the *initial* simplex of any problem whose natural
-        // length is below that floor (e.g. a quadratic centred at `1e-16`)
-        // and return a wrong vertex without iterating.
-        let diam_floor = tol.abs + tol.rel * x_scale;
 
-        // Diameter acceptance must use the same scale-aware floor as the
-        // collapse test below. The previous `diam < tol.abs + tol.rel` treated
-        // the dimensionless `tol.rel` as an absolute length, so any simplex
-        // whose f-spread was already below `tol.abs` (typical for tiny-scale
-        // quadratics) was accepted on iteration 0 even when the diameter was
-        // still O(problem scale) — returning a wrong vertex.
-        if spread < tol.abs && diam < diam_floor
+        // Same scale-aware floor for acceptance and collapse (see
+        // `spread_stationary` / `diameter_collapsed`).
+        if spread_stationary(spread, spread0, tol)
+            && diameter_collapsed(diam, x_scale, x_scale0, tol)
         {
             return Ok(Solution::new(simplex.swap_remove(best), k, spread));
         }
 
-        if diam < diam_floor
+        if diameter_collapsed(diam, x_scale, x_scale0, tol)
         {
             warn!(target: "solver", "Nelder-Mead: simplex collapsed (diam={diam:.3e}, scale={x_scale:.3e}) at iteration {k}");
             return Ok(Solution::new(simplex[best].clone(), k, spread));
@@ -439,6 +486,43 @@ mod tests {
             (s.value[1] - target).abs() < 0.01 * target,
             "x1 got {} want ~{target}",
             s.value[1]
+        );
+    }
+
+    /// Regression: with default-like `tol.abs = 1e-10`, the previous
+    /// `diam_floor = tol.abs + tol.rel · x_scale` was dominated by the
+    /// absolute floor on a picometre-scale quadratic (`x_scale ∼ 1e-12`), so
+    /// the collapse path fired on the *initial* simplex and returned a
+    /// vertex with one coordinate still at 0 (~100 % relative error). The
+    /// diameter / f-spread tests now switch to relative reduction against
+    /// the initial scale when that scale already sits below `tol.abs`.
+    #[test]
+    fn nelder_mead_tiny_scale_does_not_false_collapse_via_absolute_diam() {
+        let target = 1e-12_f64;
+        let s = nelder_mead(
+            |x| (x[0] - target).powi(2) + (x[1] - target).powi(2),
+            vec![0.0, 0.0],
+            target,
+            Tolerance {
+                abs: 1e-10, // default-like; previously collapsed immediately
+                rel: 1e-8,
+                max_iter: 5000,
+            },
+        )
+        .expect("picometre-scale quadratic must not collapse on the initial simplex");
+        assert!(
+            (s.value[0] - target).abs() < 0.01 * target,
+            "x0 got {} want ~{target}",
+            s.value[0]
+        );
+        assert!(
+            (s.value[1] - target).abs() < 0.01 * target,
+            "x1 got {} want ~{target}",
+            s.value[1]
+        );
+        assert!(
+            s.info.iterations > 0,
+            "must iterate; absolute diam floor used to return at iteration 0"
         );
     }
 }
