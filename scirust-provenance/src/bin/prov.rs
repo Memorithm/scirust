@@ -3,15 +3,17 @@
 //! ```text
 //! prov sign   --seed <hex64> [--leaf <n>] [--height <h>] [--in-place] <file>
 //! prov sign   --seed-file <path> [--leaf <n>] [--height <h>] [--in-place] <file>
-//! prov verify [--root <hex64>] <file>
+//! prov verify --root <hex64> <file>
+//! prov verify --demo <file>
 //! ```
 //!
 //! `sign` is the **offline vendor step** — it needs the secret master seed and
 //! must run on a trusted host (an HSM export, never a shipped binary). By default
 //! it writes the signed artifact to stdout; `--in-place` rewrites `<file>`.
 //!
-//! `verify` ships to anyone: it needs only the public root (defaults to the pinned
-//! [`scirust_provenance::EMIT_ROOT_HEX`]). Exit code `0` means verified, `1` means
+//! `verify` ships to anyone: production verification requires an explicit public
+//! root and refuses the public demo root. `--demo` is the only way to opt into the
+//! pinned demonstration root. Exit code `0` means verified, `1` means
 //! the banner is missing/malformed/forged, `2` means a usage error.
 
 use scirust_license::hashsig::{self, MerkleSigner};
@@ -23,7 +25,8 @@ prov — SciRust codegen provenance tool
 
 USAGE:
   prov sign   --seed <hex64> | --seed-file <path> [--leaf <n>] [--height <h>] [--in-place] <file>
-  prov verify [--root <hex64>] <file>
+  prov verify --root <hex64> <file>
+  prov verify --demo <file>
 
 SIGN (offline, needs the secret seed):
   --seed <hex64>     32-byte master seed as 64 hex chars
@@ -33,7 +36,8 @@ SIGN (offline, needs the secret seed):
   --in-place         rewrite <file> instead of printing to stdout
 
 VERIFY (public, needs only the root):
-  --root <hex64>     trusted 32-byte Merkle root (default: pinned EMIT_ROOT)
+  --root <hex64>     explicit trusted 32-byte production Merkle root
+  --demo             explicitly use the public demo root (never attribution evidence)
 
 Exit: 0 verified · 1 not verified · 2 usage error";
 
@@ -65,6 +69,7 @@ struct Args {
     leaf: u32,
     height: u32,
     in_place: bool,
+    demo: bool,
     file: Option<String>,
 }
 
@@ -76,6 +81,7 @@ fn parse(rest: &[String]) -> Result<Args, String> {
         leaf: 0,
         height: 10,
         in_place: false,
+        demo: false,
         file: None,
     };
     let mut it = rest.iter();
@@ -99,6 +105,7 @@ fn parse(rest: &[String]) -> Result<Args, String> {
                     .map_err(|_| "--height must be a u32".to_string())?
             },
             "--in-place" => a.in_place = true,
+            "--demo" => a.demo = true,
             other if other.starts_with("--") =>
             {
                 return Err(format!("unknown flag `{other}`"));
@@ -205,6 +212,37 @@ fn cmd_sign(rest: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+fn verification_root(a: &Args) -> Result<[u8; 32], String> {
+    match (&a.root, a.demo)
+    {
+        (Some(_), true) =>
+        {
+            Err("--root and --demo are mutually exclusive".to_string())
+        },
+        (None, true) => Ok(emit_root()),
+        (None, false) =>
+        {
+            Err("production verification requires --root <hex64>; use --demo only for non-attribution demonstrations".to_string())
+        },
+        (Some(hex), false) =>
+        {
+            let bytes = hashsig::hex_decode(hex.trim())
+                .ok_or_else(|| "--root must be 64 hex chars (32 bytes)".to_string())?;
+            if bytes.len() != 32
+            {
+                return Err("--root must be 64 hex chars (32 bytes)".to_string());
+            }
+            let mut root = [0u8; 32];
+            root.copy_from_slice(&bytes);
+            if root == scirust_license::demo_root()
+            {
+                return Err("production verification refuses the public demo root; use --demo only for non-attribution demonstrations".to_string());
+            }
+            Ok(root)
+        },
+    }
+}
+
 fn cmd_verify(rest: &[String]) -> ExitCode {
     let a = match parse(rest)
     {
@@ -216,19 +254,10 @@ fn cmd_verify(rest: &[String]) -> ExitCode {
     {
         return usage_err("verify needs a <file>");
     };
-    let root = match &a.root
+    let root = match verification_root(&a)
     {
-        None => emit_root(),
-        Some(hex) => match hashsig::hex_decode(hex.trim())
-        {
-            Some(b) if b.len() == 32 =>
-            {
-                let mut r = [0u8; 32];
-                r.copy_from_slice(&b);
-                r
-            },
-            _ => return usage_err("--root must be 64 hex chars (32 bytes)"),
-        },
+        Ok(root) => root,
+        Err(e) => return usage_err(&e),
     };
     let src = match std::fs::read_to_string(&file)
     {
