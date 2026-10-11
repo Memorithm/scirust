@@ -124,7 +124,6 @@ fn cli_requires_an_explicit_production_root_and_demo_is_opt_in() {
     std::fs::remove_file(path).expect("remove temporary signed artifact");
 }
 
-
 #[test]
 fn production_cli_requires_a_published_record_and_refuses_ots_leaf_reuse() {
     use std::process::Command;
