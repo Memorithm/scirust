@@ -3,7 +3,7 @@
 //! artifact — verification passes, survives reformatting, and catches tampering,
 //! while the signed artifact stays digest-identical to the unsigned one.
 
-use scirust_license::hashsig::MerkleSigner;
+use scirust_license::hashsig::{self, MerkleSigner};
 use scirust_provenance::{
     BANNER_PREFIX, EMIT_ROOT_HEX, Verdict, canonicalize, emit_root, sign_artifact, strip_banner,
     verify_artifact,
@@ -122,4 +122,100 @@ fn cli_requires_an_explicit_production_root_and_demo_is_opt_in() {
     assert!(explicit_demo.success());
 
     std::fs::remove_file(path).expect("remove temporary signed artifact");
+}
+
+
+#[test]
+fn production_cli_requires_a_published_record_and_refuses_ots_leaf_reuse() {
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock should be after epoch")
+        .as_nanos();
+    let prefix = format!("scirust-provenance-prod-{}-{nonce}", std::process::id());
+    let artifact = std::env::temp_dir().join(format!("{prefix}.rs"));
+    let journal = std::env::temp_dir().join(format!("{prefix}.journal"));
+    let record = std::env::temp_dir().join(format!("{prefix}.record"));
+    let conflicting_record = std::env::temp_dir().join(format!("{prefix}-conflict.record"));
+
+    std::fs::write(&artifact, "pub fn value() -> u32 { 1 }\n")
+        .expect("write unsigned production artifact");
+
+    let seed = [0x11u8; 32];
+    let seed_hex = hashsig::hex_encode(&seed);
+    let signer = MerkleSigner::from_seed(&seed, 4);
+    let root_hex = hashsig::hex_encode(&signer.root());
+    let artifact_arg = artifact.to_string_lossy().into_owned();
+    let journal_arg = journal.to_string_lossy().into_owned();
+    let record_arg = record.to_string_lossy().into_owned();
+    let conflicting_record_arg = conflicting_record.to_string_lossy().into_owned();
+
+    let sign = Command::new(env!("CARGO_BIN_EXE_prov"))
+        .args([
+            "sign",
+            "--seed",
+            &seed_hex,
+            "--height",
+            "4",
+            "--leaf",
+            "0",
+            "--journal",
+            &journal_arg,
+            "--record-out",
+            &record_arg,
+            "--in-place",
+            &artifact_arg,
+        ])
+        .status()
+        .expect("run production signer");
+    assert!(sign.success());
+
+    let missing_record = Command::new(env!("CARGO_BIN_EXE_prov"))
+        .args(["verify", "--root", &root_hex, &artifact_arg])
+        .status()
+        .expect("run production verifier without published record");
+    assert_eq!(missing_record.code(), Some(2));
+
+    let verify = Command::new(env!("CARGO_BIN_EXE_prov"))
+        .args([
+            "verify",
+            "--root",
+            &root_hex,
+            "--published-record",
+            &record_arg,
+            &artifact_arg,
+        ])
+        .status()
+        .expect("run production verifier with published record");
+    assert!(verify.success());
+
+    std::fs::write(&artifact, "pub fn value() -> u32 { 2 }\n")
+        .expect("write conflicting artifact");
+    let reuse = Command::new(env!("CARGO_BIN_EXE_prov"))
+        .args([
+            "sign",
+            "--seed",
+            &seed_hex,
+            "--height",
+            "4",
+            "--leaf",
+            "0",
+            "--journal",
+            &journal_arg,
+            "--record-out",
+            &conflicting_record_arg,
+            "--in-place",
+            &artifact_arg,
+        ])
+        .status()
+        .expect("run signer with reused OTS leaf");
+    assert_eq!(reuse.code(), Some(2));
+    assert!(!conflicting_record.exists());
+
+    for path in [&artifact, &journal, &record]
+    {
+        std::fs::remove_file(path).expect("remove temporary provenance file");
+    }
 }
