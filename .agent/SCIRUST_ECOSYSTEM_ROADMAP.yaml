@@ -916,11 +916,15 @@ pvp3_native_bench_harness_2026_10_07:
     - cross_repository_fixture_adapter_and_native_Thor_measurement_remain_pending
 
 flat_consumer_matrix_2026_10_11:
-  status: candidate_pending_exact_head_ci
+  status: merged_waiting_target_ci
   audit_finding: RT-SCI-03
   pull_request: https://github.com/Memorithm/scirust/pull/1614
   base_revision: b4d18463aa0e0770807754653392128e878a51a7
   candidate_revision: 1aad1bae5776e673c4b1980327ade23f5f052a20
+  merge_revision: ace5cc82013ccd2c60f5d21609d300802e9fe0b9
+  current_master_revision: 39a14bc4c78402d85a174590bda0326afe589ca6
+  target_ci_run: 38137733647
+  target_ci_state: 21_of_27_green_6_active_no_failures
   contracts:
     runtime_wgpu:
       flat_revision: c74a3806f8cfe621671694692fc14adfe08116f0
@@ -943,6 +947,6 @@ flat_consumer_matrix_2026_10_11:
     - lavapipe_correctness_is_not_physical_GPU_performance_evidence
     - no_ML_maturity_promotion
   next:
-    - require_all_exact_head_PR_workflows_green
-    - resolve_material_review_findings
-    - validate_the_exact_integrated_master_SHA_before_closure
+    - candidate_exact_head_all_workflows_green
+    - material_review_finding_resolved
+    - validate_current_descendant_master_CI_before_closure
