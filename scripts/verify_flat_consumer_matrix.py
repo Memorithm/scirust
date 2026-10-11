@@ -5,11 +5,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 MATRIX_PATH = ROOT / "docs/integration/flat-consumer-matrix-v1.json"
+WGPU_PACKAGE_RE = re.compile(
+    r"\bwgpu v([0-9]+\.[0-9]+(?:\.[0-9]+)?(?:[-+][0-9A-Za-z.-]+)?)"
+)
 
 
 def require(condition: bool, message: str) -> None:
@@ -78,12 +82,40 @@ def verify_manifests(matrix: dict) -> None:
                 )
 
 
+def verify_wgpu_versions(graph: str, integration: dict) -> None:
+    required = integration["active_graph"]["required"]
+    allowed = {
+        item.removeprefix("wgpu v")
+        for item in required
+        if item.startswith("wgpu v")
+    }
+    require(
+        len(allowed) == 1,
+        f"{integration['id']} must qualify exactly one WGPU major.minor line",
+    )
+
+    observed = set(WGPU_PACKAGE_RE.findall(graph))
+    require(observed, f"{integration['id']} graph contains no WGPU package")
+
+    allowed_line = next(iter(allowed))
+    unexpected = sorted(
+        version
+        for version in observed
+        if version != allowed_line and not version.startswith(f"{allowed_line}.")
+    )
+    require(
+        not unexpected,
+        f"{integration['id']} graph contains unqualified WGPU versions {unexpected!r}",
+    )
+
+
 def verify_graph(path: Path, integration: dict) -> None:
     graph = path.read_text(encoding="utf-8")
     for required in integration["active_graph"]["required"]:
         require(required in graph, f"{integration['id']} graph missing {required!r}")
     for forbidden in integration["active_graph"]["forbidden"]:
         require(forbidden not in graph, f"{integration['id']} graph contains {forbidden!r}")
+    verify_wgpu_versions(graph, integration)
 
 
 def main() -> None:
