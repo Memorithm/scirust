@@ -914,3 +914,33 @@ pvp3_native_bench_harness_2026_10_07:
   limitation:
     - deterministic_harness_fixture_is_not_the_SML_PVP6_corpus
     - cross_repository_fixture_adapter_and_native_Thor_measurement_remain_pending
+
+flat_consumer_matrix_2026_10_11:
+  status: candidate_pending_exact_head_ci
+  audit_finding: RT-SCI-03
+  pull_request: https://github.com/Memorithm/scirust/pull/1614
+  base_revision: b4d18463aa0e0770807754653392128e878a51a7
+  candidate_revision: 9dad6896e7162a2ecf9cf7c44b20ccb60c4aab8c
+  contracts:
+    runtime_wgpu:
+      flat_revision: c74a3806f8cfe621671694692fc14adfe08116f0
+      wgpu: "0.20"
+      feature: flat-attention
+    contextual_host_advisory:
+      flat_revision: 4529a2079434965e13e90ddd2e98ecc88ee0cb3a
+      elastic_revision: 9130a412857335cc5120b013b91552dd0808f9f1
+      feature: flat-autotune
+      wgpu_30_active_graph: forbidden
+  acceptance:
+    - machine_readable_matrix_matches_manifests_and_lockfile
+    - exact_MSRV_Cargo_graphs_match_the_declared_pins_features_and_wgpu_boundary
+    - every_future_candidate_migration_qualifies_all_affected_consumers_on_exact_revisions
+    - independent_reference_oracle_and_claim_boundaries_are_preserved
+  boundary:
+    - no_runtime_repin_in_this_slice
+    - lavapipe_correctness_is_not_physical_GPU_performance_evidence
+    - no_ML_maturity_promotion
+  next:
+    - require_all_exact_head_PR_workflows_green
+    - resolve_material_review_findings
+    - validate_the_exact_integrated_master_SHA_before_closure
