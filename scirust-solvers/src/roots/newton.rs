@@ -10,8 +10,12 @@
 //! - Dérivée nulle (`f'(x) == 0`) ou pas `f(x)/f'(x)` non fini →
 //!   `SolverError::ZeroDerivative`. Il n'y a pas de seuil absolu sur `|f'|` :
 //!   une pente de `1e-18` est légitime (par ex. `ln(x) − 40` près de `x ≈ 2,35e17`).
-//! - Convergence : `|pas| < tol.abs + tol.rel · |x|`, testée avant toute
-//!   détection de stagnation.
+//! - Convergence en pas scale-aware : si `|δ₀| ≥ tol.abs + tol.rel · |x|`
+//!   on garde le plancher classique `|pas| < tol.abs + tol.rel · |x|` ; si le
+//!   premier pas est déjà sous ce plancher (paramètre micrométrique,
+//!   `|x★| ≲ tol.abs`, départ à l'origine), le test devient relatif
+//!   `|pas| ≤ tol.rel · |δ₀|` — un plancher absolu seul acceptait le premier
+//!   pas de Newton incomplet sur `f(x) = (x − x★)³` (retourne `x★/3`)
 //! - Stagnation : si le pas ne change plus `x` en `f64` sans que la tolérance
 //!   soit atteinte (tolérance plus fine que la précision machine en `x`) →
 //!   `SolverError::StepUnderflow`. Le critère est relatif à `x`, pas un seuil
@@ -68,6 +72,32 @@ fn residual_stationary(res: f64, res0: f64, tol: Tolerance) -> bool {
     }
 }
 
+/// Scale-aware Newton-1D step stationarity (`|δ| < tol.abs + tol.rel · |x|`).
+///
+/// On a tiny-scale root (`|x★| ≲ tol.abs`, start at the origin) the first
+/// Newton step itself sits below `tol.abs`, so a fixed absolute floor
+/// accepts after iteration 0 even when the update is incomplete — e.g.
+/// `f(x) = (x − x★)³` has Newton factor `2/3`, so the first step lands at
+/// `x★/3` and the absolute check returns that point with ~67 % relative
+/// error. When `|δ₀|` already sits below the classical floor, stop only
+/// after a relative reduction against `|δ₀|`; otherwise the classical
+/// floor is kept.
+fn step_stationary(step: f64, x_abs: f64, step0: f64, tol: Tolerance) -> bool {
+    if step == 0.0
+    {
+        return true;
+    }
+    let classical = tol.abs + tol.rel * x_abs;
+    if step0 >= classical || step0 == 0.0
+    {
+        step < classical
+    }
+    else
+    {
+        step <= tol.rel * step0
+    }
+}
+
 /// Newton avec dérivée calculée automatiquement par dual numbers.
 pub fn newton<F>(f: F, x0: f64, tol: Tolerance) -> SolverResult<Solution<f64>>
 where
@@ -75,6 +105,7 @@ where
 {
     let mut x = x0;
     let mut f0 = f64::NAN;
+    let mut step0: Option<f64> = None;
     for k in 0..tol.max_iter
     {
         let d = f(Dual::new(x, 1.0));
@@ -100,7 +131,10 @@ where
         };
 
         let x_new = x - step;
-        if step.abs() < tol.abs + tol.rel * x_new.abs()
+        let step_abs = step.abs();
+        let step0_val = *step0.get_or_insert(step_abs);
+        // Scale-aware step floor (see `step_stationary`); not a bare tol.abs.
+        if step_stationary(step_abs, x_new.abs(), step0_val, tol)
         {
             let fx2 = f(Dual::new(x_new, 0.0)).value;
             return Ok(Solution::new(x_new, k + 1, fx2.abs()));
@@ -132,6 +166,7 @@ where
 {
     let mut x = x0;
     let mut f0 = f64::NAN;
+    let mut step0: Option<f64> = None;
     for k in 0..tol.max_iter
     {
         let fx = f(x);
@@ -156,7 +191,10 @@ where
         };
 
         let x_new = x - step;
-        if step.abs() < tol.abs + tol.rel * x_new.abs()
+        let step_abs = step.abs();
+        let step0_val = *step0.get_or_insert(step_abs);
+        // Scale-aware step floor (see `step_stationary`); not a bare tol.abs.
+        if step_stationary(step_abs, x_new.abs(), step0_val, tol)
         {
             let fx2 = f(x_new);
             return Ok(Solution::new(x_new, k + 1, fx2.abs()));
@@ -275,6 +313,66 @@ mod tests {
             "must actually iterate; absolute |f| floor used to return at iter 0 with x=1"
         );
         assert_relative_eq!(s.value, 2.0_f64.sqrt(), max_relative = 1e-10);
+    }
+
+    /// Regression: the classical step floor `|δ| < tol.abs + tol.rel · |x|`
+    /// is dominated by `tol.abs` whenever the coordinate scale is ≲
+    /// `tol.abs`. For `f(x) = (x − x★)³` with `x★ = 1e-10` and start at 0,
+    /// Newton's first step lands at `x★/3` with `|δ| ≈ 3.3e-11 < tol.abs`,
+    /// so the buggy check returned that point (~67 % relative error)
+    /// without iterating further. When `|δ₀|` already sits below the
+    /// classical floor, step stationarity is relative to `|δ₀|`.
+    #[test]
+    fn tiny_scale_parameter_does_not_false_converge_via_absolute_step() {
+        let x_star = 1e-10_f64;
+        let s = newton(
+            move |x: Dual| {
+                let d = x - Dual::primal(x_star);
+                d * d * d
+            },
+            0.0,
+            Tolerance::default(),
+        )
+        .expect("tiny-scale cubic residual must be solvable");
+        assert!(
+            (s.value - x_star).abs() < 1e-2 * x_star.abs(),
+            "expected x≈{x_star}, got {} (iters={})",
+            s.value,
+            s.info.iterations
+        );
+        assert!(
+            s.info.iterations > 1,
+            "must continue past the incomplete first Newton step; absolute tol.abs floor used to return at iter 1 with x=x★/3"
+        );
+    }
+
+    /// Same absolute-step regression through the explicit-derivative entry.
+    #[test]
+    fn tiny_scale_parameter_explicit_does_not_false_converge_via_absolute_step() {
+        let x_star = 1e-10_f64;
+        let s = newton_with_derivative(
+            move |x| {
+                let d = x - x_star;
+                d * d * d
+            },
+            move |x| {
+                let d = x - x_star;
+                3.0 * d * d
+            },
+            0.0,
+            Tolerance::default(),
+        )
+        .expect("tiny-scale cubic residual must be solvable");
+        assert!(
+            (s.value - x_star).abs() < 1e-2 * x_star.abs(),
+            "expected x≈{x_star}, got {} (iters={})",
+            s.value,
+            s.info.iterations
+        );
+        assert!(
+            s.info.iterations > 1,
+            "must continue past the incomplete first Newton step; absolute tol.abs floor used to return at iter 1 with x=x★/3"
+        );
     }
 
     #[test]
