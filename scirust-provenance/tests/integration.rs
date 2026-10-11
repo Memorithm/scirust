@@ -190,8 +190,7 @@ fn production_cli_requires_a_published_record_and_refuses_ots_leaf_reuse() {
         .expect("run production verifier with published record");
     assert!(verify.success());
 
-    std::fs::write(&artifact, "pub fn value() -> u32 { 2 }\n")
-        .expect("write conflicting artifact");
+    std::fs::write(&artifact, "pub fn value() -> u32 { 2 }\n").expect("write conflicting artifact");
     let reuse = Command::new(env!("CARGO_BIN_EXE_prov"))
         .args([
             "sign",
