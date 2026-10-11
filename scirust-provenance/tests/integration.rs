@@ -5,7 +5,8 @@
 
 use scirust_license::hashsig::MerkleSigner;
 use scirust_provenance::{
-    BANNER_PREFIX, Verdict, canonicalize, emit_root, sign_artifact, strip_banner, verify_artifact,
+    BANNER_PREFIX, EMIT_ROOT_HEX, Verdict, canonicalize, emit_root, sign_artifact, strip_banner,
+    verify_artifact,
 };
 
 fn demo_signer() -> MerkleSigner {
@@ -83,4 +84,43 @@ fn tampering_with_the_real_artifact_is_caught() {
     );
     let tampered = signed.replacen('*', "+", 1);
     assert_eq!(verify_artifact(&tampered, &emit_root()), Verdict::Forged);
+}
+
+
+#[test]
+fn cli_requires_an_explicit_production_root_and_demo_is_opt_in() {
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let signed = sign_artifact(&emit_real_artifact(), &demo_signer(), 4);
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock should be after epoch")
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "scirust-provenance-{}-{nonce}.rs",
+        std::process::id()
+    ));
+    std::fs::write(&path, signed).expect("write temporary signed artifact");
+    let path_arg = path.to_string_lossy().into_owned();
+
+    let without_root = Command::new(env!("CARGO_BIN_EXE_prov"))
+        .args(["verify", &path_arg])
+        .status()
+        .expect("run verifier without root");
+    assert_eq!(without_root.code(), Some(2));
+
+    let demo_disguised_as_production = Command::new(env!("CARGO_BIN_EXE_prov"))
+        .args(["verify", "--root", EMIT_ROOT_HEX, &path_arg])
+        .status()
+        .expect("run verifier with demo root in production mode");
+    assert_eq!(demo_disguised_as_production.code(), Some(2));
+
+    let explicit_demo = Command::new(env!("CARGO_BIN_EXE_prov"))
+        .args(["verify", "--demo", &path_arg])
+        .status()
+        .expect("run verifier in explicit demo mode");
+    assert!(explicit_demo.success());
+
+    std::fs::remove_file(path).expect("remove temporary signed artifact");
 }
