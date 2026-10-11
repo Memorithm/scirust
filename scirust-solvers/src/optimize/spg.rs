@@ -29,14 +29,49 @@
 //! actifs contre les pas extrêmes.
 //!
 //! ## Stopping test
-//! Converged when the projected step satisfies
-//! `‖P(x − α∇f) − x‖₂ ≤ tol.abs + tol.rel · ‖x‖₂`. The relative term has
-//! no `max(‖x‖, 1)` floor, so `tol.rel` stays relative for small-scale
-//! box-constrained problems; a minimum at the origin is still reached
-//! through `tol.abs`.
+//! Stationarity uses the unit-step projected gradient
+//! `d = P(x − ∇f) − x` (not the spectral Barzilai–Borwein trial, whose
+//! `α = 1/‖∇f‖` would inflate a micrometre-scale gradient into a
+//! box-truncated step of size `O(bound)`). The test is scale-aware: when
+//! `|d₀| ≥ tol.abs` the classical
+//! `‖d‖₂ ≤ tol.abs + tol.rel · ‖x‖₂` floor is kept (no `max(‖x‖, 1)`);
+//! when `|d₀|` is already below `tol.abs` (tiny-scale minimum with
+//! `|x★| ≲ tol.abs`), it becomes relative `‖d‖₂ ≤ tol.rel · |d₀|` so a far
+//! start cannot look converged. A minimum at the origin is still reached
+//! through the absolute floor on well-scaled starts. The spectral step
+//! remains the search direction only.
 
 use crate::linalg::{dot, norm2};
 use crate::{ConvergenceInfo, Solution, SolverError, SolverResult, Tolerance};
+
+/// Scale-aware stationarity test for the unit-step projected gradient
+/// `d = P(x − ∇f) − x`.
+///
+/// Under a tiny-scale box-constrained minimum (`|x★| ≲ tol.abs`) a fixed
+/// absolute `‖d‖₂ ≤ tol.abs + tol.rel · ‖x‖₂` floor falsely accepts the start
+/// once `‖P(x₀ − ∇f) − x₀‖` itself sits below `tol.abs` (e.g. `x0 = 0`,
+/// `x★ = 1e-20` with default `tol.abs = 1e-10`). Stopping on the *spectral*
+/// trial `P(x − α∇f) − x` with `α = 1/‖∇f‖` is worse still: the oversized
+/// step is truncated to the box bound (e.g. `1e-12`), which also sits below
+/// `tol.abs` and returns the origin at iteration 0. When the initial
+/// unit-step projected gradient is already below `tol.abs`, the test
+/// switches to a relative reduction against `|d₀|`; otherwise the classical
+/// abs+rel-in-`x` floor is kept. The relative term never uses a
+/// `max(‖x‖, 1)` floor.
+fn projected_stationary(dnorm: f64, d0: f64, x_norm: f64, tol: Tolerance) -> bool {
+    if dnorm == 0.0 || d0 == 0.0
+    {
+        return true;
+    }
+    if d0 >= tol.abs
+    {
+        dnorm <= tol.abs + tol.rel * x_norm
+    }
+    else
+    {
+        dnorm <= tol.rel * d0
+    }
+}
 
 const MEMORY: usize = 10;
 const GAMMA: f64 = 1e-4;
@@ -111,9 +146,40 @@ where
         }
     };
     let mut history = vec![fx];
+    let mut d0: Option<f64> = None;
 
     for k in 0..tol.max_iter
     {
+        // Unit-step projected gradient for the stopping test (physical
+        // scale of ∇f). The spectral trial below is the search direction
+        // only — using it for stopping false-converges on tiny-scale
+        // problems whose box truncates α·∇f below tol.abs.
+        let mut trial_pg = vec![0.0; n];
+        for i in 0..n
+        {
+            trial_pg[i] = x[i] - g[i];
+        }
+        let x_pg = project_box(&trial_pg, lower, upper);
+        let mut d_pg = vec![0.0; n];
+        for i in 0..n
+        {
+            d_pg[i] = x_pg[i] - x[i];
+        }
+        let dnorm = norm2(&d_pg);
+        let d0_val = *d0.get_or_insert(dnorm);
+
+        if projected_stationary(dnorm, d0_val, norm2(&x), tol)
+        {
+            return Ok(Solution {
+                value: x,
+                info: ConvergenceInfo {
+                    iterations: k,
+                    residual: dnorm,
+                    converged: true,
+                },
+            });
+        }
+
         let mut trial = vec![0.0; n];
         for i in 0..n
         {
@@ -124,23 +190,6 @@ where
         for i in 0..n
         {
             d[i] = x_trial[i] - x[i];
-        }
-        let dnorm = norm2(&d);
-
-        // Relative term scales with ‖x‖ itself: a `max(‖x‖, 1)` floor would
-        // turn `tol.rel` into an absolute tolerance for ‖x‖ < 1 and accept
-        // a start that is still far from a small-scale box-constrained
-        // minimum (projected step truncated by tight bounds).
-        if dnorm <= tol.abs + tol.rel * norm2(&x)
-        {
-            return Ok(Solution {
-                value: x,
-                info: ConvergenceInfo {
-                    iterations: k,
-                    residual: dnorm,
-                    converged: true,
-                },
-            });
         }
 
         let gd = dot(&g, &d);
@@ -368,5 +417,72 @@ mod tests {
             .expect("origin minimum must converge");
         assert!(sol.value[0].abs() < 1e-8);
         assert!(sol.info.converged);
+    }
+
+    /// Regression: an absolute `‖d‖₂ ≤ tol.abs + tol.rel · ‖x‖₂` check on the
+    /// *spectral* projected trial falsely accepted a far-from-minimum start
+    /// once the box truncated `α·∇f` (with `α = 1/‖∇f‖`) below `tol.abs`.
+    /// With `x★ = 1e-20`, bounds `±1e-12` and default `tol.abs = 1e-10`, that
+    /// trial has ‖d‖ = 1e-12 while the relative error is 100 %. Stopping now
+    /// uses the unit-step projected gradient (scale-aware): when `|d₀| <
+    /// tol.abs` the criterion is relative to `|d₀|`.
+    #[test]
+    fn tiny_scale_box_does_not_false_converge_via_absolute_projected_step() {
+        let x_star = 1e-20_f64;
+        let f = move |x: &[f64]| 0.5 * (x[0] - x_star).powi(2);
+        let grad = move |x: &[f64]| vec![x[0] - x_star];
+        // Spectral α ≈ 1e20 would step to ~1, projection to 1e-12 ≪ tol.abs —
+        // the buggy spectral absolute floor stopped at iteration 0.
+        let sol = spg(
+            f,
+            grad,
+            vec![0.0],
+            &[-1e-12],
+            &[1e-12],
+            Tolerance::default(),
+        )
+        .expect("tiny-scale box quadratic must not false-converge at the origin");
+        assert!(
+            sol.info.iterations > 0,
+            "buggy absolute spectral ‖d‖ floor accepts the start at iteration 0"
+        );
+        assert!(
+            (sol.value[0] - x_star).abs() <= 1e-6 * x_star.abs(),
+            "got {} want {}",
+            sol.value[0],
+            x_star
+        );
+    }
+
+    /// Same absolute-floor bug in 2-D: spectral box-corner step
+    /// ‖d‖₂ = √2·1e-12 sits below `tol.abs` while `x★` is orders of magnitude
+    /// smaller; the unit-step projected gradient exposes the true scale.
+    #[test]
+    fn tiny_scale_2d_box_does_not_false_converge_via_absolute_projected_step() {
+        let x_star = [1.5e-20_f64, 2.5e-20];
+        let f = move |x: &[f64]| 0.5 * ((x[0] - x_star[0]).powi(2) + (x[1] - x_star[1]).powi(2));
+        let grad = move |x: &[f64]| vec![x[0] - x_star[0], x[1] - x_star[1]];
+        let sol = spg(
+            f,
+            grad,
+            vec![0.0, 0.0],
+            &[-1e-12, -1e-12],
+            &[1e-12, 1e-12],
+            Tolerance::default(),
+        )
+        .expect("tiny-scale 2-D box quadratic must not false-converge at the origin");
+        assert!(sol.info.iterations > 0);
+        assert!(
+            (sol.value[0] - x_star[0]).abs() <= 1e-6 * x_star[0].abs(),
+            "got {} want {}",
+            sol.value[0],
+            x_star[0]
+        );
+        assert!(
+            (sol.value[1] - x_star[1]).abs() <= 1e-6 * x_star[1].abs(),
+            "got {} want {}",
+            sol.value[1],
+            x_star[1]
+        );
     }
 }
