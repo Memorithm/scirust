@@ -155,6 +155,14 @@ leaf for two different payloads leaks Lamport secrets. Keep a persisted,
 monotonic ledger `leaf -> (what was signed, when, for whom)` next to the seed.
 `license-tool issue` deliberately requires an explicit `--leaf` for this reason.
 
+For emitted artifacts, production `prov sign` requires `--journal`. It acquires
+an atomic sibling directory lock (`<journal>.lock`), accepts an idempotent retry
+only when root, leaf, and digest are identical, rejects reuse of the same
+root/leaf for a distinct digest, appends the reservation, and calls `sync_all`
+before producing the signed artifact. Treat a leftover lock as an incident:
+verify that no signer is active before removing it. Never automate blind stale
+lock deletion.
+
 ### Issue a license
 
 ```bash
@@ -175,15 +183,31 @@ gate (`scirust_gpu::license::activate`) loads and verifies it offline.
 ```bash
 SEED=$(cat vendor-seed.hex)
 cargo run -q -p scirust-provenance --bin prov -- sign \
-    --seed "$SEED" --height 20 --leaf 2 generated_module.rs --in-place
+    --seed "$SEED" --height 20 --leaf 2 \
+    --journal /secure/prov-leaves.journal \
+    --record-out generated_module.rs.provenance-record \
+    generated_module.rs --in-place
 ```
 
-Anyone can later verify with only the **public** root:
+Publish `generated_module.rs.provenance-record` alongside the artifact and the
+timestamped root. Preserve it in the immutable release evidence; sign and
+timestamp the release manifest that binds these files. The verifier checks that
+the signed artifact's root, leaf, and digest exactly match this published record.
+
+Anyone can later verify with the **explicit production root** and its published
+artifact record:
 
 ```bash
-cargo run -q -p scirust-provenance --bin prov -- verify generated_module.rs
+cargo run -q -p scirust-provenance --bin prov -- verify \
+    --root "$ROOT" \
+    --published-record generated_module.rs.provenance-record \
+    generated_module.rs
 # VERIFIED  generated_module.rs  (root <hex8>, leaf 2)
 ```
+
+For demonstrations only, `prov verify --demo generated_module.rs` uses the
+public demo root and prints a non-attribution warning. Demo mode is not evidence
+of vendor authorship and must never be used in a production release pipeline.
 
 ---
 
