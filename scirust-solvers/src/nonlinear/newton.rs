@@ -7,8 +7,13 @@
 //!   residual is already below `tol.abs` (tiny-scale `F ↦ s·F` with
 //!   `|s| ≲ tol.abs`), the test becomes relative `|F|_∞ ≤ tol.rel · |F₀|_∞`
 //!   so a far start cannot look converged
-//! - Convergence en pas : `‖δ‖ < tol.abs + tol.rel · ‖x‖`, testée avant
-//!   toute détection de stagnation
+//! - Convergence en pas scale-aware : si `‖δ₀‖ ≥ tol.abs + tol.rel · ‖x‖`
+//!   on garde le plancher classique `‖δ‖ < tol.abs + tol.rel · ‖x‖` ; si le
+//!   premier pas est déjà sous ce plancher (paramètre micrométrique,
+//!   `|x★| ≲ tol.abs`, départ à l'origine), le test devient relatif
+//!   `‖δ‖ ≤ tol.rel · ‖δ₀‖` — un plancher absolu seul acceptait le premier
+//!   pas de Newton incomplet sur `F(x) = (x − x★)³` (retourne `x★/3`)
+//! - Convergence en pas testée avant toute détection de stagnation
 //! - Stagnation : si le pas ne change plus `x` en `f64` sans que la
 //!   tolérance soit atteinte → `SolverError::StepUnderflow`. Le critère
 //!   n'est pas un seuil absolu (l'ancien `‖δ‖ < 1e-16` abortait les
@@ -55,6 +60,32 @@ fn residual_stationary(res: f64, res0: f64, tol: Tolerance) -> bool {
     }
 }
 
+/// Scale-aware Newton step stationarity (`‖δ‖ < tol.abs + tol.rel · ‖x‖`).
+///
+/// On a tiny-scale root (`|x★| ≲ tol.abs`, start at the origin) the first
+/// Newton step itself sits below `tol.abs`, so a fixed absolute floor
+/// accepts after iteration 0 even when the update is incomplete — e.g.
+/// `F(x) = (x − x★)³` has Newton factor `2/3`, so the first step lands at
+/// `x★/3` and the absolute check returns that point with ~67 % relative
+/// error. When `‖δ₀‖` already sits below the classical floor, stop only
+/// after a relative reduction against `‖δ₀‖`; otherwise the classical
+/// floor is kept.
+fn step_stationary(step: f64, x_norm: f64, step0: f64, tol: Tolerance) -> bool {
+    if step == 0.0
+    {
+        return true;
+    }
+    let classical = tol.abs + tol.rel * x_norm;
+    if step0 >= classical || step0 == 0.0
+    {
+        step < classical
+    }
+    else
+    {
+        step <= tol.rel * step0
+    }
+}
+
 /// Newton multivarié avec jacobienne automatique via dual numbers.
 pub fn newton_system<F>(f: F, x0: Vec<f64>, tol: Tolerance) -> SolverResult<Solution<Vec<f64>>>
 where
@@ -68,6 +99,7 @@ where
     let mut jac = Matrix::zeros(n, n);
     let mut last_res = f64::INFINITY;
     let mut res0 = f64::NAN;
+    let mut step0: Option<f64> = None;
 
     for k in 0..tol.max_iter
     {
@@ -186,8 +218,10 @@ where
         let final_norm = linalg::norm_inf(&fx);
         let x_norm = linalg::norm_inf(&x);
         let final_step = linalg::norm_inf(&delta);
+        let step0_val = *step0.get_or_insert(final_step);
 
-        if residual_stationary(final_norm, res0, tol) || final_step < tol.abs + tol.rel * x_norm
+        if residual_stationary(final_norm, res0, tol)
+            || step_stationary(final_step, x_norm, step0_val, tol)
         {
             // Dernière évaluation propre
             for i in 0..n
@@ -230,6 +264,7 @@ where
     let mut fx = vec![0.0; n];
     let mut j_mat = Matrix::zeros(n, n);
     let mut res0 = f64::NAN;
+    let mut step0: Option<f64> = None;
 
     for k in 0..tol.max_iter
     {
@@ -278,8 +313,11 @@ where
             check_finite(x_new[i], &format!("x[{i}] Newton(J) k={k}"))?;
         }
 
-        // Convergence before stagnation — relative to ‖x‖, not a fixed 1e-16.
-        if step_norm < tol.abs + tol.rel * linalg::norm_inf(&x_new)
+        // Convergence before stagnation — scale-aware step floor (see
+        // `step_stationary`); not a fixed 1e-16 and not a bare tol.abs.
+        let x_norm = linalg::norm_inf(&x_new);
+        let step0_val = *step0.get_or_insert(step_norm);
+        if step_stationary(step_norm, x_norm, step0_val, tol)
         {
             f(&x_new, &mut fx);
             return Ok(Solution::new(x_new, k + 1, linalg::norm_inf(&fx)));
@@ -494,5 +532,65 @@ mod tests {
         assert_eq!(s.info.iterations, 0);
         assert_relative_eq!(s.value[0], 3.0, epsilon = 1e-12);
         assert_relative_eq!(s.value[1], 4.0, epsilon = 1e-12);
+    }
+
+    /// Regression: the classical step floor `‖δ‖ < tol.abs + tol.rel · ‖x‖`
+    /// is dominated by `tol.abs` whenever the coordinate scale is ≲
+    /// `tol.abs`. For `F(x) = (x − x★)³` with `x★ = 1e-10` and start at 0,
+    /// Newton's first step lands at `x★/3` with `‖δ‖ ≈ 3.3e-11 < tol.abs`,
+    /// so the buggy check returned that point (~67 % relative error)
+    /// without iterating further. When `‖δ₀‖` already sits below the
+    /// classical floor, step stationarity is relative to `‖δ₀‖`.
+    #[test]
+    fn tiny_scale_parameter_does_not_false_converge_via_absolute_step() {
+        let x_star = 1e-10_f64;
+        let s = newton_system(
+            move |x, out| {
+                let d = x[0] - Dual::primal(x_star);
+                out[0] = d * d * d;
+            },
+            vec![0.0],
+            Tolerance::default(),
+        )
+        .expect("tiny-scale cubic residual must be solvable");
+        assert!(
+            (s.value[0] - x_star).abs() < 1e-2 * x_star.abs(),
+            "expected x≈{x_star}, got {:?} (iters={})",
+            s.value,
+            s.info.iterations
+        );
+        assert!(
+            s.info.iterations > 1,
+            "must continue past the incomplete first Newton step; absolute tol.abs floor used to return at iter 1 with x=x★/3"
+        );
+    }
+
+    /// Same absolute-step regression through the explicit-Jacobian entry.
+    #[test]
+    fn tiny_scale_parameter_newton_jac_does_not_false_converge_via_absolute_step() {
+        let x_star = 1e-10_f64;
+        let s = newton_system_jac(
+            move |x, out| {
+                let d = x[0] - x_star;
+                out[0] = d * d * d;
+            },
+            move |x, j| {
+                let d = x[0] - x_star;
+                j[(0, 0)] = 3.0 * d * d;
+            },
+            vec![0.0],
+            Tolerance::default(),
+        )
+        .expect("tiny-scale cubic residual must be solvable");
+        assert!(
+            (s.value[0] - x_star).abs() < 1e-2 * x_star.abs(),
+            "expected x≈{x_star}, got {:?} (iters={})",
+            s.value,
+            s.info.iterations
+        );
+        assert!(
+            s.info.iterations > 1,
+            "must continue past the incomplete first Newton step; absolute tol.abs floor used to return at iter 1 with x=x★/3"
+        );
     }
 }
