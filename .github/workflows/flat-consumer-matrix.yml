@@ -1,0 +1,47 @@
+name: FLAT consumer compatibility matrix
+
+on:
+  pull_request:
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "scirust-gpu/Cargo.toml"
+      - "docs/integration/FLAT_CONSUMER_MATRIX.md"
+      - "docs/integration/flat-consumer-matrix-v1.json"
+      - "scripts/verify_flat_consumer_matrix.py"
+      - ".github/workflows/flat-consumer-matrix.yml"
+  push:
+    branches: [master]
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "scirust-gpu/Cargo.toml"
+      - "docs/integration/FLAT_CONSUMER_MATRIX.md"
+      - "docs/integration/flat-consumer-matrix-v1.json"
+      - "scripts/verify_flat_consumer_matrix.py"
+      - ".github/workflows/flat-consumer-matrix.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  matrix:
+    name: Pins, features and active graphs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Install exact MSRV
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master
+        with:
+          toolchain: 1.89.0
+      - name: Validate manifests and lockfile
+        run: python3 scripts/verify_flat_consumer_matrix.py
+      - name: Resolve exact consumer graphs
+        run: |
+          cargo +1.89.0 tree -p scirust-gpu --features flat-attention --edges normal --locked > /tmp/flat-runtime-tree.txt
+          cargo +1.89.0 tree -p scirust --features flat-autotune --edges normal --locked > /tmp/flat-contextual-tree.txt
+      - name: Validate pins, ABI boundary and WGPU separation
+        run: |
+          python3 scripts/verify_flat_consumer_matrix.py \
+            --runtime-tree /tmp/flat-runtime-tree.txt \
+            --contextual-tree /tmp/flat-contextual-tree.txt
