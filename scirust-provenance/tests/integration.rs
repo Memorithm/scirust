@@ -86,7 +86,6 @@ fn tampering_with_the_real_artifact_is_caught() {
     assert_eq!(verify_artifact(&tampered, &emit_root()), Verdict::Forged);
 }
 
-
 #[test]
 fn cli_requires_an_explicit_production_root_and_demo_is_opt_in() {
     use std::process::Command;
