@@ -1,0 +1,92 @@
+{
+  "schema": "scirust-flat-consumer-matrix/v1",
+  "owner": "Memorithm/scirust",
+  "base_sha": "b4d18463aa0e0770807754653392128e878a51a7",
+  "msrv": "1.89.0",
+  "integrations": [
+    {
+      "id": "flat-runtime-wgpu-v1",
+      "manifest": "scirust-gpu/Cargo.toml",
+      "feature": "flat-attention",
+      "contract": "Rust source/API identity plus the wgpu 0.20 type universe",
+      "dependencies": [
+        {
+          "key": "flat-attention",
+          "package": "flat-attention",
+          "repository": "https://github.com/Memorithm/FLAT-ATTENTION",
+          "revision": "c74a3806f8cfe621671694692fc14adfe08116f0",
+          "default_features": false,
+          "features": [
+            "wgpu"
+          ]
+        },
+        {
+          "key": "wgpu",
+          "version": "0.20"
+        }
+      ],
+      "active_graph": {
+        "required": [
+          "flat-attention",
+          "wgpu v0.20"
+        ],
+        "forbidden": [
+          "wgpu v30"
+        ]
+      },
+      "proof_workflow": ".github/workflows/sciagent-flat-decode.yml"
+    },
+    {
+      "id": "flat-contextual-host-advisory-v1",
+      "manifest": "Cargo.toml",
+      "feature": "flat-autotune",
+      "contract": "Host-only planning and contextual advice; no FLAT wgpu 30 type enters the active graph",
+      "dependencies": [
+        {
+          "key": "elastic-core",
+          "package": "elastic-core",
+          "repository": "https://github.com/Memorithm/ElasticXxx.git",
+          "revision": "9130a412857335cc5120b013b91552dd0808f9f1",
+          "default_features": true,
+          "features": []
+        },
+        {
+          "key": "flat-attention-planner",
+          "package": "flat-attention",
+          "repository": "https://github.com/Memorithm/FLAT-ATTENTION",
+          "revision": "4529a2079434965e13e90ddd2e98ecc88ee0cb3a",
+          "default_features": false,
+          "features": []
+        },
+        {
+          "key": "flat-elastic-kernel",
+          "package": "flat-elastic-kernel",
+          "repository": "https://github.com/Memorithm/FLAT-ATTENTION",
+          "revision": "4529a2079434965e13e90ddd2e98ecc88ee0cb3a",
+          "default_features": true,
+          "features": []
+        }
+      ],
+      "active_graph": {
+        "required": [
+          "flat-attention",
+          "flat-elastic-kernel",
+          "elastic-core",
+          "wgpu v0.20"
+        ],
+        "forbidden": [
+          "wgpu v30"
+        ]
+      },
+      "proof_workflow": ".github/workflows/flat-elastic-contextual.yml"
+    }
+  ],
+  "candidate_migration_gate": [
+    "Record the candidate repository revision, package names, enabled features, wgpu version and MSRV before testing.",
+    "Build and test every affected SciRust consumer on the exact candidate revision.",
+    "Keep the runtime and contextual graphs separate unless one qualified wgpu type universe is intentionally adopted.",
+    "Validate optimized outputs against the existing independent SciRust reference path.",
+    "Do not infer physical GPU performance from compilation or lavapipe.",
+    "Update this matrix and Cargo.lock in the same reviewed change; never repin blindly."
+  ]
+}
