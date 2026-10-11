@@ -45,3 +45,12 @@ jobs:
           python3 scripts/verify_flat_consumer_matrix.py \
             --runtime-tree /tmp/flat-runtime-tree.txt \
             --contextual-tree /tmp/flat-contextual-tree.txt
+      - name: Prove every extra WGPU version fails closed
+        run: |
+          cp /tmp/flat-runtime-tree.txt /tmp/flat-runtime-tree-unqualified.txt
+          printf '\n└── wgpu v31.0.0\n' >> /tmp/flat-runtime-tree-unqualified.txt
+          if python3 scripts/verify_flat_consumer_matrix.py \
+            --runtime-tree /tmp/flat-runtime-tree-unqualified.txt; then
+            echo "unqualified WGPU version was accepted" >&2
+            exit 1
+          fi
