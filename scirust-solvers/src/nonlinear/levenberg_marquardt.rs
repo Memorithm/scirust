@@ -25,6 +25,12 @@
 //!   gradient is already below `tol.abs` (tiny-scale residual
 //!   `r ↦ s·r ⇒ g ↦ s²·g` with `|s| ≲ √tol.abs`), the test becomes relative
 //!   `|g|_∞ ≤ tol.rel · |g₀|_∞` so a far start cannot look converged.
+//! - Convergence on the LM step uses the MINPACK floor
+//!   `‖δ‖ ≤ tol.rel · (‖x‖ + tol.rel)` when that floor is meaningful for the
+//!   problem scale; when the first Newton step already sits below
+//!   `tol.rel²` (picometre-scale `x★` with start at 0), the absolute
+//!   `tol.rel²` contribution would reject `δ` before it is ever taken — the
+//!   test then becomes relative to that first step instead.
 
 use crate::linalg::{self, Matrix};
 use crate::{Solution, SolverError, SolverResult, Tolerance};
@@ -60,6 +66,32 @@ fn gradient_stationary(g_inf: f64, g0_inf: f64, tol: Tolerance) -> bool {
     else
     {
         g_inf <= tol.rel * g0_inf
+    }
+}
+
+/// Scale-aware LM step stationarity (MINPACK `xtol·(‖x‖ + xtol)` floor).
+///
+/// With the default `tol.rel = 1e-8`, the classical floor collapses to the
+/// absolute length `tol.rel² = 1e-16` whenever `‖x‖ ≈ 0`. A picometre-scale
+/// least-squares problem (`x★ ∼ 1e-20`, start at the origin) then has a
+/// perfectly valid first Newton step `‖δ‖ ∼ 1e-20` rejected as "converged"
+/// before `x` is ever updated. When the first computed step already sits
+/// below that classical floor, stop only after a relative reduction against
+/// `‖δ₀‖` (so iteration 0 cannot false-stop on the absolute contribution
+/// alone). Otherwise the classical MINPACK floor is kept.
+fn step_stationary(step: f64, x_norm: f64, step0: f64, tol: Tolerance) -> bool {
+    if step == 0.0
+    {
+        return true;
+    }
+    let classical = tol.rel * (x_norm + tol.rel);
+    if step0 >= classical || step0 == 0.0
+    {
+        step <= classical
+    }
+    else
+    {
+        step <= tol.rel * step0
     }
 }
 
@@ -168,6 +200,7 @@ where
         lambda = TAU;
     }
     let mut nu = 2.0;
+    let mut step0: Option<f64> = None;
 
     for k in 0..tol.max_iter
     {
@@ -189,7 +222,8 @@ where
 
         let step_norm = linalg::norm2(&delta);
         let x_norm = linalg::norm2(&x);
-        if step_norm <= tol.rel * (x_norm + tol.rel)
+        let step0_val = *step0.get_or_insert(step_norm);
+        if step_stationary(step_norm, x_norm, step0_val, tol)
         {
             return Ok(Solution::new(x, k, cost));
         }
@@ -388,6 +422,37 @@ mod tests {
         assert!(
             s.info.iterations > 0,
             "must actually iterate; absolute |g| floor used to return at iter 0"
+        );
+    }
+
+    /// Regression: the MINPACK step floor `‖δ‖ ≤ tol.rel · (‖x‖ + tol.rel)`
+    /// collapses to the absolute length `tol.rel²` at the origin. With the
+    /// default `tol.rel = 1e-8` that is `1e-16`, so a picometre-scale linear
+    /// fit `r(x) = x − 1e-20` started at 0 had its first Newton step
+    /// `‖δ‖ ∼ 1e-20` rejected as converged and LM returned the origin
+    /// without ever updating `x`. When `‖δ₀‖` already sits below that
+    /// classical floor, step stationarity is relative to `‖δ₀‖`.
+    #[test]
+    fn tiny_scale_parameter_does_not_false_converge_via_absolute_step() {
+        let x_star = 1e-20_f64;
+        let s = levenberg_marquardt(
+            |x, out| {
+                out[0] = x[0] - x_star;
+            },
+            vec![0.0],
+            1,
+            Tolerance::default(),
+        )
+        .expect("tiny-scale linear residual must be solvable");
+        assert!(
+            (s.value[0] - x_star).abs() < 1e-6 * x_star.abs().max(1e-30),
+            "expected x≈{x_star}, got {:?} (iters={})",
+            s.value,
+            s.info.iterations
+        );
+        assert!(
+            s.info.iterations > 0,
+            "must actually take the Newton step; absolute tol.rel² floor used to return at iter 0 with x=0"
         );
     }
 
