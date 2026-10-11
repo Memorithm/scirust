@@ -219,7 +219,7 @@ fn verification_root(a: &Args) -> Result<[u8; 32], String> {
         {
             Err("--root and --demo are mutually exclusive".to_string())
         },
-        (None, true) => Ok(emit_root()),
+        (None, true) => Ok(scirust_license::demo_root()),
         (None, false) =>
         {
             Err("production verification requires --root <hex64>; use --demo only for non-attribution demonstrations".to_string())
