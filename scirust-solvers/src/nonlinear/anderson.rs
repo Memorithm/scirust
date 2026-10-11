@@ -20,10 +20,14 @@
 //! annule au mieux le résidu combiné ».
 //!
 //! ## Stopping test
-//! Converged when `‖g(x) − x‖₂ ≤ tol.abs + tol.rel · ‖x‖₂`. The relative
-//! term has no `max(‖x‖, 1)` floor, so `tol.rel` stays relative for
-//! small-scale fixed points; a fixed point at the origin is reached through
-//! `tol.abs`.
+//! Stationarity of `‖g(x) − x‖₂` is scale-aware: when the initial residual
+//! `|f₀| ≥ tol.abs` the classical test
+//! `‖f‖₂ ≤ tol.abs + tol.rel · ‖x‖₂` is kept (no `max(‖x‖, 1)` floor, so
+//! `tol.rel` stays relative for small-scale fixed points); when `|f₀|` is
+//! already below `tol.abs` (tiny-scale fixed point with `|x★| ≲ tol.abs`),
+//! the test becomes relative `‖f‖₂ ≤ tol.rel · |f₀|` so a far start cannot
+//! look converged. A fixed point at the origin is still reached through the
+//! absolute floor on well-scaled starts.
 //!
 //! ## Déterminisme
 //! Fenêtre de mémoire `m` fixe, moindres carrés résolus par une QR
@@ -41,6 +45,31 @@ fn check_finite_slice(v: &[f64], iter: usize) -> SolverResult<()> {
         }
     }
     Ok(())
+}
+
+/// Scale-aware residual stationarity for Anderson acceleration.
+///
+/// Under a tiny-scale fixed point (`|x★| ≲ tol.abs`) a fixed absolute
+/// `‖g(x) − x‖₂ ≤ tol.abs + tol.rel · ‖x‖₂` floor falsely accepts the start
+/// once the residual itself sits below `tol.abs` (e.g. `x0 = 0` while
+/// `x★ = 1e-20`). When the initial residual is already below `tol.abs`, the
+/// test switches to a relative reduction against `|f₀|`; otherwise the
+/// classical abs+rel-in-`x` floor is kept (so well-scaled problems keep the
+/// same terminal accuracy, and a fixed point at the origin is still reached
+/// through `tol.abs`).
+fn residual_stationary(res: f64, res0: f64, x_norm: f64, tol: Tolerance) -> bool {
+    if res == 0.0 || res0 == 0.0
+    {
+        return true;
+    }
+    if res0 >= tol.abs
+    {
+        res <= tol.abs + tol.rel * x_norm
+    }
+    else
+    {
+        res <= tol.rel * res0
+    }
 }
 
 /// Accélère l'itération à point fixe `x_{k+1} = g(x_k)` par Anderson(m).
@@ -83,14 +112,12 @@ where
     // plus récent.
     let mut history: Vec<(Vec<f64>, Vec<f64>, Vec<f64>)> =
         vec![(x.clone(), gx.clone(), fx.clone())];
+    let res0 = norm2(&fx);
 
     for k in 0..tol.max_iter
     {
         let residual = norm2(&fx);
-        // Relative term scales with ‖x‖ itself: a `max(‖x‖, 1)` floor would
-        // turn `tol.rel` into an absolute tolerance for ‖x‖ < 1 and accept
-        // a start that is 100 % away from a small-scale fixed point.
-        if residual <= tol.abs + tol.rel * norm2(&x)
+        if residual_stationary(residual, res0, norm2(&x), tol)
         {
             return Ok(Solution {
                 value: x,
@@ -255,6 +282,50 @@ mod tests {
         };
         let sol = anderson_accelerate(g, vec![0.0, 0.0], 4, Tolerance::default()).unwrap();
         // (I − A) x = s·b  =>  x = s·[0.9/0.4, 1.4/0.4] = s·[2.25, 3.5].
+        assert_relative_eq!(sol.value[0], 2.25 * s, max_relative = 1e-6);
+        assert_relative_eq!(sol.value[1], 3.5 * s, max_relative = 1e-6);
+    }
+
+    /// Regression: an absolute `‖f‖₂ ≤ tol.abs + tol.rel · ‖x‖₂` check falsely
+    /// accepted the start when the fixed point (and thus the residual) was
+    /// measured in tiny units. For `g(x) = x★ + ½(x − x★)` with
+    /// `x★ = 1e-20` and `x0 = 0`, the residual `½|x★|` sits below the default
+    /// `tol.abs = 1e-10` while the relative error is 100 %. When `|f₀| < tol.abs`
+    /// stationarity is now relative to `|f₀|`.
+    #[test]
+    fn tiny_scale_residual_does_not_false_converge_via_absolute_f() {
+        let x_star = 1e-20_f64;
+        let g = move |x: &[f64]| vec![x_star + 0.5 * (x[0] - x_star)];
+        let sol = anderson_accelerate(g, vec![0.0], 3, Tolerance::default())
+            .expect("tiny-scale fixed point must be solvable");
+        assert!(
+            sol.info.iterations > 0,
+            "must iterate; the start x0 = 0 is a 100 % error (got {:?})",
+            sol.value
+        );
+        assert_relative_eq!(sol.value[0], x_star, max_relative = 1e-6);
+    }
+
+    /// Same absolute-residual regression in 2-D with a coupled linear map
+    /// whose fixed point sits below `tol.abs`.
+    #[test]
+    fn tiny_scale_linear_map_does_not_false_converge_via_absolute_f() {
+        // g(x) = A x + s·b with A = [[0.4, 0.1], [0.2, 0.3]], b = [1, 2].
+        let s = 1e-20_f64;
+        let g = move |x: &[f64]| {
+            vec![
+                0.4 * x[0] + 0.1 * x[1] + s,
+                0.2 * x[0] + 0.3 * x[1] + 2.0 * s,
+            ]
+        };
+        let sol = anderson_accelerate(g, vec![0.0, 0.0], 4, Tolerance::default())
+            .expect("tiny-scale 2-D fixed point must be solvable");
+        // (I − A) x = s·b  =>  x = s·[2.25, 3.5].
+        assert!(
+            sol.info.iterations > 0,
+            "must iterate; start is 100 % away (got {:?})",
+            sol.value
+        );
         assert_relative_eq!(sol.value[0], 2.25 * s, max_relative = 1e-6);
         assert_relative_eq!(sol.value[1], 3.5 * s, max_relative = 1e-6);
     }
