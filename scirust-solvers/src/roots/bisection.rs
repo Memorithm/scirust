@@ -2,13 +2,19 @@
 //! changement de signe sur l'intervalle. Convergence linéaire (1 bit / itér).
 //!
 //! ## Sécurité numérique
-//! - Stationnarité du résidu scale-aware : si `|f₀| ≥ tol.abs` on garde le
-//!   critère absolu classique `|f| < tol.abs` ; si `|f₀|` est déjà sous
-//!   `tol.abs` (fonction mesurée en unités minuscules, `f ↦ s·f` avec
-//!   `|s| ≲ tol.abs`), le test devient relatif `|f| ≤ tol.rel · |f₀|` pour
-//!   qu'un milieu d'intervalle encore large ne paraisse pas convergé.
 //! - Racine exacte (`f == 0`) → solution acceptée.
-//! - Convergence en largeur : `|b − a| < tol.abs + tol.rel · |mid|`.
+//! - Convergence en largeur scale-aware : si `|b₀ − a₀| ≥ tol.abs + tol.rel · |mid|`
+//!   on garde le plancher classique `|b − a| < tol.abs + tol.rel · |mid|` ; si la
+//!   largeur initiale est déjà sous ce plancher (racine micrométrique,
+//!   `|x★| ≲ tol.abs`, bracket O(`|x★|`)), le test devient relatif
+//!   `|b − a| ≤ tol.rel · |b₀ − a₀|` — un plancher absolu seul acceptait le
+//!   premier milieu d'un bracket asymétrique (retourne ≈ `1.75·x★` pour
+//!   `f(x) = x − x★` sur `[0.5·x★, 3·x★]`).
+//! - Acceptation résiduelle `|f| < tol.abs` uniquement quand le plancher
+//!   absolu ne domine pas l'échelle du bracket (`tol.abs ≤ tol.rel · x_scale`)
+//!   et, si `|f₀| < tol.abs`, en relatif à `|f₀|`. Sinon un `|f|` O(`|x★|`)
+//!   sur une racine micrométrique, ou un `f ↦ s·f` avec `|s| ≲ tol.abs` sur
+//!   `[1, 2]`, faisait accepter un milieu encore large.
 
 use crate::{ConvergenceInfo, Solution, SolverError, SolverResult, Tolerance};
 
@@ -33,6 +39,32 @@ fn residual_stationary(res: f64, res0: f64, tol: Tolerance) -> bool {
     else
     {
         res <= tol.rel * res0
+    }
+}
+
+/// Scale-aware bisection width stationarity
+/// (`|b − a| < tol.abs + tol.rel · |mid|`).
+///
+/// On a tiny-scale root (`|x★| ≲ tol.abs`, bracket of width O(`|x★|`)) the
+/// initial interval itself sits below `tol.abs`, so a fixed absolute floor
+/// accepts at iteration 0/1 even when the midpoint is still far from `x★` —
+/// e.g. `f(x) = x − x★` on `[0.5·x★, 3·x★]` has first mid `1.75·x★` (~75 %
+/// relative error) with width `2.5·x★ < tol.abs`. When `|b₀ − a₀|` already
+/// sits below the classical floor, stop only after a relative reduction
+/// against the initial width; otherwise the classical floor is kept.
+fn width_stationary(width: f64, mid_abs: f64, width0: f64, tol: Tolerance) -> bool {
+    if width == 0.0
+    {
+        return true;
+    }
+    let classical = tol.abs + tol.rel * mid_abs;
+    if width0 >= classical || width0 == 0.0
+    {
+        width < classical
+    }
+    else
+    {
+        width <= tol.rel * width0
     }
 }
 
@@ -65,13 +97,22 @@ pub fn bisection<F: Fn(f64) -> f64>(
 
     // Initial residual scale: max of the two endpoint magnitudes.
     let res0 = fa.abs().max(fb.abs());
+    let width0 = (b - a).abs();
+    // Absolute residual early-exit is only safe when `tol.abs` does not
+    // dominate the bracket's coordinate scale; otherwise `|f| ~ |x − x★|`
+    // sits below `tol.abs` while the midpoint is still O(1) relatively wrong.
+    let x_scale = a.abs().max(b.abs()).max(width0);
+    let residual_early_exit_ok = tol.abs <= tol.rel * x_scale;
 
     for k in 0..tol.max_iter
     {
         let mid = 0.5 * (a + b);
         let fm = f(mid);
         let res = fm.abs();
-        if residual_stationary(res, res0, tol) || (b - a).abs() < tol.abs + tol.rel * mid.abs()
+        let width = (b - a).abs();
+        if res == 0.0
+            || width_stationary(width, mid.abs(), width0, tol)
+            || (residual_early_exit_ok && residual_stationary(res, res0, tol))
         {
             return Ok(Solution {
                 value: mid,
@@ -137,7 +178,7 @@ mod tests {
     /// mid = 1.5 look "converged" (e.g. `|f(1.5)| = 2.5e-21 ≪ 1e-10`)
     /// instead of iterating toward `√2`. When `|f₀| < tol.abs` the
     /// stationarity test is now relative to `|f₀|` (and the interval-width
-    /// criterion still drives termination for tiny-scale problems).
+    /// criterion still drives termination for tiny-residual problems).
     #[test]
     fn tiny_scale_residual_does_not_false_converge_via_absolute_f() {
         let scale = 1e-20_f64;
@@ -148,5 +189,36 @@ mod tests {
             "must actually bisect; absolute |f| floor used to return mid=1.5 at iter 1"
         );
         assert_relative_eq!(s.value, 2.0_f64.sqrt(), max_relative = 1e-9);
+    }
+
+    /// Regression: the classical width floor `|b − a| < tol.abs + tol.rel · |mid|`
+    /// is dominated by `tol.abs` whenever the bracket scale is ≲ `tol.abs`.
+    /// For `f(x) = x − x★` with `x★ = 1e-11` on `[0.5·x★, 3·x★]`, the initial
+    /// width `2.5e-11` already sits below `tol.abs`, so the buggy check
+    /// returned the first midpoint `1.75·x★` (~75 % relative error) at
+    /// iteration 1. When `|b₀ − a₀|` already sits below the classical floor,
+    /// width stationarity is relative to the initial width. Residual
+    /// early-exit is also disabled when `tol.abs` dominates the bracket
+    /// scale, so an O(`|x★|`) residual cannot accept the same wide midpoint.
+    #[test]
+    fn tiny_scale_bracket_does_not_false_converge_via_absolute_width() {
+        let x_star = 1e-11_f64;
+        let s = bisection(
+            move |x| x - x_star,
+            0.5 * x_star,
+            3.0 * x_star,
+            Tolerance::default(),
+        )
+        .expect("tiny-scale bracket must be solvable");
+        assert!(
+            (s.value - x_star).abs() < 1e-2 * x_star.abs(),
+            "expected x≈{x_star}, got {} (iters={})",
+            s.value,
+            s.info.iterations
+        );
+        assert!(
+            s.info.iterations > 1,
+            "must continue past the absolute width floor; used to return at iter 1 with ~75% relative error"
+        );
     }
 }
