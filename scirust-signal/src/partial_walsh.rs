@@ -46,11 +46,7 @@ pub struct PartialWalsh {
 }
 
 impl PartialWalsh {
-    pub fn new(
-        masks: &[u32],
-        classes: usize,
-        max_rows: usize,
-    ) -> Result<Self, PartialWalshError> {
+    pub fn new(masks: &[u32], classes: usize, max_rows: usize) -> Result<Self, PartialWalshError> {
         if masks.is_empty()
             || masks.len() > MAX_PARTIAL_WALSH_MASKS
             || masks.contains(&0)
@@ -61,7 +57,8 @@ impl PartialWalsh {
             return Err(PartialWalshError::InvalidBudget);
         }
         let mut unique = BTreeSet::new();
-        if masks.iter().any(|mask| !unique.insert(*mask)) {
+        if masks.iter().any(|mask| !unique.insert(*mask))
+        {
             return Err(PartialWalshError::DuplicateMask);
         }
         Ok(Self {
@@ -81,10 +78,12 @@ impl PartialWalsh {
         truth: u8,
         baseline: &[f64],
     ) -> Result<(), PartialWalshError> {
-        if self.rows >= self.max_rows {
+        if self.rows >= self.max_rows
+        {
             return Err(PartialWalshError::Full);
         }
-        if usize::from(truth) >= self.classes {
+        if usize::from(truth) >= self.classes
+        {
             return Err(PartialWalshError::InvalidLabel);
         }
         if baseline.len() != self.classes
@@ -96,14 +95,19 @@ impl PartialWalsh {
             return Err(PartialWalshError::InvalidDistribution);
         }
 
-        for (mask_index, &mask) in self.masks.iter().enumerate() {
-            let sign = if (mask & context).count_ones() % 2 == 0 {
+        for (mask_index, &mask) in self.masks.iter().enumerate()
+        {
+            let sign = if (mask & context).count_ones() % 2 == 0
+            {
                 1.0
-            } else {
+            }
+            else
+            {
                 -1.0
             };
             let sums = &mut self.sum[mask_index * self.classes..(mask_index + 1) * self.classes];
-            for (y, (slot, &p)) in sums.iter_mut().zip(baseline).enumerate() {
+            for (y, (slot, &p)) in sums.iter_mut().zip(baseline).enumerate()
+            {
                 *slot += sign * (f64::from(u8::from(y == usize::from(truth))) - p);
             }
         }
@@ -115,15 +119,13 @@ impl PartialWalsh {
         self.rows
     }
 
-    pub fn class_coefficient(
-        &self,
-        mask_index: usize,
-        y: usize,
-    ) -> Result<f64, PartialWalshError> {
-        if self.rows == 0 {
+    pub fn class_coefficient(&self, mask_index: usize, y: usize) -> Result<f64, PartialWalshError> {
+        if self.rows == 0
+        {
             return Err(PartialWalshError::Empty);
         }
-        if mask_index >= self.masks.len() || y >= self.classes {
+        if mask_index >= self.masks.len() || y >= self.classes
+        {
             return Err(PartialWalshError::InvalidBudget);
         }
         Ok(self.sum[mask_index * self.classes + y] / self.rows as f64)
@@ -131,7 +133,8 @@ impl PartialWalsh {
 
     /// Magnitude is descriptive and NOT a calibrated p-value after selection.
     pub fn ranked(&self) -> Result<Vec<WalshProjection>, PartialWalshError> {
-        if self.rows == 0 {
+        if self.rows == 0
+        {
             return Err(PartialWalshError::Empty);
         }
         let mut out = self
@@ -166,8 +169,10 @@ mod tests {
     #[test]
     fn hidden_xor_is_detected_without_marginal_bit_correlation() {
         let mut projection = PartialWalsh::new(&[1, 2, 3], 2, 128).unwrap();
-        for _ in 0..16 {
-            for context in 0..4u32 {
+        for _ in 0..16
+        {
+            for context in 0..4u32
+            {
                 let parity = (context & 3).count_ones() % 2;
                 projection
                     .observe(context, parity as u8, &[0.5, 0.5])
@@ -187,12 +192,20 @@ mod tests {
     #[test]
     fn null_residual_must_not_create_a_walsh_peak() {
         let mut projection = PartialWalsh::new(&[1, 3], 2, 64).unwrap();
-        for context in 0..4u32 {
-            for label in [0u8, 1u8] {
+        for context in 0..4u32
+        {
+            for label in [0u8, 1u8]
+            {
                 projection.observe(context, label, &[0.5, 0.5]).unwrap();
             }
         }
-        assert!(projection.ranked().unwrap().iter().all(|s| s.class_residual_norm == 0.0));
+        assert!(
+            projection
+                .ranked()
+                .unwrap()
+                .iter()
+                .all(|s| s.class_residual_norm == 0.0)
+        );
     }
 
     #[test]
@@ -208,6 +221,9 @@ mod tests {
         );
         assert_eq!(projection.samples(), 0);
         projection.observe(0, 0, &[0.5, 0.5]).unwrap();
-        assert_eq!(projection.observe(0, 0, &[0.5, 0.5]), Err(PartialWalshError::Full));
+        assert_eq!(
+            projection.observe(0, 0, &[0.5, 0.5]),
+            Err(PartialWalshError::Full)
+        );
     }
 }
