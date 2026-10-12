@@ -1,0 +1,43 @@
+name: A6-E5 SciRust bounded partial Walsh native signal kernel
+
+on:
+  pull_request:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+concurrency:
+  group: a6-e5-scirust-walsh-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  partial-walsh:
+    if: startsWith(github.head_ref, 'research/a6-e5-partial-walsh-signal')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      CARGO_INCREMENTAL: "0"
+      RUSTFLAGS: "-D warnings"
+    steps:
+      - name: Checkout exact head without persisted credentials
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Install pinned SciRust nightly
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: nightly-2026-07-02
+          components: rustfmt, clippy
+      - name: Verify Rust formatting, compile, Clippy, parity and null controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rev-parse HEAD
+          cargo +nightly-2026-07-02 fmt --all -- --check
+          cargo +nightly-2026-07-02 check -p scirust-signal --locked
+          cargo +nightly-2026-07-02 clippy -p scirust-signal --lib --locked -- -D warnings
+          cargo +nightly-2026-07-02 test -p scirust-signal partial_walsh --locked -- --nocapture
