@@ -104,6 +104,7 @@ pub mod filter;
 pub mod mcsa;
 pub mod measure;
 pub mod order;
+pub mod partial_walsh;
 pub mod radar;
 pub mod sliding_stats;
 pub mod surrogate;
