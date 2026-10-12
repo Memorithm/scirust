@@ -46,6 +46,7 @@ pub struct PartialWalsh {
 }
 
 impl PartialWalsh {
+    /// Create a bounded streaming signed-Walsh accumulator over caller-declared masks.
     pub fn new(masks: &[u32], classes: usize, max_rows: usize) -> Result<Self, PartialWalshError> {
         if masks.is_empty()
             || masks.len() > MAX_PARTIAL_WALSH_MASKS
@@ -115,10 +116,12 @@ impl PartialWalsh {
         Ok(())
     }
 
+    /// Number of accepted OOF residual observations accumulated so far.
     pub fn samples(&self) -> usize {
         self.rows
     }
 
+    /// Average signed correlation for one specified Walsh mask and output class.
     pub fn class_coefficient(&self, mask_index: usize, y: usize) -> Result<f64, PartialWalshError> {
         if self.rows == 0
         {
