@@ -97,7 +97,7 @@ impl PartialWalsh {
 
         for (mask_index, &mask) in self.masks.iter().enumerate()
         {
-            let sign = if (mask & context).count_ones() % 2 == 0
+            let sign = if (mask & context).count_ones().is_multiple_of(2)
             {
                 1.0
             }
