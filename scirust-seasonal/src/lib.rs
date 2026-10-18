@@ -2690,6 +2690,29 @@ pub mod changepoint {
         sums
     }
 
+    /// Variances and variance gains below this value, measured on a series
+    /// divided by its largest magnitude, are treated as rounding noise. It
+    /// corresponds to a relative standard deviation of `64 * f64::EPSILON`
+    /// (about `1.4e-14`) and does not depend on the units of the data.
+    const NEGLIGIBLE_SCALED_VARIANCE: f64 = (64.0 * f64::EPSILON) * (64.0 * f64::EPSILON);
+
+    /// Divide `data` by its largest finite magnitude and return the scaled
+    /// series with that magnitude. Variances of the scaled series neither
+    /// underflow below fixed cut-offs for tiny amplitudes nor overflow to `inf`
+    /// for huge ones. A series that is all zeros, or holds a non-finite value,
+    /// is returned unchanged with scale `1.0`.
+    fn normalize_by_max_abs(data: &[f64]) -> (Vec<f64>, f64) {
+        let scale = data.iter().fold(0.0_f64, |acc, &x| acc.max(x.abs()));
+        if scale > 0.0 && scale.is_finite() && data.iter().all(|x| x.is_finite())
+        {
+            (data.iter().map(|&x| x / scale).collect(), scale)
+        }
+        else
+        {
+            (data.to_vec(), 1.0)
+        }
+    }
+
     /// Seasonal CUSUM (Cumulative Sum) control chart.
     ///
     /// Detects changes in the seasonal pattern by computing separate
@@ -2779,6 +2802,12 @@ pub mod changepoint {
     ///
     /// Compares variance in a left window vs right window at each position.
     /// A significant ratio indicates a change point.
+    ///
+    /// The test statistics are ratios, so the detected indices and magnitudes
+    /// do not depend on the units of `data` (multiplying the series by a
+    /// constant leaves them unchanged). Two windows that are both constant (up
+    /// to rounding) are not a variance change, so a constant series has no
+    /// breaks.
     pub fn seasonal_break_detection(
         data: &[f64],
         period: usize,
@@ -2792,16 +2821,22 @@ pub mod changepoint {
             return Vec::new();
         }
 
-        // Deseasonalize first
-        let adjusted = super::adjustment::deseasonalize(data, period, true);
+        // Work on the series divided by its largest magnitude so the variance
+        // cut-offs below are relative to the data scale: a fixed absolute
+        // cut-off treated every window of a series with amplitude <= 1e-8 as
+        // constant, and the raw variances overflowed to `inf` at 1e160.
+        let (scaled, scale) = normalize_by_max_abs(data);
 
-        // Seasonal component (additive): the part removed by deseasonalizing.
-        // Averaged per phase so each change point can report the seasonal shift
-        // at its phase, mirroring `seasonal_cusum`.
-        let seasonal: Vec<f64> = data
+        // Deseasonalize first
+        let adjusted = super::adjustment::deseasonalize(&scaled, period, true);
+
+        // Seasonal component (additive): the part removed by deseasonalizing,
+        // in the units of `data`. Averaged per phase so each change point can
+        // report the seasonal shift at its phase, mirroring `seasonal_cusum`.
+        let seasonal: Vec<f64> = scaled
             .iter()
             .zip(adjusted.iter())
-            .map(|(&y, &a)| y - a)
+            .map(|(&y, &a)| (y - a) * scale)
             .collect();
         let phase_seasonal = phase_means(&seasonal, period);
 
@@ -2838,21 +2873,27 @@ pub mod changepoint {
             let var_left = variance(left);
             let var_right = variance(right);
 
-            // F-test for variance ratio
-            let f_stat = if var_right > f64::EPSILON
+            // F-test for variance ratio. Two windows without variance are not
+            // a variance change.
+            let f_stat = if var_right > NEGLIGIBLE_SCALED_VARIANCE
             {
                 var_left / var_right
             }
-            else
+            else if var_left > NEGLIGIBLE_SCALED_VARIANCE
             {
                 f64::INFINITY
+            }
+            else
+            {
+                1.0
             };
 
             // Also check mean shift
             let mean_left = mean(left);
             let mean_right = mean(right);
-            let pooled_std = ((var_left + var_right) / 2.0).sqrt();
-            let t_stat = if pooled_std > f64::EPSILON
+            let pooled_var = (var_left + var_right) / 2.0;
+            let pooled_std = pooled_var.sqrt();
+            let t_stat = if pooled_var > NEGLIGIBLE_SCALED_VARIANCE
             {
                 (mean_left - mean_right).abs() / (pooled_std * (2.0 / half_win as f64).sqrt())
             }
@@ -2882,6 +2923,11 @@ pub mod changepoint {
     /// Binary segmentation for seasonal change points.
     ///
     /// Recursively splits the series at the point of maximum likelihood ratio.
+    ///
+    /// The split indices do not depend on the units of `data`; each
+    /// change point's `magnitude` is the variance reduction of its split, in
+    /// squared units of `data`. Splits whose variance reduction is only
+    /// rounding noise relative to the data scale are not reported.
     pub fn seasonal_binary_segmentation(
         data: &[f64],
         period: usize,
@@ -2903,6 +2949,12 @@ pub mod changepoint {
             .map(|m| m - global_mean)
             .collect();
 
+        // Variances are computed on the series divided by its largest
+        // magnitude: a fixed absolute cut-off on the raw variance gain dropped
+        // splits of small-amplitude series (all of them at 1e-9), and the raw
+        // variances overflowed to `inf` (gain NaN) at 1e160.
+        let (scaled, scale) = normalize_by_max_abs(data);
+
         let mut change_points = Vec::new();
         let mut segments: Vec<(usize, usize)> = vec![(0, n)];
 
@@ -2920,14 +2972,14 @@ pub mod changepoint {
                     continue;
                 }
 
-                let segment = &data[start..end];
+                let segment = &scaled[start..end];
                 let total_var = variance(segment);
 
                 // Try each split point
                 for split in (start + min_segment..end - min_segment).step_by(period.max(1))
                 {
-                    let left = &data[start..split];
-                    let right = &data[split..end];
+                    let left = &scaled[start..split];
+                    let right = &scaled[split..end];
 
                     let left_var = variance(left);
                     let right_var = variance(right);
@@ -2946,7 +2998,7 @@ pub mod changepoint {
                 }
             }
 
-            if best_gain > f64::EPSILON
+            if best_gain > NEGLIGIBLE_SCALED_VARIANCE
             {
                 let (start, end) = segments[best_segment_idx];
                 segments.remove(best_segment_idx);
@@ -2955,7 +3007,7 @@ pub mod changepoint {
 
                 change_points.push(ChangePoint {
                     index: best_split,
-                    magnitude: best_gain,
+                    magnitude: best_gain * scale * scale,
                     seasonal_component: phase_seasonal[best_split % period],
                 });
             }
@@ -3078,6 +3130,113 @@ pub mod changepoint {
                 "should find at least 2 change points, found {}",
                 cps.len()
             );
+        }
+
+        /// Monthly sine plus a level shift of 5 at index 120 plus deterministic
+        /// uniform noise in [-0.25, 0.25).
+        fn noisy_shifted_sine(n: usize) -> Vec<f64> {
+            let mut state: u64 = 12345;
+            (0..n)
+                .map(|i| {
+                    state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    let noise = ((state >> 33) as f64 / (1u64 << 31) as f64 - 0.5) * 0.5;
+                    let shift = if i >= 120 { 5.0 } else { 0.0 };
+                    (2.0 * std::f64::consts::PI * i as f64 / 12.0).sin() + shift + noise
+                })
+                .collect()
+        }
+
+        fn assert_rel_close(got: f64, want: f64, what: &str) {
+            assert!(
+                (got - want).abs() <= 1e-9 * want.abs().max(f64::MIN_POSITIVE),
+                "{what}: {got:e} vs {want:e}"
+            );
+        }
+
+        /// The break statistics are ratios, so scaling the series must not
+        /// change the detected breaks. A fixed absolute variance cut-off made
+        /// every window of a 1e-9 amplitude series look constant (14 breaks,
+        /// one per period, instead of 5), and the raw variances overflowed to
+        /// `inf` at 1e160 (0 breaks).
+        #[test]
+        fn break_detection_is_scale_invariant() {
+            let base = noisy_shifted_sine(240);
+            let reference = seasonal_break_detection(&base, 12, 48, 0.05);
+            assert!(!reference.is_empty());
+            for &scale in &[1e-9, 1e-12, 1e-100, 1e8, 1e160]
+            {
+                let scaled: Vec<f64> = base.iter().map(|&x| x * scale).collect();
+                let got = seasonal_break_detection(&scaled, 12, 48, 0.05);
+                let got_idx: Vec<usize> = got.iter().map(|cp| cp.index).collect();
+                let ref_idx: Vec<usize> = reference.iter().map(|cp| cp.index).collect();
+                assert_eq!(got_idx, ref_idx, "scale {scale:e}");
+                for (g, r) in got.iter().zip(reference.iter())
+                {
+                    assert_rel_close(g.magnitude, r.magnitude, "magnitude");
+                    assert_rel_close(
+                        g.seasonal_component / scale,
+                        r.seasonal_component,
+                        "seasonal_component",
+                    );
+                }
+            }
+        }
+
+        /// Two constant windows are not a variance change: a constant series
+        /// used to report a break every period (14 for n = 240).
+        #[test]
+        fn break_detection_constant_series_has_no_breaks() {
+            for &level in &[0.0, 1.0, 5.0, 1e-9, 1e8 + 0.1]
+            {
+                let data = vec![level; 240];
+                let cps = seasonal_break_detection(&data, 12, 48, 0.05);
+                assert!(cps.is_empty(), "level {level:e}: {cps:?}");
+            }
+        }
+
+        /// Split indices must not depend on the units of the data, and the
+        /// reported variance reduction scales with the square of the data. A
+        /// fixed absolute cut-off on the gain dropped every split at 1e-9
+        /// (0 change points instead of 5), and the raw variances overflowed to
+        /// `inf` at 1e160 (0 change points).
+        #[test]
+        fn binary_segmentation_is_scale_invariant() {
+            let base = noisy_shifted_sine(240);
+            let reference = seasonal_binary_segmentation(&base, 12, 30, 5);
+            assert_eq!(reference.len(), 5);
+            for &scale in &[1e-9, 1e-12, 1e-100, 1e8, 1e100, 1e160]
+            {
+                let scaled: Vec<f64> = base.iter().map(|&x| x * scale).collect();
+                let got = seasonal_binary_segmentation(&scaled, 12, 30, 5);
+                let got_idx: Vec<usize> = got.iter().map(|cp| cp.index).collect();
+                let ref_idx: Vec<usize> = reference.iter().map(|cp| cp.index).collect();
+                assert_eq!(got_idx, ref_idx, "scale {scale:e}");
+                for (g, r) in got.iter().zip(reference.iter())
+                {
+                    assert_rel_close(
+                        g.seasonal_component / scale,
+                        r.seasonal_component,
+                        "seasonal_component",
+                    );
+                    // The squared-unit gain is not representable at 1e160.
+                    if (r.magnitude * scale * scale).is_finite()
+                    {
+                        assert_rel_close(g.magnitude / (scale * scale), r.magnitude, "magnitude");
+                    }
+                }
+            }
+        }
+
+        /// A constant series has no variance to reduce; rounding noise of the
+        /// level 1e8 + 0.1 used to pass the absolute cut-off and yield a split.
+        #[test]
+        fn binary_segmentation_constant_series_has_no_splits() {
+            for &level in &[0.0, 1.0, 1e-9, 1e8 + 0.1]
+            {
+                let data = vec![level; 240];
+                let cps = seasonal_binary_segmentation(&data, 12, 30, 5);
+                assert!(cps.is_empty(), "level {level:e}: {cps:?}");
+            }
         }
     }
 }
