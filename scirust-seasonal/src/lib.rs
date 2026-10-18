@@ -2089,14 +2089,18 @@ pub mod trend {
         let (s_stat, z_stat, p_val) = mann_kendall(data);
         let s_slope = sens_slope(data);
 
-        // Confidence interval for slope via bootstrap-like approach
-        // Using residual-based variance estimate
-        let residuals: Vec<f64> = data
+        // Standard error of the OLS slope: `sqrt(s² / Sxx)` with the unbiased
+        // residual variance `s² = SSR / (n − 2)` (two fitted parameters), the
+        // same estimate whose ratio to the slope follows Student-t with
+        // `n − 2` degrees of freedom. Dividing SSR by `n` instead understates
+        // the standard error by `sqrt((n − 2)/n)` and makes the interval too
+        // narrow for its stated 95 % level (≈18 % too narrow at `n = 6`).
+        let ssr: f64 = data
             .iter()
             .enumerate()
-            .map(|(i, &y)| y - (slope * i as f64 + intercept))
-            .collect();
-        let residual_var = variance(&residuals);
+            .map(|(i, &y)| (y - (slope * i as f64 + intercept)).powi(2))
+            .sum();
+        let residual_var = if n > 2 { ssr / (n as f64 - 2.0) } else { 0.0 };
         let x_var: f64 = x.iter().map(|&v| (v - mean(&x)).powi(2)).sum();
         let se_slope = if x_var > f64::EPSILON
         {
@@ -2265,6 +2269,28 @@ pub mod trend {
             assert!((s - 10.0).abs() < 1e-12, "S={}", s);
             assert!((z - 2.2045).abs() < 0.01, "Z={}", z);
             assert!((p - 0.0275).abs() < 0.005, "p={}", p);
+        }
+
+        #[test]
+        fn slope_ci_uses_unbiased_residual_variance() {
+            // Reference: scipy.stats.linregress(x, y) with x = 0..6 gives
+            // slope = 0.885714285714, stderr = 0.232115382990 (residual
+            // variance SSR/(n-2)), and t.ppf(0.975, 4) = 2.776445105198, so the
+            // 95 % CI is [0.241258666772, 1.530169904657]. Dividing SSR by n
+            // instead gave a half-width ≈18 % too small (0.5262 vs 0.6445).
+            let data = [1.0, 3.0, 2.0, 5.0, 4.0, 6.0];
+            let result = trend_analysis(&data);
+            assert!((result.slope - 0.885_714_285_714_285_8).abs() < 1e-12);
+            let half = 0.5 * (result.slope_ci[1] - result.slope_ci[0]);
+            let want_half = 2.776_445_105_197_793 * 0.232_115_382_989_598_83;
+            // Tolerance covers the Cornish-Fisher t quantile (≈5e-4 relative
+            // at df = 4), not the variance estimator (≈18 % off before).
+            assert!(
+                ((half - want_half) / want_half).abs() < 1e-3,
+                "CI half-width {half}, want {want_half}"
+            );
+            assert!((result.slope_ci[0] - 0.241_258_666_771_702_93).abs() < 1e-3);
+            assert!((result.slope_ci[1] - 1.530_169_904_656_868_6).abs() < 1e-3);
         }
 
         #[test]
