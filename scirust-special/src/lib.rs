@@ -960,6 +960,10 @@ pub fn erfinv(y: f64) -> f64 {
 /// `P(a, +∞) = 1`. Returns `NaN` for `a ≤ 0`, non-finite `a`, `x < 0`, `NaN`
 /// input, or if an expansion fails to converge within its iteration budget
 /// (which scales with `√a`), rather than a silently truncated value.
+///
+/// For tiny shapes (`a → 0⁺`) the series for `P` is so close to 1 that forming
+/// it as a plain product can round above 1; the implementation rebuilds from
+/// `ln P` in that neighbourhood so `P ∈ [0, 1]`.
 pub fn regularized_gamma_p(a: f64, x: f64) -> f64 {
     if a <= 0.0 || x < 0.0 || !a.is_finite() || x.is_nan()
     {
@@ -986,6 +990,13 @@ pub fn regularized_gamma_p(a: f64, x: f64) -> f64 {
 /// Regularized upper incomplete gamma `Q(a, x) = 1 − P(a, x) = Γ(a, x)/Γ(a)`.
 ///
 /// Accurate in the far tail (survival function), where `1 − P` would cancel.
+/// For small shapes (`a < ½`, `x < 1`) it uses the expansion
+/// `Q = −expm1(L) − e^L·a·S` with `L = a·ln x − ln Γ(1+a)` and
+/// `S = Σ_{n≥1} (−x)^n/(n!·(a+n))`, and elsewhere in the series regime
+/// (`x < a + 1`) `−expm1(ln P)`, rather than `1 − P`, so tiny `Q` at small
+/// shapes keeps its relative digits: plain
+/// `1 − P` rounded to 0 (or went negative) for `a ≲ 1e-16` (e.g. `Q(1e-300,
+/// 1e-300)` was `≈ −2e-14` instead of `≈ 6.9e-298`).
 /// `Q(a, +∞) = 0`; the domain and non-convergence rules match
 /// [`regularized_gamma_p`].
 pub fn regularized_gamma_q(a: f64, x: f64) -> f64 {
@@ -1001,9 +1012,33 @@ pub fn regularized_gamma_q(a: f64, x: f64) -> f64 {
     {
         return 0.0;
     }
+    // For a < 1 and x ≥ 1 the series crossover a+1 sits near 1, and the
+    // continued fraction is sharper for Q than series-via-lnP (e.g. Q(1e-8, 1)
+    // matches mpmath to ~1e-15). Fall back to the series if CF does not
+    // converge. Large a must keep the usual x ≶ a+1 split (CF is wrong below
+    // the boundary).
+    if a < 1.0 && x >= 1.0
+    {
+        let q = gamma_cf_q(a, x);
+        if !q.is_nan()
+        {
+            return q;
+        }
+    }
+    // Small shape below the crossover: the closed form in `gamma_small_a_q`
+    // has no `ln(1 + t) − x` cancellation, so tiny `Q ≈ a·E₁(x)` keeps its
+    // relative digits (the ln P route needed that difference to round exactly).
+    if a < GAMMA_SMALL_A_Q_MAX && x < 1.0
+    {
+        let q = gamma_small_a_q(a, x);
+        if !q.is_nan()
+        {
+            return q;
+        }
+    }
     if x < a + 1.0
     {
-        1.0 - gamma_series_p(a, x)
+        gamma_series_q(a, x)
     }
     else
     {
@@ -1011,34 +1046,34 @@ pub fn regularized_gamma_q(a: f64, x: f64) -> f64 {
     }
 }
 
-// Series expansion for P(a, x), converging quickly when x < a + 1 — except in
-// the boundary layer x ≈ a, where the number of terms needed to converge
-// grows like O(√a) (this is precisely the regime Temme's 1987 uniform
-// asymptotic expansion targets). Rather than silently truncate at a fixed
-// `MAX_ITERS` and return a wrong result for large `a`, the cap scales with
-// `√a` (empirically ~8·√a terms suffice; 20·√a leaves comfortable margin, see
-// `scaled_iteration_budget`), bounded to avoid an unbounded loop on
-// pathological input, and a genuine non-convergence returns `NaN` instead of
-// a truncated series value.
-fn gamma_series_p(a: f64, x: f64) -> f64 {
-    let mut ap = a;
-    let mut sum = 1.0 / a;
-    let mut del = sum;
-    let iters = scaled_iteration_budget(a);
+// Upper bound on `a` for [`gamma_small_a_q`].
+const GAMMA_SMALL_A_Q_MAX: f64 = 0.5;
+
+// `Q(a, x)` for small `a` and `0 < x < 1` from the convergent expansion
+// `γ(a, x) = Σ_{n≥0} (−x)^n x^a / (n!·(a+n))`, which gives
+//
+//   Q = 1 − x^a/Γ(1+a) · (1 + a·S),   S = Σ_{n≥1} (−x)^n / (n!·(a+n)),
+//     = −expm1(L) − e^L·a·S,          L = a·ln x − ln Γ(1+a).
+//
+// Both pieces are formed without subtracting nearly equal quantities: `L` is
+// a sum of two `O(a)` terms and `S ≈ −Ein(x)` is an alternating series with
+// terms decreasing from `x/(1+a)`. As `a → 0` this is `Q ≈ a·E₁(x)`, so `Q`
+// keeps full relative accuracy even when it is far below `ε` (the scheme
+// Boost uses for its small-`a` upper incomplete gamma). The series route via
+// `ln P = ln(1 + t) − x + …` instead needs `ln(1 + t) − x` to cancel to
+// `O(a·x)`, which only happens when every rounding goes the right way.
+// Returns `NaN` if the series does not converge (it always does for x < 1).
+fn gamma_small_a_q(a: f64, x: f64) -> f64 {
+    let mut term = 1.0; // (−x)^n / n!
+    let mut sum = 0.0;
     let mut converged = false;
-    for _ in 0..iters
+    for n in 1..=MAX_ITERS
     {
-        ap += 1.0;
-        del *= x / ap;
-        sum += del;
-        // Stop once both the last term and a bound on the remaining tail are
-        // below `ε·sum`. The later term ratios `x/(ap + j)` stay below
-        // `r = x/(ap + 1) < 1`, so the tail is at most
-        // `del·r/(1 − r) = del·x/(ap + 1 − x)`. Near `x ≈ a` that bound is
-        // `≈ del·√a`, and a test on `del` alone left a truncation error of
-        // the same size (≈ 1.5e-11 relative at `a = 1e10`).
-        let tail_factor = (x / (ap + 1.0 - x)).max(1.0);
-        if del * tail_factor < sum * EPS
+        let nf = n as f64;
+        term *= -x / nf;
+        let contrib = term / (a + nf);
+        sum += contrib;
+        if contrib.abs() <= sum.abs() * f64::EPSILON
         {
             converged = true;
             break;
@@ -1048,7 +1083,118 @@ fn gamma_series_p(a: f64, x: f64) -> f64 {
     {
         return f64::NAN;
     }
-    sum * gamma_prefactor(a, x)
+    let l = a * x.ln() - ln_gamma_1_plus(a);
+    let q = -l.exp_m1() - l.exp() * a * sum;
+    q.clamp(0.0, 1.0)
+}
+
+// Series tail `t` such that `s = 1 + t` with
+// `s = Σ_{n=0}^∞ x^n / [(a+1)⋯(a+n)]` (empty product = 1).
+// Then `P(a, x) = (s/a) · x^a·e^(−x)/Γ(a) = s · x^a·e^(−x)/Γ(a+1)`.
+// Tracking `t` (not `s`) keeps the first correction `x/(a+1)` when it is
+// smaller than `ε`, so `ln s = ln1p(t)` still cancels the `−x` of the
+// prefactor for tiny `(a, x)`.
+//
+// Converges quickly when `x < a + 1` — except in the boundary layer `x ≈ a`,
+// where the term count grows like O(√a) (Temme 1987). The cap scales with
+// `√a` (see `scaled_iteration_budget`); non-convergence returns `None`
+// rather than a truncated value.
+fn gamma_series_tail(a: f64, x: f64) -> Option<f64> {
+    let mut ap = a;
+    let mut t = 0.0;
+    let mut del = 1.0;
+    let iters = scaled_iteration_budget(a);
+    for _ in 0..iters
+    {
+        ap += 1.0;
+        del *= x / ap;
+        t += del;
+        // Stop once both the last term and a bound on the remaining tail are
+        // below `ε·s`. The later term ratios `x/(ap + j)` stay below
+        // `r = x/(ap + 1) < 1`, so the tail is at most
+        // `del·r/(1 − r) = del·x/(ap + 1 − x)`. Near `x ≈ a` that bound is
+        // `≈ del·√a`, and a test on `del` alone left a truncation error of
+        // the same size (≈ 1.5e-11 relative at `a = 1e10`).
+        let s = 1.0 + t;
+        let tail_factor = (x / (ap + 1.0 - x)).max(1.0);
+        if del * tail_factor < s * EPS
+        {
+            return Some(t);
+        }
+    }
+    None
+}
+
+fn gamma_series_ln_p_from_tail(a: f64, x: f64, t: f64) -> f64 {
+    let ln_s = t.ln_1p();
+    if a < GAMMA_PREFACTOR_SADDLE_MIN
+    {
+        // P = s · x^a · e^{−x} / Γ(a+1). Using ln Γ(a+1) = ln_gamma_1_plus(a)
+        // (not ln_gamma(a+1), which rounds `a+1` to 1 for a ≲ ε/2) avoids the
+        // cancellation of −ln(a) against ln Γ(a) ≈ −ln(a) that wiped the
+        // a·ln x digit for tiny shapes.
+        ln_s - x + a * x.ln() - ln_gamma_1_plus(a)
+    }
+    else
+    {
+        // Saddle-point ln(x^a e^{−x}/Γ(a)) stays accurate near x ≈ a.
+        ln_s - a.ln() + gamma_prefactor_ln(a, x)
+    }
+}
+
+fn gamma_series_ln_p(a: f64, x: f64) -> f64 {
+    match gamma_series_tail(a, x)
+    {
+        Some(t) => gamma_series_ln_p_from_tail(a, x, t),
+        None => f64::NAN,
+    }
+}
+
+fn gamma_series_p(a: f64, x: f64) -> f64 {
+    let Some(t) = gamma_series_tail(a, x)
+    else
+    {
+        return f64::NAN;
+    };
+    let s = 1.0 + t;
+    let pref = gamma_prefactor(a, x);
+    let p = (s / a) * pref;
+    // Deep in (0, 1) the direct product is fine (and what `erf` via
+    // `P(1/2, x²)` relies on). Near 1 — including tiny-`a` evaluations, where
+    // the product can round above 1 — rebuild from ln P so P ∈ [0, 1] and
+    // matches Q = −expm1(ln P).
+    if p.is_finite() && (0.0..1.0 - 1e-6).contains(&p)
+    {
+        return p;
+    }
+    let ln_p = gamma_series_ln_p_from_tail(a, x, t);
+    if ln_p.is_nan()
+    {
+        return f64::NAN;
+    }
+    if ln_p >= 0.0
+    {
+        1.0
+    }
+    else
+    {
+        1.0 + ln_p.exp_m1()
+    }
+}
+
+// Series-regime Q: `−expm1(ln P)` keeps relative accuracy when P ≈ 1
+// (equivalently Q ≪ ε), where `1 − P` cancels completely.
+fn gamma_series_q(a: f64, x: f64) -> f64 {
+    let ln_p = gamma_series_ln_p(a, x);
+    if ln_p.is_nan()
+    {
+        return f64::NAN;
+    }
+    if ln_p >= 0.0
+    {
+        return 0.0;
+    }
+    -ln_p.exp_m1()
 }
 
 // Continued-fraction expansion for Q(a, x) (modified Lentz), for x >= a + 1.
@@ -1110,12 +1256,19 @@ const GAMMA_PREFACTOR_SADDLE_MIN: f64 = 1.0;
 // with `δ` the Stirling remainder ([`stirling_error`]) and `D₀` the deviance
 // ([`binom_deviance`]); neither term cancels, so the relative error stays a
 // small multiple of the rounding unit.
-fn gamma_prefactor(a: f64, x: f64) -> f64 {
+fn gamma_prefactor_ln(a: f64, x: f64) -> f64 {
     if a < GAMMA_PREFACTOR_SADDLE_MIN
     {
-        return (-x + a * x.ln() - ln_gamma(a)).exp();
+        -x + a * x.ln() - ln_gamma(a)
     }
-    (0.5 * (a / (2.0 * PI)).ln() - stirling_error(a) - binom_deviance(a, x)).exp()
+    else
+    {
+        0.5 * (a / (2.0 * PI)).ln() - stirling_error(a) - binom_deviance(a, x)
+    }
+}
+
+fn gamma_prefactor(a: f64, x: f64) -> f64 {
+    gamma_prefactor_ln(a, x).exp()
 }
 
 // ============================================================ //
@@ -2376,6 +2529,51 @@ mod tests {
         assert!(regularized_gamma_p(f64::INFINITY, 1.0).is_nan());
         assert!(regularized_gamma_q(f64::INFINITY, 1.0).is_nan());
         assert!(regularized_gamma_p(f64::NAN, 1.0).is_nan());
+    }
+
+    #[test]
+    fn regularized_gamma_q_accurate_for_tiny_shape() {
+        // Regression: in the series regime (x < a + 1), Q was formed as 1 − P.
+        // For a ≲ 1e-16, P rounds so close to 1 that Q lost all relative digits
+        // and often went negative (P > 1). References from mpmath (dps = 80).
+        // Before the fix: Q(1e-300, 1e-300) ≈ −2.35e-14 (want ≈ 6.90e-298);
+        // Q(1e-16, 1e-16) ≈ 1.07e-14 (want ≈ 3.63e-15).
+        let cases = [
+            (1e-300, 1e-300, 6.901_983_122_333_122e-298),
+            (1e-100, 1e-10, 2.244_863_526_513_892_4e-99),
+            (1e-50, 1e-50, 1.145_520_389_848_007_5e-48),
+            (1e-20, 1e-10, 2.244_863_526_513_892_3e-19),
+            (1e-16, 1e-16, 3.626_414_582_300_313e-15),
+            (1e-16, 1e-8, 1.784_346_508_905_081_7e-15),
+            (1e-16, 1.0, 2.193_839_343_955_203e-17),
+            (1e-8, 1e-8, 1.784_346_350_532_936_4e-7),
+            (1e-8, 1.0, 2.193_839_366_402_706_7e-9),
+            (1e-4, 0.1, 1.822_830_645_264_832_7e-4),
+        ];
+        for (a, x, want_q) in cases
+        {
+            let p = regularized_gamma_p(a, x);
+            let q = regularized_gamma_q(a, x);
+            assert!(
+                (0.0..=1.0).contains(&p),
+                "a={a} x={x}: P={p} outside [0, 1]"
+            );
+            assert!(
+                (0.0..=1.0).contains(&q),
+                "a={a} x={x}: Q={q} outside [0, 1]"
+            );
+            assert!(
+                rel_close_unit(q, want_q, 1e-9),
+                "a={a} x={x}: Q={q} want={want_q}"
+            );
+            // Complementary identity: when both come from ln P they sum to 1
+            // exactly; a mixed direct/log path may leave a few ulps.
+            let sum = p + q;
+            assert!(
+                (sum - 1.0).abs() <= 16.0 * f64::EPSILON || q <= 1e-6,
+                "a={a} x={x}: P+Q={sum}"
+            );
+        }
     }
 
     #[test]
