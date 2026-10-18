@@ -53,6 +53,10 @@ pub fn parallel_reliability(component_reliabilities: &[f64]) -> f64 {
 /// Fiabilité d'une redondance `k`-sur-`n` à composants identiques
 /// `R = Σ_{i=k}^{n} C(n,i)·r^i·(1 − r)^{n−i}`.
 ///
+/// Chaque terme est évalué en logarithmes (`ln C(n,i) + i·ln r +
+/// (n−i)·ln(1−r)`) : aucun coefficient entier `C(n,i)` ne déborde et aucun
+/// produit `∞·0` n'apparaît, le résultat reste fini pour tout `n`.
+///
 /// Panique si `r` sort de `[0, 1]`, `n == 0` ou `k > n`.
 pub fn k_out_of_n_reliability(component_reliability: f64, k: u32, n: u32) -> f64 {
     assert!(
@@ -61,21 +65,40 @@ pub fn k_out_of_n_reliability(component_reliability: f64, k: u32, n: u32) -> f64
     );
     assert!(n > 0 && k <= n, "0 < k ≤ n requis");
     let r = component_reliability;
-    (k..=n)
-        .map(|i| binomial(n, i) as f64 * r.powi(i as i32) * (1.0 - r).powi((n - i) as i32))
-        .sum()
+    // Cas dégénérés : ln 0 = −∞ rendrait 0·(−∞) indéterminé ci-dessous.
+    if k == 0 || r == 1.0
+    {
+        return 1.0;
+    }
+    if r == 0.0
+    {
+        return 0.0;
+    }
+    let ln_r = r.ln();
+    let ln_q = (-r).ln_1p();
+    let nf = f64::from(n);
+    // ln C(n, k), puis récurrence ln C(n, i+1) = ln C(n, i) + ln((n−i)/(i+1)).
+    let mut ln_c = ln_binomial(n, k);
+    let mut sum = 0.0;
+    for i in k..=n
+    {
+        let fi = f64::from(i);
+        sum += (ln_c + fi * ln_r + (nf - fi) * ln_q).exp();
+        if i < n
+        {
+            ln_c += ((nf - fi) / (fi + 1.0)).ln();
+        }
+    }
+    sum.min(1.0)
 }
 
-/// Coefficient binomial `C(n, k)` par produit itératif (sans débordement pour de
-/// petits `n`).
-fn binomial(n: u32, k: u32) -> u64 {
+/// `ln C(n, k)` par somme de logarithmes (aucun entier intermédiaire, donc
+/// aucun débordement).
+fn ln_binomial(n: u32, k: u32) -> f64 {
     let k = k.min(n - k);
-    let mut result: u64 = 1;
-    for i in 0..k as u64
-    {
-        result = result * (n as u64 - i) / (i + 1);
-    }
-    result
+    (0..k)
+        .map(|i| (f64::from(n - i) / f64::from(i + 1)).ln())
+        .sum()
 }
 
 #[cfg(test)]
@@ -126,6 +149,36 @@ mod tests {
             3.0 * r * r - 2.0 * r * r * r,
             epsilon = 1e-9
         );
+    }
+
+    #[test]
+    fn large_n_matches_binomial_tail_reference() {
+        // `C(n, i)` for i near n/2 no longer fits in u64 from n = 63 on; the
+        // sum must still match the exact binomial tail P(X ≥ k), X ~ B(n, r)
+        // (references: mpmath at 40 digits rounded to f64, equal to scipy.stats.binom.sf(k−1, n, r)).
+        let cases = [
+            (0.5, 32, 64, 0.549_673_376_873_983_4),
+            (0.3, 20, 64, 0.460_207_865_514_165),
+            (0.95, 60, 64, 0.784_357_043_608_697_1),
+            (0.6, 51, 101, 0.979_103_308_995_299_5),
+            (0.9, 1800, 2000, 0.518_820_400_591_036_2),
+        ];
+        for (r, k, n, want) in cases
+        {
+            let got = k_out_of_n_reliability(r, k, n);
+            assert_relative_eq!(got, want, max_relative = 1e-12);
+        }
+        // 1-sur-70 = parallèle : 1 − (1 − r)⁷⁰, sans débordement.
+        let par = k_out_of_n_reliability(0.2, 1, 70);
+        assert_relative_eq!(par, 1.0 - 0.8f64.powi(70), max_relative = 1e-12);
+    }
+
+    #[test]
+    fn degenerate_component_reliability() {
+        assert_eq!(k_out_of_n_reliability(1.0, 64, 64), 1.0);
+        assert_eq!(k_out_of_n_reliability(0.0, 1, 64), 0.0);
+        assert_eq!(k_out_of_n_reliability(0.0, 0, 64), 1.0);
+        assert_eq!(k_out_of_n_reliability(1.0, 0, 64), 1.0);
     }
 
     #[test]
