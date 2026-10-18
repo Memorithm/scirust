@@ -1956,16 +1956,18 @@ pub mod adjustment {
                 seasonal[i] = trimmed_mean(&phase_vals, phase_vals.len() / 4);
             }
 
-            // Step 4: Normalize seasonal factors (each cycle sums to period)
-            for cycle_start in (0..n).step_by(period)
+            // Step 4: Centre the seasonal factors so that one full cycle of them
+            // averages to zero. Every factor from Step 3 depends only on its
+            // phase, so the shift is the mean over the `period` phase factors,
+            // read from the first cycle (complete because `n >= 2 * period`). The
+            // same shift is applied to every position, including a trailing
+            // partial cycle when `n` is not a multiple of `period`; dividing a
+            // partial cycle's sum by `period` would leave its factors near
+            // `1 - len / period` instead of near zero.
+            let adjustment = seasonal[..period].iter().sum::<f64>() / period as f64;
+            for s in seasonal.iter_mut()
             {
-                let cycle_end = (cycle_start + period).min(n);
-                let cycle_sum: f64 = seasonal[cycle_start..cycle_end].iter().sum();
-                let adjustment = cycle_sum / period as f64;
-                for s in seasonal[cycle_start..cycle_end].iter_mut()
-                {
-                    *s -= adjustment;
-                }
+                *s -= adjustment;
             }
 
             // Step 5: Smooth the seasonal factors ACROSS cycles, per phase. Each
@@ -2193,6 +2195,32 @@ pub mod adjustment {
                 "X-11 should drive seasonal variance to ~0, got {}",
                 adj_var
             );
+        }
+
+        #[test]
+        fn x11_handles_trailing_partial_cycle() {
+            // data[i] = 100 * (1 + 0.2 sin(2πi/12)) is a constant level times a
+            // pure seasonal factor, so the exact multiplicative adjustment is
+            // 100 everywhere. Lengths that are not a multiple of the period end
+            // in a partial cycle, which must be adjusted like any other cycle.
+            let period = 12;
+            for &n in &[239_usize, 240, 246, 250, 251]
+            {
+                let data: Vec<f64> = (0..n)
+                    .map(|i| {
+                        100.0 * (1.0 + 0.2 * (2.0 * std::f64::consts::PI * i as f64 / 12.0).sin())
+                    })
+                    .collect();
+                let adjusted = x11_adjustment(&data, period);
+                assert_eq!(adjusted.len(), n);
+                for (i, &v) in adjusted.iter().enumerate()
+                {
+                    assert!(
+                        (v - 100.0).abs() < 1e-9,
+                        "n={n}: adjusted[{i}] = {v}, expected 100"
+                    );
+                }
+            }
         }
 
         #[test]
