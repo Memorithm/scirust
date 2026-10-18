@@ -2003,9 +2003,39 @@ pub mod trend {
         nf * (nf - 1.0) * (2.0 * nf + 5.0) / 18.0
     }
 
+    /// Tie term of the Mann-Kendall variance: `Σ t_p·(t_p-1)·(2·t_p+5)` over
+    /// every group of `t_p` equal values in `data`.
+    ///
+    /// The tie-corrected variance (Kendall 1975; Hipel & McLeod 1994) is
+    /// `Var(S) = [n·(n-1)·(2n+5) - Σ t_p·(t_p-1)·(2·t_p+5)] / 18`, which is what
+    /// pyMannKendall `original_test` and R `Kendall::MannKendall` use. Values
+    /// are grouped with `==`, so `-0.0` and `0.0` form one group and each NaN
+    /// is a group of its own (contributing nothing).
+    fn mann_kendall_tie_term(data: &[f64]) -> f64 {
+        let mut sorted = data.to_vec();
+        sorted.sort_by(f64::total_cmp);
+        let mut term = 0.0;
+        let mut i = 0;
+        while i < sorted.len()
+        {
+            let mut j = i + 1;
+            while j < sorted.len() && sorted[j] == sorted[i]
+            {
+                j += 1;
+            }
+            let t = (j - i) as f64;
+            term += t * (t - 1.0) * (2.0 * t + 5.0);
+            i = j;
+        }
+        term
+    }
+
     /// Perform the Mann-Kendall trend test.
     ///
-    /// Returns the S statistic, Z statistic, and p-value.
+    /// Returns the S statistic, Z statistic (with continuity correction), and
+    /// the two-sided normal-approximation p-value. The variance of S includes
+    /// the standard correction for tied values, matching pyMannKendall
+    /// `original_test`.
     /// S > 0 indicates increasing trend, S < 0 indicates decreasing.
     pub fn mann_kendall(data: &[f64]) -> (f64, f64, f64) {
         let n = data.len();
@@ -2031,8 +2061,14 @@ pub mod trend {
             }
         }
 
-        // Variance of S (without ties correction for simplicity).
-        let var_s = mann_kendall_var_s(n);
+        // Variance of S with the tie correction; ignoring ties overstates the
+        // variance and therefore the p-value for data with repeated values.
+        let var_s = mann_kendall_var_s(n) - mann_kendall_tie_term(data) / 18.0;
+        if var_s <= 0.0
+        {
+            // Every value is tied (constant series): S = 0, no trend evidence.
+            return (s, 0.0, 1.0);
+        }
 
         // Z statistic
         let z = if s > 0.0
@@ -2273,6 +2309,48 @@ pub mod trend {
             assert!((s - 10.0).abs() < 1e-12, "S={}", s);
             assert!((z - 2.2045).abs() < 0.01, "Z={}", z);
             assert!((p - 0.0275).abs() < 0.005, "p={}", p);
+        }
+
+        #[test]
+        fn mann_kendall_applies_tie_correction() {
+            // Regression: Var(S) ignored ties, so p-values were too large for
+            // data with repeated values. Reference values from pyMannKendall
+            // 1.4.3 `original_test` (scipy 1.18.1), checked by hand:
+            // n = 10, two groups of 5 ties → Σ t(t-1)(2t+5) = 2·300 = 600,
+            // Var(S) = (10·9·25 − 600)/18 = 91.6667, S = 21,
+            // Z = 20/√91.6667 = 2.088932, p = 0.036714.
+            // Without the correction: Var(S) = 125, Z = 1.788854, p = 0.073638.
+            let data = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0];
+            let (s, z, p) = mann_kendall(&data);
+            assert!((s - 21.0).abs() < 1e-12, "S={}", s);
+            assert!((z - 2.088_931_871_47).abs() < 1e-9, "Z={}", z);
+            assert!((p - 0.036_713_856_36).abs() < 1e-5, "p={}", p);
+
+            // Mixed tie groups (sizes 2, 3, 2, 3): pyMannKendall gives
+            // S = 37, Var(S) = 115.6667, Z = 3.347329, p = 0.000816.
+            let data = [1.0, 1.0, 2.0, 2.0, 2.0, 3.0, 3.0, 4.0, 4.0, 4.0];
+            let (s, z, p) = mann_kendall(&data);
+            assert!((s - 37.0).abs() < 1e-12, "S={}", s);
+            assert!((z - 3.347_328_927_82).abs() < 1e-9, "Z={}", z);
+            assert!((p - 0.000_815_943_31).abs() < 1e-5, "p={}", p);
+        }
+
+        #[test]
+        fn mann_kendall_constant_series_is_no_trend() {
+            // All values tied: the tie-corrected Var(S) is 0, so the result
+            // must stay finite (S = 0, Z = 0, p = 1) rather than 0/0.
+            let (s, z, p) = mann_kendall(&[5.0; 6]);
+            assert_eq!(s, 0.0);
+            assert_eq!(z, 0.0);
+            assert!((p - 1.0).abs() < 1e-6, "p={}", p);
+        }
+
+        #[test]
+        fn mann_kendall_tie_term_groups_equal_values() {
+            // Groups {1,1}, {2,2,2}, {3}: 2·1·9 + 3·2·11 + 0 = 18 + 66 = 84.
+            assert!((mann_kendall_tie_term(&[2.0, 1.0, 3.0, 2.0, 1.0, 2.0]) - 84.0).abs() < 1e-12);
+            // No ties → zero.
+            assert_eq!(mann_kendall_tie_term(&[1.0, 2.0, 3.0]), 0.0);
         }
 
         #[test]
