@@ -990,8 +990,11 @@ pub fn regularized_gamma_p(a: f64, x: f64) -> f64 {
 /// Regularized upper incomplete gamma `Q(a, x) = 1 − P(a, x) = Γ(a, x)/Γ(a)`.
 ///
 /// Accurate in the far tail (survival function), where `1 − P` would cancel.
-/// In the series regime (`x < a + 1`) this is `−expm1(ln P)` rather than
-/// `1 − P`, so tiny `Q` at small shapes keeps its relative digits: plain
+/// For small shapes (`a < ½`, `x < 1`) it uses the expansion
+/// `Q = −expm1(L) − e^L·a·S` with `L = a·ln x − ln Γ(1+a)` and
+/// `S = Σ_{n≥1} (−x)^n/(n!·(a+n))`, and elsewhere in the series regime
+/// (`x < a + 1`) `−expm1(ln P)`, rather than `1 − P`, so tiny `Q` at small
+/// shapes keeps its relative digits: plain
 /// `1 − P` rounded to 0 (or went negative) for `a ≲ 1e-16` (e.g. `Q(1e-300,
 /// 1e-300)` was `≈ −2e-14` instead of `≈ 6.9e-298`).
 /// `Q(a, +∞) = 0`; the domain and non-convergence rules match
@@ -1022,6 +1025,17 @@ pub fn regularized_gamma_q(a: f64, x: f64) -> f64 {
             return q;
         }
     }
+    // Small shape below the crossover: the closed form in `gamma_small_a_q`
+    // has no `ln(1 + t) − x` cancellation, so tiny `Q ≈ a·E₁(x)` keeps its
+    // relative digits (the ln P route needed that difference to round exactly).
+    if a < GAMMA_SMALL_A_Q_MAX && x < 1.0
+    {
+        let q = gamma_small_a_q(a, x);
+        if !q.is_nan()
+        {
+            return q;
+        }
+    }
     if x < a + 1.0
     {
         gamma_series_q(a, x)
@@ -1030,6 +1044,48 @@ pub fn regularized_gamma_q(a: f64, x: f64) -> f64 {
     {
         gamma_cf_q(a, x)
     }
+}
+
+// Upper bound on `a` for [`gamma_small_a_q`].
+const GAMMA_SMALL_A_Q_MAX: f64 = 0.5;
+
+// `Q(a, x)` for small `a` and `0 < x < 1` from the convergent expansion
+// `γ(a, x) = Σ_{n≥0} (−x)^n x^a / (n!·(a+n))`, which gives
+//
+//   Q = 1 − x^a/Γ(1+a) · (1 + a·S),   S = Σ_{n≥1} (−x)^n / (n!·(a+n)),
+//     = −expm1(L) − e^L·a·S,          L = a·ln x − ln Γ(1+a).
+//
+// Both pieces are formed without subtracting nearly equal quantities: `L` is
+// a sum of two `O(a)` terms and `S ≈ −Ein(x)` is an alternating series with
+// terms decreasing from `x/(1+a)`. As `a → 0` this is `Q ≈ a·E₁(x)`, so `Q`
+// keeps full relative accuracy even when it is far below `ε` (the scheme
+// Boost uses for its small-`a` upper incomplete gamma). The series route via
+// `ln P = ln(1 + t) − x + …` instead needs `ln(1 + t) − x` to cancel to
+// `O(a·x)`, which only happens when every rounding goes the right way.
+// Returns `NaN` if the series does not converge (it always does for x < 1).
+fn gamma_small_a_q(a: f64, x: f64) -> f64 {
+    let mut term = 1.0; // (−x)^n / n!
+    let mut sum = 0.0;
+    let mut converged = false;
+    for n in 1..=MAX_ITERS
+    {
+        let nf = n as f64;
+        term *= -x / nf;
+        let contrib = term / (a + nf);
+        sum += contrib;
+        if contrib.abs() <= sum.abs() * f64::EPSILON
+        {
+            converged = true;
+            break;
+        }
+    }
+    if !converged
+    {
+        return f64::NAN;
+    }
+    let l = a * x.ln() - ln_gamma_1_plus(a);
+    let q = -l.exp_m1() - l.exp() * a * sum;
+    q.clamp(0.0, 1.0)
 }
 
 // Series tail `t` such that `s = 1 + t` with
