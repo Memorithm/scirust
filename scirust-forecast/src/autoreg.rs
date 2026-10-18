@@ -98,7 +98,14 @@ pub fn ar_fit(series: &[f64], p: usize) -> Result<ArModel, ForecastError> {
     let history = series[n - p..].to_vec();
 
     // Degenerate (constant) series: zero variance -> flat forecast at the mean.
-    if r[0] <= f64::EPSILON
+    // The cutoff is relative to the data's magnitude (rounding-level spread),
+    // not an absolute one: the Yule-Walker coefficients depend only on the
+    // autocorrelations, so a non-constant series with a small variance (e.g.
+    // nanometre-scale data expressed in metres) must still be fitted.
+    let scale = series.iter().fold(0.0_f64, |m, &x| m.max(x.abs()));
+    let rounding_spread = f64::EPSILON * scale;
+    let constant = series.iter().all(|&x| x == series[0]);
+    if constant || r[0] <= rounding_spread * rounding_spread
     {
         return Ok(ArModel {
             coeffs: vec![0.0; p],
