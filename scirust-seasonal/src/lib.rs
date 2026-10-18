@@ -820,7 +820,9 @@ pub mod detection {
 
     /// Compute the Autocorrelation Function (ACF) for lags 0..max_lag.
     ///
-    /// Normalizes by the variance so that lag 0 equals 1.0.
+    /// Normalizes by the variance so that lag 0 equals 1.0. The result is
+    /// invariant to the scale of `data`. A constant series (all values equal)
+    /// has no defined ACF; it returns `1.0` at every lag.
     pub fn acf(data: &[f64], max_lag: usize) -> Vec<f64> {
         let n = data.len();
         if n < 2
@@ -828,13 +830,25 @@ pub mod detection {
             return vec![1.0];
         }
         let max_lag = max_lag.min(n - 1);
-        let m = mean(data);
-        let var = data.iter().map(|&x| (x - m).powi(2)).sum::<f64>();
-        if var < f64::EPSILON
+        if data.iter().all(|&x| x == data[0])
         {
             return vec![1.0; max_lag + 1];
         }
-        let centered: Vec<f64> = data.iter().map(|&x| x - m).collect();
+        let m = mean(data);
+        // Divide by the largest deviation before squaring: the ACF is
+        // scale-invariant, and this keeps Σc² from underflowing for tiny
+        // amplitudes or overflowing for huge ones.
+        let scale = data.iter().fold(0.0_f64, |acc, &x| acc.max((x - m).abs()));
+        let scale = if scale > 0.0 && scale.is_finite()
+        {
+            scale
+        }
+        else
+        {
+            1.0
+        };
+        let centered: Vec<f64> = data.iter().map(|&x| (x - m) / scale).collect();
+        let var = centered.iter().map(|&c| c * c).sum::<f64>();
         let mut result = Vec::with_capacity(max_lag + 1);
         for lag in 0..=max_lag
         {
@@ -1193,6 +1207,71 @@ pub mod detection {
                 period,
                 result.period
             );
+        }
+
+        /// The ACF is scale-invariant: acf(c·x) must equal acf(x) for any c > 0.
+        /// A fixed absolute variance cut-off returned all ones for a 1e-9
+        /// amplitude series, and the unscaled sum of squares overflowed to
+        /// `inf` (giving NaN) at 1e160.
+        #[test]
+        fn acf_is_scale_invariant_for_small_and_large_amplitudes() {
+            let n = 48;
+            let period = 12;
+            let base = sine_wave(n, period);
+            let reference = acf(&base, 24);
+            // Lag `period` of a 4-cycle sine, normalised by Σc²: (n - period) / n = 0.75.
+            assert!(
+                (reference[period] - 0.75).abs() < 1e-9,
+                "acf[12]={}",
+                reference[period]
+            );
+            for &scale in &[1e-9, 1e-12, 1e-160, 1e160]
+            {
+                let scaled: Vec<f64> = base.iter().map(|&x| x * scale).collect();
+                let got = acf(&scaled, 24);
+                assert_eq!(got.len(), reference.len());
+                for (lag, (&g, &r)) in got.iter().zip(reference.iter()).enumerate()
+                {
+                    assert!(
+                        (g - r).abs() < 1e-9,
+                        "scale {scale:e}, lag {lag}: acf={g}, expected {r}"
+                    );
+                }
+            }
+        }
+
+        #[test]
+        fn small_amplitude_acf_period_detection_matches_unit_amplitude() {
+            let n = 48;
+            let period = 12;
+            let base = sine_wave(n, period);
+            let small: Vec<f64> = base.iter().map(|&x| x * 1e-9).collect();
+
+            let acf_base = detect_period_acf(&base, None);
+            let acf_small = detect_period_acf(&small, None);
+            assert_eq!(acf_base.period, period);
+            assert_eq!(acf_small.period, period, "ACF period at 1e-9 amplitude");
+            assert!(
+                (acf_small.strength - acf_base.strength).abs() < 1e-9,
+                "strength {} vs {}",
+                acf_small.strength,
+                acf_base.strength
+            );
+            assert_eq!(detect_period(&small).period, period);
+        }
+
+        #[test]
+        fn acf_constant_series_returns_ones() {
+            // Constant input has no defined ACF; keep the convention of ones,
+            // including when the computed mean is not exactly `c` and the
+            // centred values are rounding noise rather than signal.
+            for &c in &[0.0, 0.1, 5.0, 1e-300, 123_456.789, 1e8 + 0.1, 1e300]
+            {
+                let data = vec![c; 30];
+                let a = acf(&data, 5);
+                assert_eq!(a.len(), 6);
+                assert!(a.iter().all(|&v| v == 1.0), "c={c}: {a:?}");
+            }
         }
 
         #[test]
