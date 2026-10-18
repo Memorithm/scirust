@@ -957,16 +957,36 @@ pub mod detection {
     /// Detect the dominant period from the periodogram.
     ///
     /// Finds the frequency bin (excluding DC) with the highest power,
-    /// then returns `1/frequency` as the period.
+    /// then returns `1/frequency` as the period. The strength is the share
+    /// of that bin in the total non-DC power, so it does not depend on the
+    /// amplitude of `data`. A constant series has no spectral peak and
+    /// returns period `0`, strength `0.0` and no candidates.
     pub fn dominant_frequency(data: &[f64]) -> PeriodDetection {
-        let (frequencies, power) = periodogram(data);
+        let no_period = PeriodDetection {
+            period: 0,
+            strength: 0.0,
+            candidates: Vec::new(),
+        };
+        if data.is_empty() || data.iter().all(|&x| x == data[0])
+        {
+            return no_period;
+        }
+        // Period and strength are scale-invariant. Dividing by the largest
+        // magnitude first keeps the power from underflowing for tiny
+        // amplitudes or overflowing to `inf` for huge ones.
+        let scale = data.iter().fold(0.0_f64, |acc, &x| acc.max(x.abs()));
+        let (frequencies, power) = if scale > 0.0 && scale.is_finite()
+        {
+            let scaled: Vec<f64> = data.iter().map(|&x| x / scale).collect();
+            periodogram(&scaled)
+        }
+        else
+        {
+            periodogram(data)
+        };
         if power.len() <= 1
         {
-            return PeriodDetection {
-                period: 0,
-                strength: 0.0,
-                candidates: Vec::new(),
-            };
+            return no_period;
         }
 
         // Skip DC (bin 0), only look at positive frequencies up to Nyquist.
@@ -993,7 +1013,7 @@ pub mod detection {
             {
                 0
             };
-            let strength = if total_power > f64::EPSILON
+            let strength = if total_power > 0.0
             {
                 pwr / total_power
             }
@@ -1014,7 +1034,7 @@ pub mod detection {
         {
             0
         };
-        let strength = if total_power > f64::EPSILON
+        let strength = if total_power > 0.0
         {
             dominant_power / total_power
         }
@@ -1317,6 +1337,68 @@ pub mod detection {
             // The zero-padded tail of a demeaned constant series carries no power.
             let (_, flat) = periodogram(&vec![42.0; 200]);
             assert!(flat.iter().all(|&v| v < 1e-18), "{flat:?}");
+        }
+
+        /// The spectral strength `P(peak) / sum(P)` is a ratio, so it must not
+        /// depend on the amplitude of the series. A fixed absolute cut-off on the
+        /// total power returned strength 0 for a 1e-9 amplitude sine, and the
+        /// unscaled power overflowed to `inf` at 1e160 (strength NaN, and
+        /// period 256 instead of 12 for n = 200).
+        #[test]
+        fn dominant_frequency_is_scale_invariant() {
+            for &(n, period, min_strength) in &[(256, 16, 0.9), (200, 12, 0.5)]
+            {
+                let base = sine_wave(n, period);
+                let reference = dominant_frequency(&base);
+                assert_eq!(reference.period, period, "n={n}");
+                assert!(
+                    reference.strength > min_strength,
+                    "n={n}: strength {}",
+                    reference.strength
+                );
+                for &scale in &[1e-9, 1e-12, 1e-160, 1e160]
+                {
+                    let scaled: Vec<f64> = base.iter().map(|&x| x * scale).collect();
+                    let got = dominant_frequency(&scaled);
+                    assert_eq!(got.period, period, "n={n}, scale {scale:e}");
+                    assert!(
+                        (got.strength - reference.strength).abs() < 1e-9,
+                        "n={n}, scale {scale:e}: strength {} vs {}",
+                        got.strength,
+                        reference.strength
+                    );
+                    assert_eq!(got.candidates.len(), reference.candidates.len());
+                    for (g, r) in got.candidates.iter().zip(reference.candidates.iter())
+                    {
+                        // Bins holding only rounding noise have no stable order.
+                        if r.strength > 1e-6
+                        {
+                            assert_eq!(g.period, r.period, "n={n}, scale {scale:e}");
+                        }
+                        assert!(
+                            (g.strength - r.strength).abs() < 1e-9,
+                            "n={n}, scale {scale:e}: candidate strength {} vs {}",
+                            g.strength,
+                            r.strength
+                        );
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn dominant_frequency_constant_series_has_no_period() {
+            // Includes levels whose computed mean is not exactly `c`, where the
+            // centred values are rounding noise rather than signal.
+            for &c in &[0.0, 0.1, 5.0, 123_456.789, 1e8 + 0.1, 1e300]
+            {
+                let got = dominant_frequency(&vec![c; 30]);
+                assert_eq!(got.strength, 0.0, "c={c}");
+                assert!(
+                    got.candidates.iter().all(|cand| cand.strength == 0.0),
+                    "c={c}"
+                );
+            }
         }
 
         #[test]
