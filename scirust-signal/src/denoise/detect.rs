@@ -916,6 +916,43 @@ mod tests {
     }
 
     #[test]
+    fn impulsive_verdict_does_not_depend_on_signal_units() {
+        // Regression: `features::kurtosis` returned 0 for any record whose
+        // variance was below f64::EPSILON, so the same impulsive record
+        // expressed in small units (std ≲ 1.5e-8) lost its kurtosis and was
+        // classified Baseline instead of Impulsive. Same fixture as
+        // `detects_impulsive_noise`, rescaled by exact powers of two.
+        let mut rng = Lcg::new(103);
+        let mut obs: Vec<f64> = base_sine(512)
+            .iter()
+            .map(|&c| c + 0.05 * rng.gauss())
+            .collect();
+        for v in obs.iter_mut()
+        {
+            if rng.uniform() < 1.0 / 37.0
+            {
+                *v += 8.0;
+            }
+        }
+        let reference = classify(&obs, 512.0);
+        assert_eq!(reference.dominant, NoiseType::Impulsive);
+        for scale in [2f64.powi(-30), 2f64.powi(-40)]
+        {
+            let scaled: Vec<f64> = obs.iter().map(|v| v * scale).collect();
+            let p = classify(&scaled, 512.0);
+            assert_eq!(p.dominant, NoiseType::Impulsive, "scale {scale:e}");
+            let rel = (p.residual_kurtosis - reference.residual_kurtosis).abs()
+                / reference.residual_kurtosis;
+            assert!(
+                rel < 1e-12,
+                "kurtosis {} vs {}",
+                p.residual_kurtosis,
+                reference.residual_kurtosis
+            );
+        }
+    }
+
+    #[test]
     fn periodic_spike_train_is_a_legitimate_feature() {
         // A *periodic* high-crest train — an ECG's QRS complexes, an engine's knock,
         // any repeated transient — is signal, not impulsive noise: the impulsive gate
