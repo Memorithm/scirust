@@ -6,4 +6,5 @@ publish = false
 description = "SciRust metrology — GUM uncertainty propagation, Allan variance, sensor drift / recalibration scheduling"
 
 [dependencies]
+scirust-stats = { path = "../scirust-stats" }
 serde = { version = "1", features = ["derive"] }
