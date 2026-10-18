@@ -61,6 +61,21 @@ fn variance(data: &[f64]) -> f64 {
 }
 
 /// Pad a centered array (shorter than n) to full length by repeating edge values.
+/// Subtract the sample mean of `data`, then zero-pad to `target_len`.
+///
+/// The mean must be removed before padding: subtracting it afterwards would
+/// fill the padded tail with `-mean`, a rectangular pulse whose low-frequency
+/// leakage dominates the spectrum of any series with a non-zero level.
+fn demean_and_zero_pad(data: &[f64], target_len: usize) -> Vec<f64> {
+    let m = mean(data);
+    let mut out: Vec<f64> = data.iter().map(|&x| x - m).collect();
+    if out.len() < target_len
+    {
+        out.resize(target_len, 0.0);
+    }
+    out
+}
+
 fn pad_centered(data: &mut Vec<f64>, target_len: usize) {
     let current_len = data.len();
     if current_len >= target_len
@@ -918,7 +933,9 @@ pub mod detection {
     /// Compute the periodogram (power spectrum) of the time series.
     ///
     /// Returns (frequencies, power) pairs for positive frequencies.
-    /// Input is zero-padded to the next power of 2 for FFT.
+    /// The sample mean is removed first, then the series is zero-padded to
+    /// the next power of 2 for the FFT, so a constant level does not change
+    /// the spectrum.
     pub fn periodogram(data: &[f64]) -> (Vec<f64>, Vec<f64>) {
         let n = data.len();
         if n == 0
@@ -927,15 +944,7 @@ pub mod detection {
         }
 
         let fft_size = next_pow2(n);
-        let mut padded: Vec<f64> = data.to_vec();
-        padded.resize(fft_size, 0.0);
-
-        // Remove mean
-        let m = mean(data);
-        for v in padded.iter_mut()
-        {
-            *v -= m;
-        }
+        let padded = demean_and_zero_pad(data, fft_size);
 
         let spectrum = fft_real(&padded);
         let n_f64 = fft_size as f64;
@@ -1274,6 +1283,42 @@ pub mod detection {
             }
         }
 
+        /// The mean must be removed from the samples only, before zero-padding.
+        /// Subtracting it after padding turned the padded tail into a block of
+        /// `-mean`, whose low-frequency leakage swamped the real spectrum for
+        /// any series with a non-zero level (n = 200 is padded to 256).
+        #[test]
+        fn periodogram_is_invariant_to_a_constant_offset() {
+            let n = 200;
+            let period = 12;
+            let base = sine_wave(n, period);
+            let (f0, p0) = periodogram(&base);
+            for &offset in &[1.0, 100.0, -1e4]
+            {
+                let shifted: Vec<f64> = base.iter().map(|&x| x + offset).collect();
+                let (f1, p1) = periodogram(&shifted);
+                assert_eq!(f0, f1);
+                let peak = p0.iter().cloned().fold(0.0, f64::max);
+                for (k, (&a, &b)) in p0.iter().zip(p1.iter()).enumerate()
+                {
+                    assert!(
+                        (a - b).abs() <= 1e-9 * peak.max(offset.abs()),
+                        "offset {offset}, bin {k}: power {b} vs {a}"
+                    );
+                }
+                let detected = dominant_frequency(&shifted);
+                assert_eq!(detected.period, period, "offset {offset}");
+                assert!(
+                    detected.strength > 0.5,
+                    "offset {offset}: strength {}",
+                    detected.strength
+                );
+            }
+            // The zero-padded tail of a demeaned constant series carries no power.
+            let (_, flat) = periodogram(&vec![42.0; 200]);
+            assert!(flat.iter().all(|&v| v < 1e-18), "{flat:?}");
+        }
+
         #[test]
         fn combined_detect_period() {
             let n = 240;
@@ -1319,15 +1364,7 @@ pub mod cyclic {
         }
 
         let fft_size = next_pow2(n);
-        let mut padded: Vec<f64> = data.to_vec();
-        padded.resize(fft_size, 0.0);
-
-        // Remove mean
-        let m = mean(&padded);
-        for v in padded.iter_mut()
-        {
-            *v -= m;
-        }
+        let padded = demean_and_zero_pad(data, fft_size);
 
         let spectrum = fft_real(&padded);
         let n_f64 = fft_size as f64;
@@ -1535,14 +1572,7 @@ pub mod cyclic {
         }
 
         let fft_size = next_pow2(data.len());
-        let mut padded: Vec<f64> = data.to_vec();
-        padded.resize(fft_size, 0.0);
-
-        let m = mean(data);
-        for v in padded.iter_mut()
-        {
-            *v -= m;
-        }
+        let padded = demean_and_zero_pad(data, fft_size);
 
         let spectrum = fft_real(&padded);
         let bin = (fft_size as f64 / period as f64).round() as usize;
@@ -1667,6 +1697,44 @@ pub mod cyclic {
                 "amplitude should be ~1.0 for the short-period sine, got {}",
                 pattern.amplitude
             );
+        }
+
+        /// fourier_analysis and detect_phase_fft must remove the sample mean
+        /// before zero-padding, so a constant level does not change the
+        /// detected cycle, amplitude or phase (n = 200 is padded to 256).
+        #[test]
+        fn fourier_and_phase_fft_are_invariant_to_a_constant_offset() {
+            let n = 200;
+            let period = 20;
+            let base: Vec<f64> = (0..n)
+                .map(|i| 3.0 * (2.0 * std::f64::consts::PI * i as f64 / period as f64 + 0.7).sin())
+                .collect();
+            let ref_pattern = fourier_analysis(&base);
+            let ref_phase = detect_phase_fft(&base, period);
+            assert!((ref_pattern.cycle_length - period as f64).abs() < 1.0);
+            for &offset in &[10.0, 500.0, -2e3]
+            {
+                let shifted: Vec<f64> = base.iter().map(|&x| x + offset).collect();
+                let pattern = fourier_analysis(&shifted);
+                assert!(
+                    (pattern.cycle_length - ref_pattern.cycle_length).abs() < 1e-9,
+                    "offset {offset}: cycle_length {} vs {}",
+                    pattern.cycle_length,
+                    ref_pattern.cycle_length
+                );
+                assert!(
+                    (pattern.amplitude - ref_pattern.amplitude).abs()
+                        < 1e-9 * offset.abs().max(1.0),
+                    "offset {offset}: amplitude {} vs {}",
+                    pattern.amplitude,
+                    ref_pattern.amplitude
+                );
+                let phase = detect_phase_fft(&shifted, period);
+                assert!(
+                    (phase - ref_phase).abs() < 1e-9,
+                    "offset {offset}: phase {phase} vs {ref_phase}"
+                );
+            }
         }
 
         #[test]
