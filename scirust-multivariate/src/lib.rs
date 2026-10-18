@@ -228,6 +228,10 @@ impl PcaResult {
 
 /// Fit PCA on a data matrix (rows = observations, cols = variables).
 /// Uses Jacobi eigenvalue algorithm on the covariance matrix.
+///
+/// Non-finite input (NaN, or values whose covariance overflows) does not
+/// panic: it propagates into the result, with NaN eigenvalues sorted last
+/// and NaN explained-variance ratios when the total variance is NaN.
 pub fn pca_fit(data: &Matrix) -> PcaResult {
     let (centered, means) = data.center();
     let cov = centered.cov_matrix();
@@ -238,16 +242,22 @@ pub fn pca_fit(data: &Matrix) -> PcaResult {
 
     // Sort descending
     let mut indices: Vec<usize> = (0..n).collect();
-    indices.sort_by(|&a, &b| eigenvalues[b].partial_cmp(&eigenvalues[a]).unwrap());
+    indices.sort_by(|&a, &b| descending_nan_last(eigenvalues[a], eigenvalues[b]));
 
     let sorted_evals: Vec<f64> = indices.iter().map(|&i| eigenvalues[i]).collect();
     let sorted_evecs: Vec<Vec<f64>> = indices.iter().map(|&i| eigenvectors[i].clone()).collect();
 
     let total_var: f64 = sorted_evals.iter().sum();
     // Guard against constant data (zero total variance) to avoid NaN ratios.
+    // A NaN total (non-finite input) is reported as NaN ratios, not as the
+    // zero ratios of constant data.
     let explained_variance_ratio: Vec<f64> = if total_var > 0.0
     {
         sorted_evals.iter().map(|e| e / total_var).collect()
+    }
+    else if total_var.is_nan()
+    {
+        vec![f64::NAN; sorted_evals.len()]
     }
     else
     {
@@ -328,6 +338,25 @@ pub fn pca_scree(pca: &PcaResult) -> Vec<(usize, f64)> {
 }
 
 // ──────────────────────── Jacobi eigenvalue ────────────────────────
+
+/// Ordering that sorts eigenvalues in descending order with every NaN
+/// placed after all other values.
+///
+/// Non-finite input (a NaN reading, or finite values large enough for a
+/// covariance or squared distance to overflow, where `inf - inf` then
+/// yields NaN) produces NaN eigenvalues. `partial_cmp(..).unwrap()` panicked
+/// on them; this comparator is a total order, so the fit returns instead
+/// and the NaN components are ranked last. For non-NaN values it orders
+/// exactly as `b.partial_cmp(&a)` (with `-0.0 == 0.0`), so results on
+/// finite eigenvalues are unchanged.
+fn descending_nan_last(a: f64, b: f64) -> std::cmp::Ordering {
+    match b.partial_cmp(&a)
+    {
+        Some(order) => order,
+        // At least one side is NaN: NaN sorts after any number.
+        None => a.is_nan().cmp(&b.is_nan()),
+    }
+}
 
 /// Compute all eigenvalues and eigenvectors of a symmetric matrix
 /// using the Jacobi rotation method.
@@ -473,6 +502,10 @@ pub struct IcaResult {
 /// `n_components`: number of independent components to extract.
 /// `max_iter`: maximum iterations.
 /// `tol`: convergence tolerance.
+///
+/// Non-finite input (NaN, or values whose covariance overflows) does not
+/// panic, but the result is then not meaningful: screen the data with
+/// [`f64::is_finite`] first.
 #[allow(clippy::needless_range_loop)]
 pub fn ica_fit(data: &Matrix, n_components: usize, max_iter: usize, tol: f64) -> IcaResult {
     let (centered, means) = data.center();
@@ -486,7 +519,7 @@ pub fn ica_fit(data: &Matrix, n_components: usize, max_iter: usize, tol: f64) ->
 
     // Sort eigenvalues descending and take top k
     let mut idx: Vec<usize> = (0..p).collect();
-    idx.sort_by(|&a, &b| evals[b].partial_cmp(&evals[a]).unwrap());
+    idx.sort_by(|&a, &b| descending_nan_last(evals[a], evals[b]));
 
     // Whitening matrix: W = D^{-1/2} * E^T
     let mut whitening = Matrix::zeros(k, p);
@@ -1225,6 +1258,9 @@ pub struct MdsResult {
 ///
 /// `dist_matrix`: symmetric distance matrix (n × n).
 /// `n_components`: target dimensionality.
+///
+/// A NaN distance, or distances whose squares overflow, does not panic: it
+/// propagates to non-finite eigenvalues, NaN ones sorted last.
 #[allow(clippy::needless_range_loop)]
 pub fn classical_mds(dist_matrix: &Matrix, n_components: usize) -> MdsResult {
     let n = dist_matrix.rows;
@@ -1268,7 +1304,7 @@ pub fn classical_mds(dist_matrix: &Matrix, n_components: usize) -> MdsResult {
 
     // Sort descending
     let mut indices: Vec<usize> = (0..n).collect();
-    indices.sort_by(|&a, &b| evals[b].partial_cmp(&evals[a]).unwrap());
+    indices.sort_by(|&a, &b| descending_nan_last(evals[a], evals[b]));
 
     let sorted_evals: Vec<f64> = indices
         .iter()
@@ -1351,6 +1387,10 @@ pub struct CcaResult {
 /// `x`: first data matrix (n × p1).
 /// `y`: second data matrix (n × p2).
 /// `n_components`: number of canonical pairs to return.
+///
+/// Non-finite input (NaN, or values whose covariances overflow) does not
+/// panic, but the result is then not meaningful: screen the data with
+/// [`f64::is_finite`] first.
 pub fn cca_fit(x: &Matrix, y: &Matrix, n_components: usize) -> CcaResult {
     assert_eq!(
         x.rows, y.rows,
@@ -1408,7 +1448,7 @@ pub fn cca_fit(x: &Matrix, y: &Matrix, n_components: usize) -> CcaResult {
 
     // Sort by eigenvalue descending
     let mut indices_a: Vec<usize> = (0..p1).collect();
-    indices_a.sort_by(|&i, &j| evals_a[j].partial_cmp(&evals_a[i]).unwrap());
+    indices_a.sort_by(|&i, &j| descending_nan_last(evals_a[i], evals_a[j]));
 
     let mut correlations = Vec::with_capacity(nc);
     let mut weights_x = Vec::with_capacity(nc);
@@ -2409,5 +2449,157 @@ mod tests {
             "second canonical correlation lost: {}",
             result.correlations[1]
         );
+    }
+
+    /// Twelve observations of three variables with one missing (NaN)
+    /// reading, as produced by a sensor dropout.
+    fn data_with_nan() -> Matrix {
+        let data: Vec<Vec<f64>> = (0..12)
+            .map(|i| {
+                let t = f64::from(i);
+                vec![t, (t * 0.7).sin() * 3.0 + 0.5 * t, (t * 1.3).cos()]
+            })
+            .collect();
+        let mut m = Matrix {
+            rows: data.len(),
+            cols: 3,
+            data,
+        };
+        m.data[4][1] = f64::NAN;
+        m
+    }
+
+    /// Split the columns of `m` into `(first k columns, remaining columns)`.
+    fn split_cols(m: &Matrix, k: usize) -> (Matrix, Matrix) {
+        let left: Vec<Vec<f64>> = m.data.iter().map(|r| r[..k].to_vec()).collect();
+        let right: Vec<Vec<f64>> = m.data.iter().map(|r| r[k..].to_vec()).collect();
+        (
+            Matrix {
+                rows: m.rows,
+                cols: k,
+                data: left,
+            },
+            Matrix {
+                rows: m.rows,
+                cols: m.cols - k,
+                data: right,
+            },
+        )
+    }
+
+    /// Every NaN must come after every non-NaN value, and the non-NaN
+    /// prefix must be in descending order.
+    fn assert_descending_nan_last(values: &[f64]) {
+        let first_nan = values
+            .iter()
+            .position(|v| v.is_nan())
+            .unwrap_or(values.len());
+        assert!(
+            values[first_nan..].iter().all(|v| v.is_nan()),
+            "NaN not sorted last: {values:?}"
+        );
+        assert!(
+            values[..first_nan].windows(2).all(|w| w[0] >= w[1]),
+            "not descending: {values:?}"
+        );
+    }
+
+    #[test]
+    fn descending_nan_last_is_a_total_order() {
+        let mut v = [
+            1.0,
+            f64::NAN,
+            3.0,
+            -2.0,
+            f64::NEG_INFINITY,
+            -f64::NAN,
+            0.0,
+            f64::INFINITY,
+        ];
+        v.sort_by(|a, b| descending_nan_last(*a, *b));
+        assert_eq!(
+            &v[..6],
+            &[f64::INFINITY, 3.0, 1.0, 0.0, -2.0, f64::NEG_INFINITY]
+        );
+        assert!(v[6].is_nan() && v[7].is_nan(), "{v:?}");
+    }
+
+    #[test]
+    fn pca_fit_with_nan_input_does_not_panic() {
+        // Regression: the eigenvalue sort used `partial_cmp(..).unwrap()`,
+        // so a single NaN reading made `pca_fit` panic.
+        let pca = pca_fit(&data_with_nan());
+        assert_eq!(pca.eigenvalues.len(), 3);
+        assert_eq!(pca.eigenvectors.len(), 3);
+        assert_descending_nan_last(&pca.eigenvalues);
+        assert!(pca.eigenvalues.iter().any(|e| e.is_nan()));
+        // The NaN must not be disguised as the zero ratios of constant data.
+        assert!(
+            pca.explained_variance_ratio.iter().all(|r| r.is_nan()),
+            "{:?}",
+            pca.explained_variance_ratio
+        );
+    }
+
+    #[test]
+    fn ica_fit_with_nan_input_does_not_panic() {
+        // Regression: same `partial_cmp(..).unwrap()` panic in the whitening
+        // step's eigenvalue sort.
+        let ica = ica_fit(&data_with_nan(), 2, 50, 1e-6);
+        assert_eq!(ica.separation_matrix.len(), 2);
+        assert_eq!(ica.means.len(), 3);
+    }
+
+    #[test]
+    fn classical_mds_with_nan_or_overflowing_distances_does_not_panic() {
+        // Distances between five points on a line, scaled by `scale`.
+        let line = |scale: f64| {
+            let n = 5;
+            let mut d = Matrix::zeros(n, n);
+            for i in 0..n
+            {
+                for j in 0..n
+                {
+                    d.data[i][j] = (f64::from(i as u8) - f64::from(j as u8)).abs() * scale;
+                }
+            }
+            d
+        };
+        // Regression: a NaN distance panicked in the eigenvalue sort.
+        let mut d = line(1.0);
+        d.data[1][3] = f64::NAN;
+        d.data[3][1] = f64::NAN;
+        let mds = classical_mds(&d, 2);
+        assert_eq!(mds.coordinates.len(), 5);
+        assert_eq!(mds.eigenvalues.len(), 2);
+        assert_descending_nan_last(&mds.eigenvalues);
+        // Finite distances whose squares overflow (~1e160) also panicked:
+        // `inf - inf` in the double centring yields NaN eigenvalues.
+        let mds = classical_mds(&line(1e160), 2);
+        assert_eq!(mds.coordinates.len(), 5);
+        assert_descending_nan_last(&mds.eigenvalues);
+    }
+
+    #[test]
+    fn cca_fit_with_nan_or_overflowing_input_does_not_panic() {
+        // Regression: a NaN reading panicked in the eigenvalue sort.
+        let (x, y) = split_cols(&data_with_nan(), 2);
+        let cca = cca_fit(&x, &y, 1);
+        assert_eq!(cca.correlations.len(), 1);
+        assert_eq!(cca.weights_x.len(), 1);
+        // Finite data at a ~1e160 scale (covariances overflow to inf) also
+        // panicked there.
+        let mut big = data_with_nan();
+        big.data[4][1] = 2.0;
+        for row in &mut big.data
+        {
+            for v in row.iter_mut()
+            {
+                *v *= 1e160;
+            }
+        }
+        let (x, y) = split_cols(&big, 2);
+        let cca = cca_fit(&x, &y, 1);
+        assert_eq!(cca.correlations.len(), 1);
     }
 }
