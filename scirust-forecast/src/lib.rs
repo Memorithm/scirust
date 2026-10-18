@@ -216,6 +216,41 @@ mod tests {
         assert!(approx(fc[0], phi * last, 0.1 * (last.abs() + 1.0) + 0.2));
     }
 
+    #[test]
+    fn ar_fit_is_scale_invariant_for_small_amplitude_series() {
+        // Reference: statsmodels 0.15.0
+        // `yule_walker(x, order=2, method="mle", demean=True)` gives
+        // phi = [-0.44902052, -0.42547066] for both `x` and `1e-9 * x`
+        // (sample variance 0.78 and 7.8e-19). Yule-Walker coefficients only
+        // depend on the autocorrelations, so the units of the series must not
+        // matter; a non-constant series with variance below f64::EPSILON used
+        // to be treated as constant and fitted with all-zero coefficients.
+        let base = [
+            0.3, -1.2, 0.8, 1.5, -0.4, -0.9, 0.2, 1.1, -0.6, 0.7, -1.3, 0.5,
+        ];
+        let want = [-0.449_020_52, -0.425_470_66];
+        for scale in [1.0, 1e-9]
+        {
+            let series: Vec<f64> = base.iter().map(|v| v * scale).collect();
+            let model = ar_fit(&series, 2).unwrap();
+            for (got, w) in model.coefficients().iter().zip(want)
+            {
+                assert!(approx(*got, w, 1e-6), "scale {scale}: phi {got} vs {w}");
+            }
+        }
+        let unit = ar_fit(&base, 2).unwrap().forecast(3);
+        let small: Vec<f64> = base.iter().map(|v| v * 1e-9).collect();
+        let tiny = ar_fit(&small, 2).unwrap().forecast(3);
+        for (u, t) in unit.iter().zip(&tiny)
+        {
+            assert!(
+                (t - 1e-9 * u).abs() <= 1e-9 * 1e-9 * u.abs().max(1.0),
+                "forecast {t} vs scaled {}",
+                1e-9 * u
+            );
+        }
+    }
+
     // ---------- ARIMA ----------
 
     #[test]
@@ -310,6 +345,33 @@ mod tests {
             "theta_hat = {}",
             model.ma_coefficients()[0]
         );
+    }
+
+    #[test]
+    fn arima_coefficients_do_not_depend_on_series_units() {
+        // Hannan-Rissanen stage 1 uses `ar_fit`; with an absolute variance
+        // cutoff a 1e-9-scaled MA(1) series got all-zero long-AR coefficients
+        // and the ARMA(1,1) fit came out as phi = 1.58, theta = -1.1 instead
+        // of the unit-scale phi = 0.096, theta = 0.571.
+        let mut state = 0xABCD_EF01_2345_6789_u64;
+        let n = 800;
+        let e: Vec<f64> = (0..n).map(|_| next_unit(&mut state)).collect();
+        let series = |s: f64| -> Vec<f64> {
+            (0..n)
+                .map(|t| s * (e[t] + if t > 0 { 0.6 * e[t - 1] } else { 0.0 }))
+                .collect()
+        };
+        let unit = arima_fit(&series(1.0), 1, 0, 1).unwrap();
+        let tiny = arima_fit(&series(1e-9), 1, 0, 1).unwrap();
+        let pairs = unit
+            .ar_coefficients()
+            .iter()
+            .chain(unit.ma_coefficients())
+            .zip(tiny.ar_coefficients().iter().chain(tiny.ma_coefficients()));
+        for (u, t) in pairs
+        {
+            assert!(approx(*t, *u, 1e-6), "1e-9 scale {t} vs unit scale {u}");
+        }
     }
 
     #[test]
