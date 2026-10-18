@@ -151,26 +151,31 @@ fn inv_normal_cdf(p: f64) -> f64 {
 }
 
 /// Two-sided Student-t critical value for confidence level `conf` (e.g. 0.95)
-/// with `df` degrees of freedom, via the Cornish-Fisher expansion in terms of
-/// the corresponding normal quantile. Accurate to a few parts in 1e-4 for df ≥ 2.
+/// with `df` degrees of freedom, i.e. the quantile `t_{(1 + conf)/2, df}`.
+///
+/// `df = 1` (Cauchy) and `df = 2` use their exact closed forms; any other
+/// positive finite `df` (integer or not) inverts the Student-t CDF built on the
+/// regularized incomplete beta (`scirust_core::nn::intervals::student_t_ppf`),
+/// which agrees with `scipy.stats.t.ppf` to better than 1e-9 relative for
+/// `conf` up to 0.999. A non-positive or non-finite `df` falls back to the
+/// normal quantile (the `df → ∞` limit).
 fn t_critical(conf: f64, df: f64) -> f64 {
     // Upper-tail probability of the two-sided interval: 1 - alpha/2.
     let p = 0.5 + conf / 2.0;
-    let z = inv_normal_cdf(p);
-    if df <= 0.0 || !df.is_finite()
+    if df <= 0.0 || !df.is_finite() || !(p > 0.0 && p < 1.0)
     {
-        return z;
+        return inv_normal_cdf(p);
     }
-    let z2 = z * z;
-    let z3 = z2 * z;
-    let z5 = z3 * z2;
-    let z7 = z5 * z2;
-    let z9 = z7 * z2;
-    let g1 = (z3 + z) / 4.0;
-    let g2 = (5.0 * z5 + 16.0 * z3 + 3.0 * z) / 96.0;
-    let g3 = (3.0 * z7 + 19.0 * z5 + 17.0 * z3 - 15.0 * z) / 384.0;
-    let g4 = (79.0 * z9 + 776.0 * z7 + 1482.0 * z5 - 1920.0 * z3 - 945.0 * z) / 92160.0;
-    z + g1 / df + g2 / df.powi(2) + g3 / df.powi(3) + g4 / df.powi(4)
+    if df == 1.0
+    {
+        // Cauchy quantile.
+        return (std::f64::consts::PI * (p - 0.5)).tan();
+    }
+    if df == 2.0
+    {
+        return (2.0 * p - 1.0) / (2.0 * p * (1.0 - p)).sqrt();
+    }
+    scirust_core::nn::intervals::student_t_ppf(p, df)
 }
 
 /// Quantile of a sorted slice (linear interpolation).
@@ -2111,8 +2116,7 @@ pub mod trend {
             0.0
         };
 
-        // Student-t 0.975 critical value for a 95% CI with df = n - 2, via the
-        // Cornish-Fisher expansion (accurate for df >= 2).
+        // Student-t 0.975 critical value for a 95% CI with df = n - 2.
         let t_crit = if n > 2
         {
             t_critical(0.95, n as f64 - 2.0)
@@ -2494,6 +2498,22 @@ pub mod changepoint {
             .collect();
         let phase_seasonal = phase_means(&seasonal, period);
 
+        // `significance` is the two-sided alpha level of the mean-shift test;
+        // convert it to a Student-t critical value with
+        // df = (n_left - 1) + (n_right - 1), both windows holding `half_win`
+        // points. It does not depend on the position, so compute it once.
+        // A significance outside (0, 1) falls back to the conventional 0.05.
+        let alpha = if significance > 0.0 && significance < 1.0
+        {
+            significance
+        }
+        else
+        {
+            0.05
+        };
+        let df = 2.0 * half_win as f64 - 2.0;
+        let critical_t = t_critical(1.0 - alpha, df);
+
         let mut change_points = Vec::new();
         let mut last_cp = 0usize;
 
@@ -2535,19 +2555,6 @@ pub mod changepoint {
             };
 
             // Combined criterion: significant mean shift or variance change.
-            // `significance` is the two-sided alpha level; convert it to a
-            // Student-t critical value with df = (n_left - 1) + (n_right - 1).
-            // A non-positive alpha falls back to the conventional 0.05 level.
-            let alpha = if significance > 0.0 && significance < 1.0
-            {
-                significance
-            }
-            else
-            {
-                0.05
-            };
-            let df = (left.len() + right.len()) as f64 - 2.0;
-            let critical_t = t_critical(1.0 - alpha, df);
             if t_stat > critical_t || (f_stat > 2.0 || f_stat < 0.5)
             {
                 let magnitude = t_stat.max((f_stat - 1.0).abs());
@@ -2879,5 +2886,157 @@ mod integration_tests {
         let single = vec![42.0];
         let result = trend_analysis(&single);
         assert_eq!(result.slope, 0.0);
+    }
+}
+
+#[cfg(test)]
+mod t_critical_tests {
+    use super::{inv_normal_cdf, t_critical};
+
+    /// Relative-error check (never bit-for-bit).
+    fn assert_rel(got: f64, want: f64, tol: f64, what: &str) {
+        let rel = ((got - want) / want).abs();
+        assert!(
+            rel < tol,
+            "{what}: got {got}, want {want} (rel err {rel:e})"
+        );
+    }
+
+    // Reference values: scipy.stats.t.ppf((1 + conf) / 2, df), SciPy 1.18.1.
+    const DFS: [f64; 13] = [
+        1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0, 15.0, 20.0, 30.0, 60.0, 120.0,
+    ];
+    const REF_090: [f64; 13] = [
+        6.313751514675037,
+        2.919985580353724,
+        2.353363434801823,
+        2.13184678632665,
+        2.015048373333023,
+        1.943180280515304,
+        1.859548037530897,
+        1.812461122811676,
+        1.753050355692572,
+        1.724718242920787,
+        1.697260886593957,
+        1.670648864904636,
+        1.657650899355235,
+    ];
+    const REF_095: [f64; 13] = [
+        12.706204736174694,
+        4.302652729749462,
+        3.182446305283708,
+        2.776445105197793,
+        2.570581835636315,
+        2.446911851144979,
+        2.306004135204166,
+        2.228138851986274,
+        2.131449545559776,
+        2.085963447265864,
+        2.042272456301238,
+        2.00029782201426,
+        1.97993040508244,
+    ];
+    const REF_099: [f64; 13] = [
+        63.656741162871526,
+        9.924843200918287,
+        5.840909309733355,
+        4.604094871349992,
+        4.032142983555228,
+        3.707428021324807,
+        3.355387331333395,
+        3.16927267261695,
+        2.946712883475238,
+        2.845339709786108,
+        2.749995653567225,
+        2.660283028855037,
+        2.617421145106865,
+    ];
+    const REF_0999: [f64; 13] = [
+        636.6192487687897,
+        31.599054576445365,
+        12.923978636687961,
+        8.610301581379522,
+        6.868826625881276,
+        5.95881617881889,
+        5.041305433373456,
+        4.586893858702708,
+        4.072765195903846,
+        3.849516274930874,
+        3.645958635042063,
+        3.460200469196392,
+        3.373453768562533,
+    ];
+
+    #[test]
+    fn small_df_95_matches_student_t_table() {
+        // The truncated Cornish-Fisher series returned 11.300 at df = 1 and
+        // 4.2706 at df = 2 (11 % and 0.75 % too small).
+        assert_rel(t_critical(0.95, 1.0), 12.706_204_736_174_694, 1e-9, "df=1");
+        assert_rel(t_critical(0.95, 2.0), 4.302_652_729_749_462, 1e-9, "df=2");
+        assert_rel(t_critical(0.95, 3.0), 3.182_446_305_283_708, 1e-9, "df=3");
+    }
+
+    #[test]
+    fn matches_scipy_across_df_and_confidence_levels() {
+        for (conf, refs) in [
+            (0.90, &REF_090),
+            (0.95, &REF_095),
+            (0.99, &REF_099),
+            (0.999, &REF_0999),
+        ]
+        {
+            for (&df, &want) in DFS.iter().zip(refs.iter())
+            {
+                assert_rel(
+                    t_critical(conf, df),
+                    want,
+                    1e-9,
+                    &format!("conf={conf}, df={df}"),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn closed_forms_for_one_and_two_df() {
+        // df = 1: tan(pi (p - 1/2)); df = 2: (2p - 1) / sqrt(2 p (1 - p)).
+        for conf in [0.5, 0.8, 0.9, 0.95, 0.98, 0.99, 0.999]
+        {
+            let p: f64 = 0.5 + conf / 2.0;
+            let cauchy = (std::f64::consts::PI * (p - 0.5)).tan();
+            let two = (2.0 * p - 1.0) / (2.0 * p * (1.0 - p)).sqrt();
+            assert_rel(t_critical(conf, 1.0), cauchy, 1e-12, "df=1 closed form");
+            assert_rel(t_critical(conf, 2.0), two, 1e-12, "df=2 closed form");
+        }
+    }
+
+    #[test]
+    fn non_integer_df() {
+        assert_rel(t_critical(0.95, 1.5), 6.016_663_104_427_929, 1e-9, "df=1.5");
+        assert_rel(t_critical(0.95, 2.5), 3.574_654_842_003_682, 1e-9, "df=2.5");
+        assert_rel(t_critical(0.95, 7.3), 2.345_066_736_547_703, 1e-9, "df=7.3");
+    }
+
+    #[test]
+    fn large_and_degenerate_df_approach_normal_quantile() {
+        let z = inv_normal_cdf(0.975);
+        assert_rel(z, 1.959_963_984_540_054, 1e-8, "normal quantile");
+        // scipy.stats.t.ppf(0.975, 1e5) = 1.9599877075346095.
+        assert_rel(
+            t_critical(0.95, 1e5),
+            1.959_987_707_534_609_5,
+            1e-9,
+            "df=1e5",
+        );
+        assert_eq!(t_critical(0.95, f64::INFINITY), z);
+        assert_eq!(t_critical(0.95, 0.0), z);
+        // Monotone decreasing in df towards z.
+        let mut prev = f64::INFINITY;
+        for df in 1..=200
+        {
+            let t = t_critical(0.95, df as f64);
+            assert!(t < prev && t > z, "df={df}: {t} (prev {prev}, z {z})");
+            prev = t;
+        }
     }
 }
