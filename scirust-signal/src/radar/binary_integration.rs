@@ -16,46 +16,73 @@
 //! that a modest `M` keeps the probability of detection high, so the near-optimal
 //! rule `M ≈ 1.5·√N` trades a small detection loss for a large false-alarm gain.
 //! This module gives the binomial building blocks, the integrated `P_fa` / `P_d`,
-//! and that optimal-`M` rule. Dependency-free.
+//! and that optimal-`M` rule. The binomial terms come from
+//! [`scirust_stats::Binomial`] (log-space pmf, incomplete-beta tail), so they
+//! stay finite and accurate for long pulse trains as well.
+
+use scirust_stats::{Binomial, DiscreteDistribution};
 
 /// The **binomial probability mass** `P(X = k)` for `X ~ Binomial(n, p)`:
 /// `C(n,k)·p^k·(1−p)^{n−k}`, the probability of exactly `k` hits in `n`
-/// independent pulses each with hit probability `p`. The coefficient `C(n,k)` is
-/// formed by a divide-as-you-go integer/float product, so no factorial ever
-/// overflows. Returns `0.0` when `k > n`; `p` is clamped to `[0, 1]`.
+/// independent pulses each with hit probability `p`. Returns `0.0` when `k > n`;
+/// `p` is clamped to `[0, 1]` (a `NaN` `p` gives `NaN`).
+///
+/// The term is evaluated in log space (Loader's saddle-point form, via
+/// [`scirust_stats::Binomial`]), so it stays finite and accurate for large
+/// `n`. Forming `C(n, k)`, `p^k` and `(1−p)^{n−k}` as separate
+/// `f64` factors overflows (`C(n, n/2) > f64::MAX` from `n ≈ 1030`) or
+/// underflows (`0.15^400 < 5e-324`) even where the pmf itself is an ordinary
+/// number.
 pub fn binomial_pmf(k: u32, n: u32, p: f64) -> f64 {
     if k > n
     {
         return 0.0;
     }
-    let p = p.clamp(0.0, 1.0);
-    let q = 1.0 - p;
-    // C(n, k) via the symmetric multiplicative form, dividing as we multiply so
-    // the running product stays near the final (small) coefficient — no overflow.
-    let kk = k.min(n - k);
-    let mut coeff = 1.0_f64;
-    for i in 0..kk
+    if p.is_nan()
     {
-        coeff = coeff * (n - i) as f64 / (i + 1) as f64;
+        return f64::NAN;
     }
-    coeff * p.powi(k as i32) * q.powi((n - k) as i32)
+    let p = p.clamp(0.0, 1.0);
+    Binomial::new(u64::from(n), p).pmf(u64::from(k))
 }
 
 /// The **binomial survival function** `P(X ≥ m)` for `X ~ Binomial(n, p)`:
 /// `Σ_{k=m}^{n} C(n,k)·p^k·(1−p)^{n−k}`, the probability that at least `m` of `n`
 /// pulses are hits — the M-of-N decision probability. Returns `0.0` when `m > n`
-/// (the event is impossible) and `1.0` when `m = 0`. `p` is clamped to `[0, 1]`.
+/// (the event is impossible) and `1.0` when `m = 0`. `p` is clamped to `[0, 1]`
+/// (a `NaN` `p` gives `NaN`).
+///
+/// Evaluated as the regularized incomplete beta `I_p(m, n − m + 1)` (via
+/// [`scirust_stats::Binomial`]'s survival function) rather than by summing
+/// pmf terms, so the result stays in `[0, 1]` and accurate for long pulse
+/// trains (`n` in the thousands) and far-tail false-alarm rates alike.
 pub fn binomial_sf_ge(m: u32, n: u32, p: f64) -> f64 {
     if m > n
     {
         return 0.0;
     }
-    let mut sum = 0.0;
-    for k in m..=n
+    if p.is_nan()
     {
-        sum += binomial_pmf(k, n, p);
+        return f64::NAN;
     }
-    sum.clamp(0.0, 1.0)
+    if m == 0
+    {
+        return 1.0;
+    }
+    let p = p.clamp(0.0, 1.0);
+    // Exact endpoints: no hit is ever scored at p = 0, every pulse hits at p = 1.
+    if p == 0.0
+    {
+        return 0.0;
+    }
+    if p == 1.0
+    {
+        return 1.0;
+    }
+    // P(X ≥ m) = P(X > m − 1).
+    Binomial::new(u64::from(n), p)
+        .sf(u64::from(m - 1))
+        .clamp(0.0, 1.0)
 }
 
 /// The **integrated false-alarm probability** of an M-of-N rule:
@@ -93,6 +120,11 @@ pub fn optimal_m(n: u32) -> u32 {
 mod tests {
     use super::*;
 
+    /// Relative closeness, for probabilities that may sit far below 1.
+    fn rel_close(got: f64, want: f64, tol: f64) -> bool {
+        (got - want).abs() <= tol * want.abs()
+    }
+
     #[test]
     fn pmf_is_a_normalised_distribution() {
         // Σ_{k=0}^{n} P(X = k) = 1 for any (n, p) — conservation of probability.
@@ -105,15 +137,17 @@ mod tests {
 
     #[test]
     fn pmf_matches_exact_closed_forms() {
+        // The pmf is evaluated in log space (exp/ln), so compare with a
+        // relative tolerance rather than to the last few ulps.
         // Symmetric fair-coin case: P(X = k) = C(n,k)/2^n.
-        assert!((binomial_pmf(2, 4, 0.5) - 6.0 / 16.0).abs() < 1e-15);
-        assert!((binomial_pmf(0, 5, 0.5) - 1.0 / 32.0).abs() < 1e-15);
+        assert!(rel_close(binomial_pmf(2, 4, 0.5), 6.0 / 16.0, 1e-13));
+        assert!(rel_close(binomial_pmf(0, 5, 0.5), 1.0 / 32.0, 1e-13));
         // Endpoints reduce to pure powers: P(0) = (1−p)^n, P(n) = p^n.
-        assert!((binomial_pmf(0, 5, 0.3) - 0.7_f64.powi(5)).abs() < 1e-15);
-        assert!((binomial_pmf(5, 5, 0.3) - 0.3_f64.powi(5)).abs() < 1e-15);
-        // A larger-N coefficient exercises the overflow-safe product: C(30,15).
+        assert!(rel_close(binomial_pmf(0, 5, 0.3), 0.7_f64.powi(5), 1e-13));
+        assert!(rel_close(binomial_pmf(5, 5, 0.3), 0.3_f64.powi(5), 1e-13));
+        // A larger-N coefficient: C(30,15)/2^30.
         let expect = 155_117_520.0 / 2.0_f64.powi(30);
-        assert!((binomial_pmf(15, 30, 0.5) - expect).abs() < 1e-12);
+        assert!(rel_close(binomial_pmf(15, 30, 0.5), expect, 1e-13));
     }
 
     #[test]
@@ -188,6 +222,57 @@ mod tests {
     }
 
     #[test]
+    fn pmf_stays_finite_for_long_pulse_trains() {
+        // C(n, k) alone exceeds f64::MAX for k ≈ n/2 from n ≈ 1030 on, and
+        // p^k alone underflows (0.15^400 < 5e-324) while the pmf itself is
+        // representable. References: mpmath at 60 digits with the exact f64
+        // value of p, rounded to f64.
+        let cases = [
+            (600_u32, 1200_u32, 0.5_f64, 0.023_028_145_268_602_68),
+            (1000, 2000, 0.5, 0.017_839_011_145_854_32),
+            (50, 1100, 0.05, 0.045_058_484_380_667_53),
+            (400, 1000, 0.15, 6.078_579_890_408_046e-82),
+        ];
+        for (k, n, p, want) in cases
+        {
+            let got = binomial_pmf(k, n, p);
+            assert!(
+                rel_close(got, want, 1e-10),
+                "pmf(k={k}, n={n}, p={p}) = {got}, want {want}"
+            );
+        }
+    }
+
+    #[test]
+    fn sf_ge_stays_accurate_for_long_pulse_trains() {
+        // P(X ≥ m), X ~ Binomial(n, p). References: mpmath at 60 digits.
+        let cases = [
+            (600_u32, 1200_u32, 0.5_f64, 0.511_514_072_634_301_4),
+            (1000, 2000, 0.5, 0.508_919_505_572_927_2),
+            (52, 1024, 0.05, 0.474_281_480_417_692_16),
+            (400, 1000, 0.35, 5.712_962_880_295_259e-4),
+        ];
+        for (m, n, p, want) in cases
+        {
+            let got = binomial_sf_ge(m, n, p);
+            assert!(
+                rel_close(got, want, 1e-10),
+                "sf_ge(m={m}, n={n}, p={p}) = {got}, want {want}"
+            );
+        }
+        assert!(rel_close(
+            integrated_pd(600, 1200, 0.5),
+            0.511_514_072_634_301_4,
+            1e-10
+        ));
+        assert!(rel_close(
+            integrated_pfa(400, 1000, 0.35),
+            5.712_962_880_295_259e-4,
+            1e-10
+        ));
+    }
+
+    #[test]
     fn degenerate_inputs_are_guarded() {
         // Impossible event: needing more hits than pulses.
         assert_eq!(binomial_pmf(6, 5, 0.5), 0.0);
@@ -196,6 +281,9 @@ mod tests {
         assert_eq!(binomial_pmf(0, 4, -1.0), 1.0); // clamps to p = 0
         assert_eq!(binomial_pmf(4, 4, 2.0), 1.0); // clamps to p = 1
         assert!(binomial_sf_ge(2, 5, 3.0).is_finite());
+        // A NaN probability propagates instead of panicking.
+        assert!(binomial_pmf(1, 4, f64::NAN).is_nan());
+        assert!(binomial_sf_ge(1, 4, f64::NAN).is_nan());
         // Certain-hit / never-hit endpoints.
         assert_eq!(integrated_pd(5, 5, 1.0), 1.0);
         assert_eq!(integrated_pfa(1, 5, 0.0), 0.0);
