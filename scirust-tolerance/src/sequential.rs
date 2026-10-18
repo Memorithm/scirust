@@ -39,50 +39,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Binomial pmf `C(n,k) pᵏ (1−p)ⁿ⁻ᵏ`, evaluated by a stable ratio recurrence.
-fn binomial_pmf(n: usize, k: usize, p: f64) -> f64 {
-    if k > n
-    {
-        return 0.0;
-    }
-    if p <= 0.0
-    {
-        return if k == 0 { 1.0 } else { 0.0 };
-    }
-    if p >= 1.0
-    {
-        return if k == n { 1.0 } else { 0.0 };
-    }
-    let mut term = (1.0 - p).powi(n as i32);
-    let ratio = p / (1.0 - p);
-    for i in 1..=k
-    {
-        term *= (n - i + 1) as f64 / i as f64 * ratio;
-    }
-    term
-}
-
-/// Binomial cdf `P(D ≤ c)`.
-fn binomial_cdf(n: usize, c: usize, p: f64) -> f64 {
-    let c = c.min(n);
-    if p <= 0.0
-    {
-        return 1.0;
-    }
-    if p >= 1.0
-    {
-        return if c >= n { 1.0 } else { 0.0 };
-    }
-    let mut term = (1.0 - p).powi(n as i32);
-    let mut cdf = term;
-    let ratio = p / (1.0 - p);
-    for d in 1..=c
-    {
-        term *= (n - d + 1) as f64 / d as f64 * ratio;
-        cdf += term;
-    }
-    cdf.min(1.0)
-}
+use crate::special::{binomial_cdf, binomial_pmf};
 
 /// A double-sampling attributes plan: first sample `n1` with acceptance `c1` and
 /// rejection `r1` (`c1 < r1`); if the first count falls between, a second sample
@@ -253,6 +210,29 @@ mod tests {
             // Second sample never taken ⇒ ASN = n1.
             assert_relative_eq!(plan.average_sample_number(p), 80.0, epsilon = 1e-9);
         }
+    }
+
+    #[test]
+    fn double_plan_large_samples_match_binomial_reference() {
+        // 0.5¹²⁰⁰ underflows to 0, which used to zero every binomial term, so
+        // Pa came out 0 and ASN as n1. References: exact binomial sums in
+        // mpmath at 50 digits, rounded to f64.
+        let plan = DoubleSamplingPlan::new(1200, 590, 620, 1200, 1210);
+        assert_relative_eq!(
+            plan.probability_of_acceptance(0.5),
+            0.658_675_433_259_752_1,
+            max_relative = 1e-10
+        );
+        assert_relative_eq!(
+            plan.average_sample_number(0.5),
+            1_893.836_304_095_332,
+            max_relative = 1e-10
+        );
+        assert_relative_eq!(
+            binomial_pmf(1200, 600, 0.5),
+            0.023_028_145_268_602_68,
+            max_relative = 1e-10
+        );
     }
 
     #[test]
