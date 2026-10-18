@@ -3563,6 +3563,7 @@ dependencies = [
 name = "scirust-metrology"
 version = "0.1.0"
 dependencies = [
+ "scirust-stats",
  "serde",
 ]
 
