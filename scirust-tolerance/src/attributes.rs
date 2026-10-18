@@ -49,36 +49,13 @@ impl AttributesPlan {
     /// Probability of accepting a lot of fraction defective `p`, the exact
     /// binomial tail `P(D ≤ c)`. Returns 1 for `p ≤ 0` and, for `p ≥ 1`, 1 only
     /// if `c ≥ n` (every item defective still passes an all-accepting plan).
+    ///
+    /// Evaluated as `I_{1−p}(n−c, c+1)` (regularised incomplete beta), so it
+    /// stays accurate for large `n`, where `(1−p)ⁿ` alone underflows to `0`.
     pub fn probability_of_acceptance(&self, p: f64) -> f64 {
-        let n = self.sample_size;
-        let c = self.acceptance_number.min(n);
-        if p <= 0.0
-        {
-            return 1.0;
-        }
-        if p >= 1.0
-        {
-            return if self.acceptance_number >= n
-            {
-                1.0
-            }
-            else
-            {
-                0.0
-            };
-        }
-        // Stable forward recurrence: term_0 = (1−p)ⁿ,
-        // term_d = term_{d−1}·(n−d+1)/d·p/(1−p).
-        let q = 1.0 - p;
-        let mut term = q.powi(n as i32);
-        let mut cdf = term;
-        let ratio = p / q;
-        for d in 1..=c
-        {
-            term *= (n - d + 1) as f64 / d as f64 * ratio;
-            cdf += term;
-        }
-        cdf.min(1.0)
+        // `binomial_cdf` handles the endpoints (`p ≤ 0` ⇒ 1; `p ≥ 1` ⇒ 1 iff
+        // `c ≥ n`) and stays accurate where `(1−p)ⁿ` underflows.
+        crate::special::binomial_cdf(self.sample_size, self.acceptance_number, p)
     }
 
     /// Average outgoing quality under rectifying inspection (rejected lots fully
@@ -218,6 +195,39 @@ mod tests {
         let mid = plan.average_outgoing_quality(0.03, None);
         assert!(mid > plan.average_outgoing_quality(0.30, None));
         assert!(mid > 0.0);
+    }
+
+    #[test]
+    fn oc_large_sample_matches_binomial_reference() {
+        // `(1−p)ⁿ` alone underflows to 0 once n·ln(1−p) < −745 (0.46⁹⁶⁰,
+        // 0.5²⁰⁰⁰, 0.95¹⁵⁰⁰⁰), which used to zero the whole OC. References:
+        // exact binomial sums in mpmath at 50 digits, rounded to f64.
+        let cases = [
+            (960, 505, 0.54, 0.201_687_571_580_873_83),
+            (960, 505, 0.50, 0.950_145_110_895_520_7),
+            (2000, 1000, 0.50, 0.508_919_505_572_927_2),
+            (15_000, 750, 0.05, 0.509_713_080_949_426_8),
+            (50, 2, 0.04, 0.676_714_004_096_593_5),
+        ];
+        for (n, c, p, want) in cases
+        {
+            let got = AttributesPlan::new(n, c).probability_of_acceptance(p);
+            assert_relative_eq!(got, want, max_relative = 1e-10);
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "scans ~10⁵ candidate plans; too slow under Miri")]
+    fn design_honours_consumer_risk_for_large_plans() {
+        // AQL 0.50 / RQL 0.54 needs n ≈ 1000+. The underflowing OC reported
+        // Pa(0.54) = 0 for (n, c) = (960, 505), so that plan was returned even
+        // though its true consumer risk is 0.2017 > β = 0.10.
+        let (aql, rql, alpha, beta) = (0.50, 0.54, 0.05, 0.10);
+        let plan = design_attributes_plan(aql, rql, alpha, beta, 4000).unwrap();
+        assert!(plan.probability_of_acceptance(aql) >= 1.0 - alpha);
+        assert!(plan.probability_of_acceptance(rql) <= beta);
+        // Same minimal-c plan as the identical search over scipy.stats.binom.cdf.
+        assert_eq!((plan.sample_size, plan.acceptance_number), (1350, 705));
     }
 
     #[test]

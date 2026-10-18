@@ -155,6 +155,55 @@ fn gammp(a: f64, x: f64) -> f64 {
     scirust_special::regularized_gamma_p(a, x)
 }
 
+/// Binomial pmf `P(D = k) = C(n,k) pᵏ (1−p)ⁿ⁻ᵏ` for `p ∈ [0, 1]`, via
+/// `scirust-special`'s log-space (Loader saddle-point) `ln_binomial_pmf`.
+///
+/// Neither `C(n,k)` nor `(1−p)ⁿ` is formed on its own: `(1−p)ⁿ` underflows to
+/// `0` once `n·ln(1−p) < −745` (e.g. `0.46⁹⁶⁰`), which made a ratio
+/// recurrence started from it return `0` for every `k`.
+pub(crate) fn binomial_pmf(n: usize, k: usize, p: f64) -> f64 {
+    if p.is_nan()
+    {
+        return f64::NAN;
+    }
+    if k > n
+    {
+        return 0.0;
+    }
+    if p <= 0.0
+    {
+        return if k == 0 { 1.0 } else { 0.0 };
+    }
+    if p >= 1.0
+    {
+        return if k == n { 1.0 } else { 0.0 };
+    }
+    scirust_special::ln_binomial_pmf(k as u64, n as u64, p)
+        .exp()
+        .min(1.0)
+}
+
+/// Binomial cdf `P(D ≤ c)` for `n` trials and `p ∈ [0, 1]`, through the
+/// identity `P(D ≤ c) = I_{1−p}(n−c, c+1)` (regularised incomplete beta,
+/// `scirust-special`). It stays accurate for every `n`, including sample sizes
+/// where `(1−p)ⁿ` underflows, and costs `O(√n)` rather than `O(c)`.
+pub(crate) fn binomial_cdf(n: usize, c: usize, p: f64) -> f64 {
+    if p.is_nan()
+    {
+        return f64::NAN;
+    }
+    if c >= n || p <= 0.0
+    {
+        return 1.0;
+    }
+    if p >= 1.0
+    {
+        return 0.0;
+    }
+    scirust_special::regularized_incomplete_beta((n - c) as f64, (c + 1) as f64, 1.0 - p)
+        .clamp(0.0, 1.0)
+}
+
 /// Cumulative distribution of the chi-square law with `dof` degrees of freedom,
 /// `P(X ≤ x) = P(dof/2, x/2)`.
 ///
