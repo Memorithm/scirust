@@ -1305,11 +1305,21 @@ fn gamma_prefactor(a: f64, x: f64) -> f64 {
 /// `ε·√(a+b)` (≈ `2e-10` relative at `a = b = 1e12`). An asymptotic
 /// expansion (TOMS 708 `basym`) would be needed to go below that.
 ///
+/// For a small second shape (`b ≤ 1e-3`) on the upper side
+/// `x ≥ (a+1)/(a+b+2)`, the value `I_x(a, b) ≈ b·(…)` is computed from the
+/// power series of `I_{1−x}(b, a)` written as `−expm1(L) − e^L·b·S`, rather
+/// than as `1 − I_{1−x}(b, a)`, whose relative error is `≈ ε / I_x(a, b)`
+/// (`I_{0.9}(1, 1e-17)` came out as `3.2e-15` instead of `2.3e-17`, and
+/// `b = 1e-300` gave values of either sign of size `≈ 1e-14`).
+///
 /// ```
 /// use scirust_special::regularized_incomplete_beta;
 /// // Symmetric shapes: I_½(a, a) = ½ exactly, even at huge shapes.
 /// let v = regularized_incomplete_beta(1e12, 1e12, 0.5);
 /// assert!((v - 0.5).abs() < 1e-9);
+/// // Tiny second shape: I_x(1, b) = 1 − (1 − x)^b ≈ −b·ln(1 − x).
+/// let v = regularized_incomplete_beta(1.0, 1e-17, 0.9);
+/// assert!((v / 2.302_585_092_994_046e-17 - 1.0).abs() < 1e-13);
 /// ```
 pub fn regularized_incomplete_beta(a: f64, b: f64, x: f64) -> f64 {
     if a <= 0.0 || b <= 0.0 || !a.is_finite() || !b.is_finite() || x.is_nan()
@@ -1324,15 +1334,79 @@ pub fn regularized_incomplete_beta(a: f64, b: f64, x: f64) -> f64 {
     {
         return 1.0;
     }
-    let front = incomplete_beta_prefactor(a, b, x);
     if x < (a + 1.0) / (a + b + 2.0)
     {
-        front * beta_cf(a, b, x) / a
+        incomplete_beta_prefactor(a, b, x) * beta_cf(a, b, x) / a
+    }
+    else if b <= INCBETA_SMALL_B_MAX
+    {
+        incomplete_beta_small_b(a, b, x)
     }
     else
     {
-        1.0 - front * beta_cf(b, a, 1.0 - x) / b
+        1.0 - incomplete_beta_prefactor(a, b, x) * beta_cf(b, a, 1.0 - x) / b
     }
+}
+
+// At or below this second shape, the `x ≥ (a+1)/(a+b+2)` side is evaluated
+// by `incomplete_beta_small_b` instead of `1 − I_{1−x}(b, a)`.
+const INCBETA_SMALL_B_MAX: f64 = 1e-3;
+
+// `I_x(a, b)` for `b ≤ INCBETA_SMALL_B_MAX` and `x ≥ (a+1)/(a+b+2)`, where
+// `I_x(a, b) ≈ b·(…)` is small and `1 − I_{1−x}(b, a)` cancels: its
+// relative error is `≈ ε / I_x(a, b)`, so `I_{0.9}(1, 1e-17)` (exactly
+// `1 − 0.1^1e-17 ≈ 2.3026e-17`) came out as `3.2e-15`.
+//
+// With `y = 1 − x`, the power series of the lower tail of the swapped
+// distribution (`B_y(p, q) = Σ (1−q)ₙ yⁿ⁺ᵖ / (n!·(p+n))`) gives
+// `I_y(b, a) = e^L·(1 + b·S)` with
+// `L = b·ln y + ln Γ(a+b) − ln Γ(a) − ln Γ(1+b)` and
+// `S = Σ_{n≥1} (1−a)ₙ yⁿ / (n!·(b+n))`, so
+// `I_x(a, b) = −expm1(L) − e^L·b·S`, where both terms are `O(b)` and no
+// longer cancel against 1. `ln Γ(1+b)` uses the Taylor series about 1, and
+// `ln Γ(a+b) − ln Γ(a) = ∫_{a+1}^{a+1+b} ψ − ln(1 + b/a)` uses three-point
+// Gauss–Legendre on `[a+1, a+1+b]` (error `≈ 4e-4·b⁷`, since `|ψ⁽⁶⁾| ≤ 6!·ζ(7)`
+// there). On this side `y ≤ (1+b)/(a+b+2)`, so the terms of `S` shrink at
+// least geometrically (ratio `≤ max(y, 1/n)`).
+fn incomplete_beta_small_b(a: f64, b: f64, x: f64) -> f64 {
+    // x ≥ (a+1)/(a+b+2) > 0.4997, so `1 − x` is exact or within one rounding.
+    let y = 1.0 - x;
+    let l = b * y.ln() + ln_gamma_shift_small(a, b) - ln_gamma_1_plus(b);
+    let mut term = 1.0;
+    let mut s = 0.0;
+    let mut converged = false;
+    for n in 1..=MAX_ITERS
+    {
+        let n = n as f64;
+        term *= (n - a) * y / n;
+        let add = term / (b + n);
+        s += add;
+        if add.abs() <= EPS * s.abs()
+        {
+            converged = true;
+            break;
+        }
+    }
+    if !converged
+    {
+        return f64::NAN;
+    }
+    -l.exp_m1() - l.exp() * b * s
+}
+
+// `ln Γ(a + b) − ln Γ(a)` for `a > 0`, `0 < b ≤ INCBETA_SMALL_B_MAX`, without
+// the cancellation of the two `ln Γ` values: `Γ(a+b)/Γ(a) =
+// (a/(a+b))·Γ(a+1+b)/Γ(a+1)`, and `ln Γ(a+1+b) − ln Γ(a+1) = ∫ ψ` over
+// `[a+1, a+1+b]`, where ψ is smooth, by three-point Gauss–Legendre.
+fn ln_gamma_shift_small(a: f64, b: f64) -> f64 {
+    // √(3/5), the outer Gauss–Legendre node on [−1, 1].
+    const NODE: f64 = 0.774_596_669_241_483_4;
+    let h = 0.5 * b;
+    let c = a + 1.0 + h;
+    let quad = h
+        * ((5.0 / 9.0) * (digamma(c - NODE * h) + digamma(c + NODE * h))
+            + (8.0 / 9.0) * digamma(c));
+    quad - (b / a).ln_1p()
 }
 
 // Both shapes at or above this use the saddle-point prefactor in
