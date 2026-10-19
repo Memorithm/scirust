@@ -17,9 +17,19 @@ pub struct OscillationReport {
     pub regularity: f64,
 }
 
+/// Late-window RMS floor of [`detect_oscillation`], as a fraction of the RMS
+/// of the whole error trace about its mean.
+const SUSTAINED_RMS_FLOOR: f64 = 1e-9;
+
 /// Detect a sustained oscillation in a control `error` trace. Requires at least
 /// `min_crossings` mean-crossings, and a crossing-interval regularity at or
 /// above `regularity_thresh` (e.g. `0.8`).
+///
+/// The oscillation also has to be sustained: the RMS of the last quarter of
+/// the trace must be at least half that of the first quarter and above
+/// `1e-9` times the RMS of the whole trace. These thresholds are all
+/// relative, so scaling `error` by a positive factor (a change of units)
+/// leaves the report unchanged apart from round-off.
 pub fn detect_oscillation(
     error: &[f64],
     min_crossings: usize,
@@ -66,14 +76,36 @@ pub fn detect_oscillation(
 
     // Sustained-amplitude check: a decaying transient also has regular
     // crossings, so require the late-window RMS to be a real fraction of the
-    // early-window RMS (the oscillation does not die out).
+    // early-window RMS (the oscillation does not die out), and to stand above
+    // a round-off floor relative to the RMS of the whole trace (so a burst
+    // that has ended, leaving only the mean-removal residue in both end
+    // windows, is not taken as sustained). The floor is relative so the
+    // verdict does not depend on the units of `error`.
     let qn = (n / 4).max(1);
-    let rms = |slice: &[f64]| -> f64 {
-        (slice.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / slice.len() as f64).sqrt()
+    // Deviations are divided by the largest one before squaring, so the
+    // squares neither underflow for tiny nor overflow for huge amplitudes;
+    // only ratios of these RMS values are used below.
+    let dev_max = error.iter().fold(0.0_f64, |m, &x| m.max((x - mean).abs()));
+    let unit = if dev_max > 0.0 && dev_max.is_finite()
+    {
+        dev_max
+    }
+    else
+    {
+        1.0
     };
+    let rms = |slice: &[f64]| -> f64 {
+        (slice
+            .iter()
+            .map(|&x| ((x - mean) / unit).powi(2))
+            .sum::<f64>()
+            / slice.len() as f64)
+            .sqrt()
+    };
+    let total_rms = rms(error);
     let first_rms = rms(&error[..qn]);
     let last_rms = rms(&error[n - qn..]);
-    let sustained = last_rms > 1e-9 && last_rms >= 0.5 * first_rms;
+    let sustained = last_rms > SUSTAINED_RMS_FLOOR * total_rms && last_rms >= 0.5 * first_rms;
 
     OscillationReport {
         oscillating: regularity >= regularity_thresh && sustained,
@@ -111,5 +143,56 @@ mod tests {
             .collect();
         let r = detect_oscillation(&err, 8, 0.8);
         assert!(!r.oscillating, "should not flag a settled loop");
+    }
+
+    #[test]
+    fn small_amplitude_oscillation_is_detected() {
+        // Regression: the sustained-amplitude check used an absolute
+        // `last_rms > 1e-9` floor, so a loop oscillating with a 1 nm
+        // amplitude in SI units (RMS ~7.1e-10 m) was reported as not
+        // oscillating while the same trace in units of 1 m was flagged.
+        let period = 40.0;
+        let unit: Vec<f64> = (0..800)
+            .map(|i| (2.0 * PI * i as f64 / period).sin())
+            .collect();
+        let reference = detect_oscillation(&unit, 6, 0.8);
+        assert!(reference.oscillating);
+        for scale in [1e-9, 1e-12, 1e-200, 1e10, 1e150]
+        {
+            let err: Vec<f64> = unit.iter().map(|&e| e * scale).collect();
+            let r = detect_oscillation(&err, 6, 0.8);
+            assert!(r.oscillating, "scale {scale}: {r:?}");
+            assert_eq!(r.period_samples, reference.period_samples, "scale {scale}");
+            assert!(
+                (r.regularity - reference.regularity).abs() < 1e-12,
+                "scale {scale}: {} vs {}",
+                r.regularity,
+                reference.regularity
+            );
+        }
+    }
+
+    #[test]
+    fn oscillation_confined_to_the_middle_is_not_sustained_at_any_scale() {
+        // A burst that is over before the last quarter of the trace must not
+        // count as sustained, whatever the units of the error signal.
+        let unit: Vec<f64> = (0..800)
+            .map(|i| {
+                if (300..500).contains(&i)
+                {
+                    (2.0 * PI * i as f64 / 40.0).sin()
+                }
+                else
+                {
+                    0.0
+                }
+            })
+            .collect();
+        for scale in [1.0, 1e-9, 1e-12, 1e-200, 1e10, 1e150]
+        {
+            let err: Vec<f64> = unit.iter().map(|&e| e * scale).collect();
+            let r = detect_oscillation(&err, 6, 0.8);
+            assert!(!r.oscillating, "scale {scale}: {r:?}");
+        }
     }
 }
