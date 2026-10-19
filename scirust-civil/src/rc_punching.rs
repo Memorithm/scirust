@@ -7,6 +7,7 @@
 //! périmètre de contrôle   u1          = 2·(c1 + c2) + 2·π·(2·d)
 //! contrainte              vEd         = β · VEd / (u1 · d)
 //! résistance              vRd,c       = CRd,c · k · (100 · ρl · fck)^(1/3)
+//!                                       avec ρl plafonné à 0,02
 //! taux d'exploitation     utilisation = vEd / vRd,c
 //! ```
 //!
@@ -35,7 +36,10 @@
 //! sécurité (`γc`, `γs`, `γM`…), ainsi que le coefficient de majoration `β`
 //! (excentricité) et les coefficients réglementaires `CRd,c`, `k` et le ratio
 //! `ρl` sont **fournis par l'appelant** d'après l'Eurocode 2 et son Annexe
-//! Nationale ; aucune valeur « par défaut » n'est inventée. Ce module **ne
+//! Nationale ; aucune valeur « par défaut » n'est inventée. Le ratio `ρl` est
+//! **plafonné à 0,02** dans le calcul de `vRd,c` (EN 1992-1-1 §6.4.4(1) :
+//! `ρl = √(ρly·ρlz) ≤ 0,02`) ; le terme `k1·σcp` et le plancher `vmin` de
+//! l'éq. 6.47 ne sont **pas** appliqués. Ce module **ne
 //! dimensionne pas** les armatures de poinçonnement et ne traite ni les poteaux
 //! de rive/d'angle, ni la vérification au nu du poteau (`vRd,max`).
 
@@ -97,7 +101,12 @@ pub fn rcpunch_shear_stress(
 }
 
 /// Résistance au poinçonnement sans armatures spécifiques
-/// `vRd,c = CRd,c · k · (100 · ρl · fck)^(1/3)` (MPa), avec `fck` en MPa.
+/// `vRd,c = CRd,c · k · (100 · ρl · fck)^(1/3)` (MPa), avec `fck` en MPa
+/// (EN 1992-1-1 éq. 6.47 sans le terme `k1·σcp` ni le plancher `vmin`).
+///
+/// Le ratio moyen `ρl = √(ρly·ρlz)` est **plafonné à 0,02** comme l'exige
+/// EN 1992-1-1 §6.4.4(1) : un ratio supérieur donne la même résistance qu'avec
+/// `ρl = 0,02`.
 ///
 /// Panique si `crd_c <= 0`, si `size_factor_k` n'est pas dans `[1, 2]`, si
 /// `rho_l < 0` ou si `fck <= 0`.
@@ -123,6 +132,7 @@ pub fn rcpunch_resistance_without_reinforcement(
         fck > 0.0,
         "la résistance fck doit être strictement positive"
     );
+    let rho_l = rho_l.min(crate::rc_shear::RHO_L_MAX);
     crd_c * size_factor_k * (100.0 * rho_l * fck).cbrt()
 }
 
@@ -185,6 +195,18 @@ mod tests {
         //   vRd,c = CRd,c · k · 3 = 0,12 · 2,0 · 3 = 0,72 MPa
         let vrd = rcpunch_resistance_without_reinforcement(0.12, 2.0, 0.01, 27.0);
         assert_relative_eq!(vrd, 0.72, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn resistance_caps_rho_l_at_two_percent() {
+        // EN 1992-1-1 §6.4.4(1) : ρl = √(ρly·ρlz) ≤ 0,02. Avec ρl = 0,03 :
+        //   100 · min(0,03 ; 0,02) · 30 = 60 → vRd,c = 0,12 · 2,0 · 60^(1/3)
+        //   ≈ 0,9396 MPa (sans le plafond : 90^(1/3) → ≈ 1,0755 MPa, +14,5 %).
+        let capped = rcpunch_resistance_without_reinforcement(0.12, 2.0, 0.03, 30.0);
+        let expected = 0.12 * 2.0 * 60.0_f64.cbrt();
+        assert_relative_eq!(capped, expected, max_relative = 1e-12);
+        let at_cap = rcpunch_resistance_without_reinforcement(0.12, 2.0, 0.02, 30.0);
+        assert_relative_eq!(capped, at_cap, max_relative = 1e-12);
     }
 
     #[test]
