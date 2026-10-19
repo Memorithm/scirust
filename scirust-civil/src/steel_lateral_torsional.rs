@@ -7,7 +7,8 @@
 //! ```text
 //! élancement réduit         λ̄LT  = √(Wpl·fy / Mcr)               (classes 1-2)
 //! coefficient intermédiaire ΦLT  = 0,5·(1 + αLT·(λ̄LT − λ̄LT,0) + β·λ̄LT²)
-//! facteur de réduction      χLT  = 1 / (ΦLT + √(ΦLT² − β·λ̄LT²))  (plafonné à 1,0)
+//! facteur de réduction      χLT  = 1 / (ΦLT + √(ΦLT² − β·λ̄LT²))
+//!                                  (plafonné à min(1,0 ; 1/λ̄LT²), éq. 6.57)
 //! moment résistant          Mb,Rd = χLT·Wpl·fy / γM1
 //! ```
 //!
@@ -67,13 +68,21 @@ pub fn steellt_non_dimensional_slenderness(
     (plastic_modulus * fy / elastic_critical_moment).sqrt()
 }
 
-/// Facteur de réduction au déversement `χLT` (sans dimension, plafonné à `1,0`) :
+/// Facteur de réduction au déversement `χLT` (sans dimension, plafonné à
+/// `min(1,0 ; 1/λ̄LT²)`, EN 1993-1-1 §6.3.2.3(1), éq. 6.57) :
 /// `ΦLT = 0,5·(1 + αLT·(λ̄LT − λ̄LT,0) + β·λ̄LT²)` puis
 /// `χLT = 1 / (ΦLT + √(ΦLT² − β·λ̄LT²))`, avec
 /// `non_dimensional_slenderness` = `λ̄LT` l'élancement réduit de déversement,
 /// `imperfection_factor` = `αLT` le facteur d'imperfection de la courbe choisie,
 /// `plateau_length` = `λ̄LT,0` la longueur du plateau et `beta` = `β` le
 /// coefficient de la méthode des sections laminées.
+///
+/// L'éq. 6.57 impose **deux** bornes : `χLT ≤ 1,0` et `χLT ≤ 1/λ̄LT²`. Avec
+/// `β < 1` (par exemple `β = 0,75` recommandé pour les sections laminées),
+/// l'expression brute dépasse `1/λ̄LT²` aux grands élancements (courbe b,
+/// `λ̄LT,0 = 0,4`, `λ̄LT = 2` : `0,2672` au lieu de `0,25`) ; la borne est donc
+/// appliquée ici. Avec `β = 1` et `λ̄LT,0 = 0,2` (cas général §6.3.2.2,
+/// éq. 6.56), elle n'est jamais active.
 ///
 /// Panique si `non_dimensional_slenderness < 0`, `imperfection_factor < 0`,
 /// `plateau_length < 0` ou `beta <= 0`.
@@ -102,7 +111,8 @@ pub fn steellt_reduction_factor(
             + imperfection_factor * (lambda_bar - plateau_length)
             + beta * lambda_bar * lambda_bar);
     let chi = 1.0 / (phi + (phi * phi - beta * lambda_bar * lambda_bar).sqrt());
-    chi.min(1.0)
+    // Éq. 6.57 : χLT ≤ 1,0 et χLT ≤ 1/λ̄LT² (1/0 = +∞ en f64, borne inactive).
+    chi.min(1.0).min(1.0 / (lambda_bar * lambda_bar))
 }
 
 /// Moment résistant de calcul au déversement `Mb,Rd = χLT·Wpl·fy / γM1` (N·mm),
@@ -204,6 +214,40 @@ mod tests {
         // χLT = 1/(0,977 + 0,452249) = 1/1,429249 = 0,699668.
         let chi = steellt_reduction_factor(1.0, 0.34, 0.4, 0.75);
         assert_relative_eq!(chi, 0.699_668, epsilon = 1e-3);
+    }
+
+    #[test]
+    fn reduction_factor_capped_by_inverse_slenderness_squared() {
+        // EN 1993-1-1 §6.3.2.3(1), éq. 6.57 : χLT ≤ 1,0 **et** χLT ≤ 1/λ̄LT².
+        // Courbe b (αLT = 0,34), λ̄LT,0 = 0,4, β = 0,75, λ̄LT = 2,0 :
+        //   ΦLT = 0,5·(1 + 0,34·1,6 + 0,75·4) = 2,272 ;
+        //   √(2,272² − 3) = √2,161984 = 1,470369 ;
+        //   1/(ΦLT + √…) = 1/3,742369 = 0,267210 > 1/λ̄LT² = 0,25
+        //   → la borne 1/λ̄LT² gouverne : χLT = 0,25.
+        let chi_b = steellt_reduction_factor(2.0, 0.34, 0.4, 0.75);
+        assert_relative_eq!(chi_b, 0.25, epsilon = 1e-12);
+        // Courbe c (αLT = 0,49), λ̄LT = 3,0 : l'expression brute donne 0,121938,
+        // supérieure à 1/9 = 0,111111 → χLT = 1/9.
+        let chi_c = steellt_reduction_factor(3.0, 0.49, 0.4, 0.75);
+        assert_relative_eq!(chi_c, 1.0 / 9.0, epsilon = 1e-12);
+        // Borne inactive : courbe d (αLT = 0,76), λ̄LT = 2,0 → 0,219405 < 0,25,
+        // l'expression de l'éq. 6.57 s'applique telle quelle.
+        let chi_d = steellt_reduction_factor(2.0, 0.76, 0.4, 0.75);
+        assert_relative_eq!(chi_d, 0.219_405, epsilon = 1e-5);
+        // Balayage : χLT ≤ min(1, 1/λ̄LT²) pour les quatre courbes et β = 0,75.
+        for &alpha in &[0.21_f64, 0.34, 0.49, 0.76]
+        {
+            for i in 1..=60
+            {
+                let lambda_bar = 0.05 * f64::from(i);
+                let chi = steellt_reduction_factor(lambda_bar, alpha, 0.4, 0.75);
+                let bound = (1.0 / (lambda_bar * lambda_bar)).min(1.0);
+                assert!(
+                    chi <= bound * (1.0 + 1e-12),
+                    "χLT = {chi} > min(1, 1/λ̄²) = {bound} pour αLT = {alpha}, λ̄LT = {lambda_bar}"
+                );
+            }
+        }
     }
 
     #[test]
