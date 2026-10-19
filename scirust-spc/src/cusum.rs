@@ -119,16 +119,26 @@ impl CusumChart {
 
 /// One-sided upper-CUSUM ARL by Siegmund's approximation, for a standardised
 /// shift `shift` (σ units), reference `k` and interval `h`.
+///
+/// The textbook form `(e^{-u} + u − 1) / (2δ²)` with `u = 2δb` cancels to `0`
+/// in `f64` for `|δ| ≲ 10^{-8}` (the `e^{-u}` linear term eats the constant),
+/// so a shift only a few ulps away from `k` used to report ARL `0` instead of
+/// `≈ b²`. Tiny `|u|` uses the Taylor series in `u`; otherwise `exp_m1`.
 pub fn arl_one_sided(shift: f64, k: f64, h: f64) -> f64 {
     let b = h + 1.166;
     let delta = shift - k;
-    if delta.abs() < 1e-9
+    let u = 2.0 * delta * b;
+    // |u| < 1e-3 covers the whole cancellation band (|δ| ≲ 10^{-4} for typical h)
+    // and keeps relative error well below 1e-12 versus the closed form.
+    if u.abs() < 1e-3
     {
-        b * b
+        // ARL = b² (1 − u/3 + u²/12 − u³/60 + …), exact at u = 0.
+        let u2 = u * u;
+        b * b * (1.0 - u / 3.0 + u2 / 12.0 - u * u2 / 60.0)
     }
     else
     {
-        ((-2.0 * delta * b).exp() + 2.0 * delta * b - 1.0) / (2.0 * delta * delta)
+        ((-u).exp_m1() + u) / (2.0 * delta * delta)
     }
 }
 
@@ -179,6 +189,29 @@ mod tests {
         let arl1 = c.average_run_length(1.0);
         assert!(arl1 < 12.0, "ARL at 1σ {arl1}");
         assert!(arl1 < c.average_run_length(0.0));
+    }
+
+    #[test]
+    fn arl_one_sided_stays_near_b_squared_when_shift_near_k() {
+        // Regression: the naive (e^{-u}+u-1)/(2δ²) form cancelled to 0 in f64
+        // for |δ| just above the old 1e-9 guard (e.g. δ = 1.1e-9 → ARL = 0).
+        let k = 0.5;
+        let h = 4.0;
+        let b = h + 1.166;
+        let expected = b * b;
+        for &delta in &[
+            1.1e-9_f64, 2e-9, 5e-9, 1e-8, 1e-7, 1e-6, 1e-5, 0.0, -1.1e-9, -1e-8,
+        ]
+        {
+            let got = arl_one_sided(k + delta, k, h);
+            assert!(
+                (got - expected).abs() / expected < 1e-3,
+                "δ={delta}: ARL {got}, expected ≈ {expected}"
+            );
+            assert!(got.is_finite() && got > 1.0, "δ={delta}: ARL {got}");
+        }
+        // Exact on-target drift still hits the series zero point.
+        assert!((arl_one_sided(k, k, h) - expected).abs() < 1e-12);
     }
 
     #[test]
