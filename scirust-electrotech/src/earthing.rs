@@ -4,7 +4,7 @@
 //! la géométrie d'électrode fournies.
 //!
 //! ```text
-//! piquet vertical (Dwight)  R  = (ρ / (2·π·L)) · (ln(4·L / d) − 1)
+//! piquet vertical (Dwight)  R  = (ρ / (2·π·L)) · (ln(8·L / d) − 1)
 //! plaque enterrée           R  = (ρ / 4) · √(π / A)
 //! piquets en parallèle      R_eq = R_1 / (n · η)
 //! élévation de potentiel    U  = R · I
@@ -27,14 +27,19 @@
 //! d'influence, fonction de l'espacement et du nombre de piquets) est
 //! **fourni par l'appelant** — aucune valeur « par défaut » n'est inventée. Les
 //! formules sont les expressions **classiques** (piquet de Dwight, plaque
-//! enterrée) valables pour une électrode enfouie loin de la surface.
+//! enterrée). La formule de Dwight vise un piquet vertical **enfoncé depuis la
+//! surface** du sol ; elle s'écrit souvent `ln(4·L / a) − 1` avec `a` le
+//! **rayon** du piquet (Dwight 1936, IEEE Std 142), soit `ln(8·L / d) − 1` avec
+//! le diamètre `d = 2·a` (BS 7430).
 
 /// Résistance d'un piquet vertical enfoui (formule de **Dwight**)
-/// `R = (ρ / (2·π·L)) · (ln(4·L / d) − 1)` (Ω), à partir de la résistivité du
-/// sol, de la longueur enfouie et du diamètre du piquet.
+/// `R = (ρ / (2·π·L)) · (ln(8·L / d) − 1)` (Ω), à partir de la résistivité du
+/// sol, de la longueur enfouie et du **diamètre** `d` du piquet. C'est la forme
+/// en diamètre de `ln(4·L / a) − 1` écrite avec le rayon `a = d / 2`
+/// (Dwight 1936, IEEE Std 142 ; BS 7430 §10.2).
 ///
 /// La formule suppose un piquet cylindrique long devant son diamètre
-/// (`4·L / d` grand, de sorte que `ln(4·L / d) − 1 > 0`).
+/// (`8·L / d` grand, de sorte que `ln(8·L / d) − 1 > 0`).
 ///
 /// Panique si `soil_resistivity < 0`, si `rod_length <= 0` (division par zéro)
 /// ou si `rod_diameter <= 0` (division par zéro / logarithme non défini).
@@ -52,7 +57,7 @@ pub fn earth_rod_resistance(soil_resistivity: f64, rod_length: f64, rod_diameter
         rod_diameter > 0.0,
         "le diamètre du piquet d doit être strictement positif"
     );
-    (soil_resistivity / (2.0 * PI * rod_length)) * ((4.0 * rod_length / rod_diameter).ln() - 1.0)
+    (soil_resistivity / (2.0 * PI * rod_length)) * ((8.0 * rod_length / rod_diameter).ln() - 1.0)
 }
 
 /// Résistance d'une plaque enterrée `R = (ρ / 4) · √(π / A)` (Ω), à partir de
@@ -130,6 +135,23 @@ mod tests {
     }
 
     #[test]
+    fn rod_resistance_uses_diameter_form_of_dwight() {
+        // Dwight (1936), IEEE Std 142 : R = ρ/(2π·L)·(ln(4·L/a) − 1) avec `a`
+        // le **rayon** du piquet ; avec le diamètre d = 2·a (BS 7430 §10.2) :
+        // R = ρ/(2π·L)·(ln(8·L/d) − 1). Les deux formes doivent coïncider.
+        let (rho, length, diameter) = (100.0_f64, 3.0_f64, 0.0127_f64);
+        let radius = diameter / 2.0;
+        let dwight_radius_form =
+            rho / (2.0 * core::f64::consts::PI * length) * ((4.0 * length / radius).ln() - 1.0);
+        let r = earth_rod_resistance(rho, length, diameter);
+        assert_relative_eq!(r, dwight_radius_form, max_relative = 1e-12);
+        // Piquet ½ po (d = 12,7 mm), L = 3 m, ρ = 100 Ω·m : ≈ 35 Ω (exemple
+        // publié, valeur arrondie) ; valeur non arrondie
+        // 5,3051648 · (ln(1889,7638) − 1) = 34,718097 Ω.
+        assert_relative_eq!(r, 34.718_097, max_relative = 1e-6);
+    }
+
+    #[test]
     fn plate_resistance_scales_as_inverse_sqrt_area() {
         // Loi en 1/√A : quadrupler la surface divise la résistance par 2,
         // car R ∝ √(1 / A).
@@ -161,14 +183,14 @@ mod tests {
     fn realistic_earthing_case() {
         // Cas chiffré réaliste.
         //   Piquet (Dwight), ρ = 100 Ω·m, L = 3 m, d = 0,016 m :
-        //     4·L/d = 12 / 0,016 = 750
-        //     ln(750) = ln2 + ln3 + 3·ln5
-        //             = 0,6931472 + 1,0986123 + 4,8283137 = 6,6200732
-        //     ln(750) − 1 = 5,6200732
+        //     8·L/d = 24 / 0,016 = 1500
+        //     ln(1500) = 2·ln2 + ln3 + 3·ln5
+        //              = 1,3862944 + 1,0986123 + 4,8283137 = 7,3132204
+        //     ln(1500) − 1 = 6,3132204
         //     ρ/(2π·L) = 100 / (2π·3) = 100 / 18,8495559 = 5,3051648
-        //     R = 5,3051648 · 5,6200732 = 29,81541 Ω
+        //     R = 5,3051648 · 6,3132204 = 33,49267 Ω
         let r_rod = earth_rod_resistance(100.0, 3.0, 0.016);
-        assert_relative_eq!(r_rod, 29.81541, epsilon = 1e-3);
+        assert_relative_eq!(r_rod, 33.49267, epsilon = 1e-3);
 
         //   Plaque enterrée, ρ = 100 Ω·m, A = 1 m² :
         //     R = (100/4)·√(π/1) = 25·√π = 25·1,7724539 = 44,311346 Ω
@@ -176,11 +198,11 @@ mod tests {
         assert_relative_eq!(r_plate, 44.311346, epsilon = 1e-3);
 
         //   Groupement de n = 4 piquets, η = 0,75, R_1 = r_rod :
-        //     R_eq = 29,81541 / (4·0,75) = 29,81541 / 3 = 9,93847 Ω
+        //     R_eq = 33,49267 / (4·0,75) = 33,49267 / 3 = 11,16422 Ω
         let r_eq = earth_parallel_electrodes(r_rod, 4.0, 0.75);
         assert_relative_eq!(r_eq, r_rod / 3.0, epsilon = 1e-12);
 
-        //   Élévation de potentiel sous I = 400 A : U = 9,93847 · 400 = 3975,4 V
+        //   Élévation de potentiel sous I = 400 A : U = 11,16422 · 400 = 4465,7 V
         let u = earth_fault_voltage(r_eq, 400.0);
         assert_relative_eq!(u, r_eq * 400.0, epsilon = 1e-9);
     }
