@@ -26,10 +26,14 @@ const SUSTAINED_RMS_FLOOR: f64 = 1e-9;
 /// above `regularity_thresh` (e.g. `0.8`).
 ///
 /// The oscillation also has to be sustained: the RMS of the last quarter of
-/// the trace must be at least half that of the first quarter and above
-/// `1e-9` times the RMS of the whole trace. These thresholds are all
-/// relative, so scaling `error` by a positive factor (a change of units)
-/// leaves the report unchanged apart from round-off.
+/// the trace about that quarter's own mean must be at least half that of the
+/// first quarter (about its own mean) and above `1e-9` times the RMS of the
+/// whole trace about its mean. Measuring each quarter about its own mean
+/// means a constant stretch has zero RMS whatever level it sits at, so a
+/// burst that has ended, or a loop that has settled at a steady-state error,
+/// is not taken as sustained. These thresholds are all relative, so scaling
+/// `error` by a positive factor (a change of units) leaves the report
+/// unchanged apart from round-off.
 pub fn detect_oscillation(
     error: &[f64],
     min_crossings: usize,
@@ -77,10 +81,13 @@ pub fn detect_oscillation(
     // Sustained-amplitude check: a decaying transient also has regular
     // crossings, so require the late-window RMS to be a real fraction of the
     // early-window RMS (the oscillation does not die out), and to stand above
-    // a round-off floor relative to the RMS of the whole trace (so a burst
-    // that has ended, leaving only the mean-removal residue in both end
-    // windows, is not taken as sustained). The floor is relative so the
-    // verdict does not depend on the units of `error`.
+    // a round-off floor relative to the RMS of the whole trace. The floor is
+    // relative so the verdict does not depend on the units of `error`.
+    //
+    // Each end window is measured about its own mean, not the mean of the
+    // whole trace: a flat window that sits away from the global mean (a
+    // burst that has ended, or a loop settled at a steady-state error) would
+    // otherwise show an RMS equal to that offset and pass as sustained.
     let qn = (n / 4).max(1);
     // Deviations are divided by the largest one before squaring, so the
     // squares neither underflow for tiny nor overflow for huge amplitudes;
@@ -94,17 +101,25 @@ pub fn detect_oscillation(
     {
         1.0
     };
-    let rms = |slice: &[f64]| -> f64 {
+    let rms_about = |slice: &[f64], centre: f64| -> f64 {
         (slice
             .iter()
-            .map(|&x| ((x - mean) / unit).powi(2))
+            .map(|&x| ((x - centre) / unit).powi(2))
             .sum::<f64>()
             / slice.len() as f64)
             .sqrt()
     };
-    let total_rms = rms(error);
-    let first_rms = rms(&error[..qn]);
-    let last_rms = rms(&error[n - qn..]);
+    // RMS of a window about its own mean. The deviations are taken from the
+    // window's first sample before averaging, so an exactly constant window
+    // gives exactly zero instead of the round-off of its mean.
+    let window_rms = |slice: &[f64]| -> f64 {
+        let x0 = slice[0];
+        let shifted_mean = slice.iter().map(|&x| x - x0).sum::<f64>() / slice.len() as f64;
+        rms_about(slice, x0 + shifted_mean)
+    };
+    let total_rms = rms_about(error, mean);
+    let first_rms = window_rms(&error[..qn]);
+    let last_rms = window_rms(&error[n - qn..]);
     let sustained = last_rms > SUSTAINED_RMS_FLOOR * total_rms && last_rms >= 0.5 * first_rms;
 
     OscillationReport {
@@ -194,5 +209,61 @@ mod tests {
             let r = detect_oscillation(&err, 6, 0.8);
             assert!(!r.oscillating, "scale {scale}: {r:?}");
         }
+    }
+
+    #[test]
+    fn burst_that_ends_away_from_the_trace_mean_is_not_sustained() {
+        // Regression: the end-window RMS was taken about the mean of the
+        // whole trace. A burst of 5.5 periods (samples 300..520) shifts that
+        // mean to about -0.0159, so the flat, exactly-zero first and last
+        // quarters both had an RMS of about 0.0159 (ratio 1, above the 1e-9
+        // floor) and the trace was reported as a sustained oscillation
+        // (regularity 0.95) although nothing moves after sample 520.
+        let burst: Vec<f64> = (0..800)
+            .map(|i| {
+                if (300..520).contains(&i)
+                {
+                    (2.0 * PI * i as f64 / 40.0).sin()
+                }
+                else
+                {
+                    0.0
+                }
+            })
+            .collect();
+        for offset in [0.0, 3.0, -1e3]
+        {
+            let err: Vec<f64> = burst.iter().map(|&e| e + offset).collect();
+            let r = detect_oscillation(&err, 6, 0.8);
+            assert!(!r.oscillating, "offset {offset}: {r:?}");
+        }
+
+        // Same for a loop that oscillates and then settles at a steady-state
+        // error of 1.0 (the last 320 samples are constant).
+        let settled: Vec<f64> = (0..800)
+            .map(|i| {
+                if i < 480
+                {
+                    (2.0 * PI * i as f64 / 40.0).sin()
+                }
+                else
+                {
+                    1.0
+                }
+            })
+            .collect();
+        let r = detect_oscillation(&settled, 6, 0.6);
+        assert!(!r.oscillating, "settled at an offset: {r:?}");
+
+        // An oscillation that is still running at the end of the trace, on
+        // top of a level shift, is still sustained.
+        let shifted: Vec<f64> = (0..800)
+            .map(|i| {
+                let level = if i < 400 { 0.0 } else { 0.5 };
+                level + (2.0 * PI * i as f64 / 40.0).sin()
+            })
+            .collect();
+        let r = detect_oscillation(&shifted, 6, 0.6);
+        assert!(r.oscillating, "level shift: {r:?}");
     }
 }
