@@ -310,7 +310,8 @@ pub use timber_compression::{
 };
 pub use timber_connection::{
     timberconn_capacity_thick_plate_yield, timberconn_capacity_thin_plate_single_shear,
-    timberconn_embedment_strength, timberconn_yield_moment,
+    timberconn_embedment_strength, timberconn_embedment_strength_nail_not_predrilled,
+    timberconn_yield_moment,
 };
 pub use wind_load::{
     wind_force, wind_mean_velocity, wind_peak_velocity_pressure, wind_pressure_on_surface,

@@ -4,10 +4,12 @@
 //! de la théorie de **Johansen**.
 //!
 //! ```text
-//! enfoncement   fh,k = 0,082 · (1 - 0,01·d) · ρk
-//! moment plast. My,Rk = 0,3 · fu · d^2,6
-//! plaque mince, mode (a)      Fv,Rk = 0,4 · fh,k · t · d             (éq. 8.9)
-//! plaque épaisse, une rotule  Fv,Rk = 2,3 · sqrt( My,Rk · fh,k · d )  (éq. 8.10)
+//! enfoncement, pointe prédétrée     fh,k   = 0,082 · (1 - 0,01·d) · ρk    (éq. 8.16)
+//! enfoncement, boulon ∥ fibres      fh,0,k = 0,082 · (1 - 0,01·d) · ρk    (éq. 8.32)
+//! enfoncement, pointe non prédétrée fh,k   = 0,082 · ρk · d^(-0,3)        (éq. 8.15)
+//! moment plast.                     My,Rk  = 0,3 · fu · d^2,6             (éq. 8.14)
+//! plaque mince, mode (a)            Fv,Rk  = 0,4 · fh,k · t · d           (éq. 8.9)
+//! plaque épaisse, une rotule        Fv,Rk  = 2,3 · sqrt(My,Rk · fh,k · d) (éq. 8.10)
 //! ```
 //!
 //! `ρk` = `density` masse volumique caractéristique du bois (kg/m³), `d` =
@@ -25,11 +27,13 @@
 //!
 //! **Limite honnête** : organe métallique en **simple cisaillement** selon la
 //! **théorie de Johansen** (modes de rupture de l'EN 1995-1-1 §8.2.2) ; la
-//! résistance à l'enfoncement `fh,k` (bois massif, effort perpendiculaire aux
-//! fibres, organe **non prédétré**) et le moment d'écoulement `My,Rk` suivent
-//! les **formules empiriques** de l'Eurocode 5, avec la **masse volumique** `ρk`
-//! **et la résistance ultime** `fu` **fournies par l'appelant** — aucune valeur
-//! « par défaut » n'est inventée. L'**effet de corde** (arrachement, `Fax,Rk`),
+//! résistance à l'enfoncement `fh,k` (bois massif ou LVL : pointe **prédétrée**
+//! éq. 8.16 ou boulon chargé **parallèlement** aux fibres éq. 8.32, d'une part ;
+//! pointe **non prédétrée** éq. 8.15, d'autre part) et le moment d'écoulement
+//! `My,Rk` suivent les **formules empiriques** de l'Eurocode 5, avec la
+//! **masse volumique** `ρk` **et la résistance ultime** `fu` **fournies par
+//! l'appelant** — aucune valeur « par défaut » n'est inventée. L'**effet de
+//! corde** (arrachement, `Fax,Rk`),
 //! les **distances aux rives et entre organes**, le **nombre efficace** `nef`,
 //! le **coefficient partiel** `γ_M` et le **coefficient** `kmod` sont à vérifier
 //! et à appliquer par l'appelant d'après l'Eurocode 5 et son Annexe Nationale.
@@ -42,13 +46,22 @@
 //! l'effet de corde `Fax,Rk/4`, restent à évaluer par l'appelant.
 
 /// Résistance caractéristique à l'enfoncement
-/// `fh,k = 0,082 · (1 - 0,01·d) · ρk` (MPa) pour un organe **non prédétré** dans
-/// du **bois massif**, effort **perpendiculaire** aux fibres
-/// (Eurocode 5, EN 1995-1-1 §8.3.1.1, éq. 8.15).
+/// `fh,k = 0,082 · (1 - 0,01·d) · ρk` (MPa) dans du bois massif ou du LVL, pour :
+///
+/// - une **pointe dans un trou prédétré**, `d ≤ 8 mm` (Eurocode 5,
+///   EN 1995-1-1 §8.3.1.1(5), éq. 8.16) ;
+/// - un **boulon** (ou une broche), `d ≤ 30 mm`, chargé **parallèlement** aux
+///   fibres : c'est `fh,0,k` (EN 1995-1-1 §8.5.1.1(2), éq. 8.32).
+///
+/// Pour une pointe **non prédétrée**, utiliser
+/// [`timberconn_embedment_strength_nail_not_predrilled`] (éq. 8.15) : la présente
+/// formule y surestime `fh,k` (≈ +45 % pour `d = 4 mm`). Pour un boulon chargé
+/// selon un angle `α` aux fibres, l'appelant applique l'éq. 8.31,
+/// `fh,α,k = fh,0,k / (k90·sin²α + cos²α)` avec `k90 = 1,35 + 0,015·d`
+/// (résineux), `1,30 + 0,015·d` (LVL) ou `0,90 + 0,015·d` (feuillus) (éq. 8.33).
 ///
 /// `density` = `ρk` masse volumique caractéristique du bois (kg/m³, fournie),
-/// `fastener_diameter` = `d` diamètre de l'organe (mm, formule valable pour
-/// `d ≤ 8 mm` selon l'Eurocode) ; renvoie `fh,k` (MPa).
+/// `fastener_diameter` = `d` diamètre de l'organe (mm) ; renvoie `fh,k` (MPa).
 ///
 /// Panique si `density < 0`, si `fastener_diameter < 0` ou si
 /// `fastener_diameter > 100` (facteur `1 - 0,01·d` négatif, hors domaine).
@@ -63,6 +76,30 @@ pub fn timberconn_embedment_strength(density: f64, fastener_diameter: f64) -> f6
         "le diamètre d doit rester ≤ 100 mm (facteur 1 - 0,01·d ≥ 0)"
     );
     0.082 * (1.0 - 0.01 * fastener_diameter) * density
+}
+
+/// Résistance caractéristique à l'enfoncement d'une **pointe non prédétrée**,
+/// `fh,k = 0,082 · ρk · d^(-0,3)` (MPa), dans du bois massif ou du LVL
+/// (Eurocode 5, EN 1995-1-1 §8.3.1.1(5), éq. 8.15).
+///
+/// `density` = `ρk` masse volumique caractéristique du bois (kg/m³, fournie),
+/// `fastener_diameter` = `d` diamètre de la pointe (mm, formule valable pour
+/// `d ≤ 8 mm` selon l'Eurocode ; au-delà, l'EN 1995-1-1 §8.3.1.1(6) renvoie aux
+/// règles des boulons) ; renvoie `fh,k` (MPa). Pour une pointe prédétrée,
+/// utiliser [`timberconn_embedment_strength`] (éq. 8.16).
+///
+/// Panique si `density < 0` ou si `fastener_diameter ≤ 0` (`d^(-0,3)` non
+/// défini en 0).
+pub fn timberconn_embedment_strength_nail_not_predrilled(
+    density: f64,
+    fastener_diameter: f64,
+) -> f64 {
+    assert!(density >= 0.0, "la masse volumique ρk doit être ≥ 0");
+    assert!(
+        fastener_diameter > 0.0,
+        "le diamètre de l'organe d doit être > 0"
+    );
+    0.082 * density * fastener_diameter.powf(-0.3)
 }
 
 /// Moment d'écoulement plastique caractéristique d'un organe (pointe, broche ou
@@ -169,7 +206,7 @@ mod tests {
 
     #[test]
     fn embedment_strength_reference_value() {
-        // Bois massif ρk = 350 kg/m³, pointe d = 4 mm (non prédétré) :
+        // Bois massif ρk = 350 kg/m³, pointe d = 4 mm prédétrée (éq. 8.16) :
         //   fh,k = 0,082·(1 - 0,01·4)·350 = 0,082·0,96·350
         //        = 0,082·336 = 27,552 MPa.
         let fhk = timberconn_embedment_strength(350.0, 4.0);
@@ -218,8 +255,8 @@ mod tests {
     #[test]
     fn realistic_nailed_joint_governing_mode() {
         // Assemblage cloué, simple cisaillement, plaque métallique + bois massif :
-        //   ρk = 350 kg/m³ ; pointe d = 4 mm ; fu = 600 MPa ; t1 = 20 mm.
-        //   fh,k  = 0,082·0,96·350                = 27,552 MPa
+        //   ρk = 350 kg/m³ ; pointe d = 4 mm prédétrée ; fu = 600 MPa ; t1 = 20 mm.
+        //   fh,k  = 0,082·0,96·350 (éq. 8.16)     = 27,552 MPa
         //   My,Rk = 0,3·600·4^2,6 = 180·36,758347 = 6616,50 N·mm
         // Plaque mince (t_plaque ≤ 0,5·d = 2 mm), éq. 8.9, sans effet de corde :
         //   (a) 0,4·27,552·20·4                   =  881,66 N
@@ -265,6 +302,39 @@ mod tests {
         assert_relative_eq!(thin, 881.664, max_relative = 1e-12);
         // Le mode (a) reste inférieur au mode de portance plaque épaisse fh,k·t1·d.
         assert!(thin < 27.552 * 20.0 * 4.0);
+    }
+
+    #[test]
+    fn nail_embedment_not_predrilled_matches_en1995_eq_8_15() {
+        // EN 1995-1-1 §8.3.1.1(5), éq. (8.15), pointe d = 4 mm **non prédétrée**,
+        // ρk = 350 kg/m³ :
+        //   fh,k = 0,082·350·4^(-0,3) = 28,7·0,659754 = 18,9349 MPa.
+        // La formule 0,082·(1 - 0,01·d)·ρk = 27,552 MPa est celle des trous
+        // **prédétrés** (éq. 8.16) : appliquée à une pointe non prédétrée, elle
+        // surestime fh,k d'environ 45 % (côté non sécuritaire).
+        let not_predrilled = timberconn_embedment_strength_nail_not_predrilled(350.0, 4.0);
+        assert_relative_eq!(not_predrilled, 18.934_938_5, max_relative = 1e-8);
+        let predrilled = timberconn_embedment_strength(350.0, 4.0);
+        assert_relative_eq!(predrilled, 27.552, max_relative = 1e-12);
+        assert!(not_predrilled < predrilled);
+        // Pointe d = 8 mm (limite de validité) : 0,082·350·8^(-0,3) = 15,3799 MPa.
+        assert_relative_eq!(
+            timberconn_embedment_strength_nail_not_predrilled(350.0, 8.0),
+            15.379_949_2,
+            max_relative = 1e-8
+        );
+        // Linéaire en ρk.
+        assert_relative_eq!(
+            timberconn_embedment_strength_nail_not_predrilled(700.0, 4.0),
+            2.0 * not_predrilled,
+            max_relative = 1e-12
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "le diamètre de l'organe d doit être > 0")]
+    fn nail_embedment_not_predrilled_zero_diameter_panics() {
+        timberconn_embedment_strength_nail_not_predrilled(350.0, 0.0);
     }
 
     #[test]
