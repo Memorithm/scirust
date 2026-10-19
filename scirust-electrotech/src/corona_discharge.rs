@@ -3,7 +3,7 @@
 //! **formule empirique de Peek**.
 //!
 //! ```text
-//! facteur de densité de l'air    δ    = 0.386·b / T
+//! facteur de densité de l'air    δ    = 3.92·b / T
 //! tension critique disruptive    V_c  = E₀·m·δ·r·ln(D / r)
 //! perte couronne (par phase)     P    = (243/δ)·(f + 25)·√(r/D)·(V − V_c)²·10⁻⁵
 //! couronne active                             V > V_c
@@ -20,9 +20,13 @@
 //! **Convention** : ces formules de Peek sont **empiriques** et s'emploient
 //! dans leurs unités historiques — `E₀` en kV/cm, `r` et `D` en cm, tensions
 //! en kV efficaces, `P` en kW/km, fréquence en Hz ; l'angle implicite du régime
-//! est en **radians**. La formule usuelle du facteur de densité s'écrit aussi
-//! `δ = 3.92·b/(273+t)` avec `b` en cmHg et `t` en °C ; on retient ici la forme
-//! équivalente `δ = 0.386·b/T` avec `T` en K.
+//! est en **radians**. La formule usuelle du facteur de densité s'écrit
+//! `δ = 3.92·b/(273+t)` avec `b` en cmHg et `t` en °C ; on retient ici la même
+//! forme `δ = 3.92·b/T` avec `T` en K, qui vaut `δ ≈ 1` aux conditions de
+//! référence de Peek (`b = 76` cmHg, `t = 25` °C). La variante
+//! `δ = 0.386·b/(273+t)` rencontrée dans certains ouvrages attend `b` en
+//! **mmHg** (référence 20 °C) : son coefficient ne doit pas être combiné avec
+//! une pression en cmHg, sous peine d'un `δ` dix fois trop petit.
 //!
 //! **Limite honnête** : la **formule de Peek est empirique** (temps **sec**,
 //! ligne aérienne) et ne fournit qu'une **estimation indicative**. La couronne
@@ -35,8 +39,19 @@
 //! inventée. La pluie, la neige, le brouillard et la pollution abaissent
 //! fortement `V_c` et ne sont **pas** modélisés.
 
-/// Facteur de densité de l'air `δ = 0.386·b / T` (sans dimension), avec la
+/// Facteur de densité de l'air `δ = 3.92·b / T` (sans dimension), avec la
 /// pression `b` en cmHg et la température absolue `T` en kelvins.
+///
+/// `δ ≈ 1` aux conditions de référence de Peek (`b = 76` cmHg, `T ≈ 298` K) ;
+/// une pression en mmHg doit être divisée par 10 avant l'appel.
+///
+/// ```
+/// use scirust_electrotech::corona_air_density_factor;
+///
+/// // 76 cmHg à 25 °C : conditions de référence, δ ≈ 1.
+/// let delta = corona_air_density_factor(76.0, 298.15);
+/// assert!((delta - 1.0).abs() < 1e-3);
+/// ```
 ///
 /// Panique si `pressure <= 0` ou si `temperature <= 0` (grandeurs physiques
 /// strictement positives ; division par zéro).
@@ -49,7 +64,7 @@ pub fn corona_air_density_factor(pressure: f64, temperature: f64) -> f64 {
         temperature > 0.0,
         "la température T doit être strictement positive (K)"
     );
-    0.386 * pressure / temperature
+    3.92 * pressure / temperature
 }
 
 /// Tension critique disruptive `V_c = E₀·m·δ·r·ln(D/r)` (kV efficaces),
@@ -164,10 +179,36 @@ mod tests {
     #[test]
     fn air_density_factor_reference_conditions() {
         // Conditions normalisées de Peek : b = 76 cmHg, t = 25 °C soit
-        // T = 298,15 K. δ = 0.386·76/298.15. On recalcule le littéral :
-        // 0.386·76 = 29.336 ; 29.336/298.15 = 0.098393… ≈ 0.0984.
+        // T = 298,15 K. Par définition δ ≈ 1 à ces conditions.
+        // δ = 3.92·76/298.15 : 3.92·76 = 297.92 ; 297.92/298.15 = 0.999229…
+        // (l'ancien coefficient 0.386 avec b en cmHg donnait 0.0984).
         let delta = corona_air_density_factor(76.0, 298.15);
-        assert_relative_eq!(delta, 0.0983833_f64, epsilon = 1e-3);
+        assert_relative_eq!(delta, 0.999_228_9_f64, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn air_density_factor_matches_mmhg_variant() {
+        // Cohérence d'unités : la variante δ = 0.386·b/(273+t) avec b en
+        // mmHg (référence 20 °C) doit donner le même δ à 1 % près que la
+        // forme cmHg pour une même atmosphère. 760 mmHg = 76 cmHg, 20 °C :
+        // 0.386·760/293.15 = 1.000716 ; 3.92·76/293.15 = 1.016271.
+        let delta_cmhg = corona_air_density_factor(76.0, 293.15);
+        let delta_mmhg_variant = 0.386 * 760.0 / 293.15;
+        assert_relative_eq!(delta_cmhg, delta_mmhg_variant, max_relative = 0.02);
+    }
+
+    #[test]
+    fn critical_voltage_reference_line() {
+        // Ligne de référence : r = 1 cm, D = 200 cm, m = 1, E₀ = 21.1 kV/cm,
+        // b = 76 cmHg, T = 298.15 K. ln(200) = 5.298317 ;
+        // V_c = 21.1·0.999229·1·5.298317 = 111.71 kV (≈ 21.1·ln 200 = 111.79).
+        // Avec l'ancien δ = 0.0984, V_c tombait à ≈ 11 kV et la couronne
+        // était déclarée active à toute tension de service réaliste.
+        let delta = corona_air_density_factor(76.0, 298.15);
+        let vc = corona_critical_disruptive_voltage(1.0, delta, 1.0, 200.0, 21.1);
+        assert_relative_eq!(vc, 21.1 * 0.999_228_9 * 200.0_f64.ln(), max_relative = 1e-6);
+        assert!(vc > 110.0 && vc < 112.0);
+        assert!(!corona_is_active(66.0, vc));
     }
 
     #[test]
