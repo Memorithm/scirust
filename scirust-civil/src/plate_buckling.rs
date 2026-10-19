@@ -7,7 +7,7 @@
 //! contrainte critique     σcr = kσ · π²·E / (12·(1 − ν²)) · (t / b)²
 //! élancement de plaque     λ̄p  = √(fy / σcr)
 //! facteur de réduction     ρ   = 1                              si λ̄p ≤ 0,673
-//!                          ρ   = (λ̄p − 0,055·(3 + ψ)) / λ̄p²     si λ̄p > 0,673
+//!                          ρ   = (λ̄p − 0,055·(3 + ψ)) / λ̄p² ≤ 1 si λ̄p > 0,673
 //! largeur efficace         beff = ρ · b
 //! ```
 //!
@@ -103,13 +103,30 @@ pub fn platebk_relative_slenderness(yield_strength: f64, critical_stress: f64) -
 }
 
 /// Facteur de réduction `ρ` d'une **paroi interne comprimée uniformément**
-/// (EN 1993-1-5 §4.4, `3 + ψ = 4`) : `ρ = 1` si `λ̄p ≤ 0,673`, sinon
-/// `ρ = (λ̄p − 0,22) / λ̄p²` (sans dimension).
+/// (EN 1993-1-5 §4.4, éq. 4.2, `3 + ψ = 4`) : `ρ = 1` si `λ̄p ≤ 0,673`, sinon
+/// `ρ = min((λ̄p − 0,22) / λ̄p², 1)` (sans dimension).
 ///
 /// `relative_slenderness` = `λ̄p` élancement de plaque réduit (sans dimension) ;
-/// renvoie le facteur de réduction `ρ` (sans dimension, `ρ ≤ 1`). Le terme `0,22`
-/// vaut `0,055·(3 + ψ)` avec `ψ = 1` (compression uniforme) : pour une paroi en
-/// console ou `ψ ≠ 1`, cette expression **ne s'applique pas**.
+/// renvoie le facteur de réduction `ρ` (sans dimension, `0 < ρ ≤ 1`). Le terme
+/// `0,22` vaut `0,055·(3 + ψ)` avec `ψ = 1` (compression uniforme) : pour une
+/// paroi en console ou `ψ ≠ 1`, cette expression **ne s'applique pas**.
+///
+/// Le plafond `ρ ≤ 1` de l'éq. 4.2 est appliqué : l'expression post-critique
+/// vaut un peu plus de 1 entre `0,673` et sa racine `0,5 + √0,03 ≈ 0,673 205`
+/// (jusqu'à `≈ 1,000 157`), ce qui sortirait du domaine `[0 ; 1]` accepté par
+/// [`platebk_effective_width`].
+///
+/// ```
+/// use scirust_civil::{platebk_effective_width, platebk_reduction_factor};
+///
+/// // Juste au-dessus de 0,673 : ρ reste plafonné à 1.
+/// let rho = platebk_reduction_factor(0.6731);
+/// assert!(rho <= 1.0);
+/// assert!((platebk_effective_width(rho, 0.5) - 0.5).abs() < 1e-12);
+///
+/// // Plaque élancée : ρ = (2 − 0,22) / 4 = 0,445.
+/// assert!((platebk_reduction_factor(2.0) - 0.445).abs() < 1e-12);
+/// ```
 ///
 /// Panique si `relative_slenderness <= 0` (division par zéro dans la branche
 /// post-critique et grandeur physiquement non admissible).
@@ -124,7 +141,8 @@ pub fn platebk_reduction_factor(relative_slenderness: f64) -> f64 {
     }
     else
     {
-        (relative_slenderness - 0.055 * 4.0) / (relative_slenderness * relative_slenderness)
+        ((relative_slenderness - 0.055 * 4.0) / (relative_slenderness * relative_slenderness))
+            .min(1.0)
     }
 }
 
@@ -232,6 +250,40 @@ mod tests {
         // beff = 0,415405 · 1,0 = 0,415405 m
         let beff = platebk_effective_width(rho, 1.0);
         assert_relative_eq!(beff, 0.415405, epsilon = 1e-3, max_relative = 1e-3);
+    }
+
+    #[test]
+    fn reduction_factor_plafonne_a_un_juste_au_dessus_de_0_673() {
+        // EN 1993-1-5 éq. 4.2 : ρ = (λ̄p − 0,22)/λ̄p² ≤ 1,0. Sans plafond, cette
+        // expression dépasse 1 pour λ̄p ∈ ]0,673 ; 0,5 + √0,03 ≈ 0,673205[
+        // (p. ex. (0,6731 − 0,22)/0,6731² ≈ 1,00008).
+        for &lambda in &[0.673_01, 0.673_05, 0.6731, 0.673_15, 0.6732]
+        {
+            let rho = platebk_reduction_factor(lambda);
+            assert!(rho <= 1.0, "ρ({lambda}) = {rho} > 1");
+            assert_relative_eq!(rho, 1.0, epsilon = 1e-9, max_relative = 1e-9);
+        }
+        // Au-delà de la racine 0,5 + √0,03, la branche post-critique s'applique.
+        let lambda = 0.68;
+        assert_relative_eq!(
+            platebk_reduction_factor(lambda),
+            (0.68 - 0.22) / (0.68 * 0.68),
+            epsilon = 1e-12,
+            max_relative = 1e-12
+        );
+        assert!(platebk_reduction_factor(lambda) < 1.0);
+    }
+
+    #[test]
+    fn chaine_reduction_puis_largeur_efficace_sans_panique_pres_de_0_673() {
+        // fy = 355 MPa, σcr = fy / 0,6731² ⇒ λ̄p = 0,6731 : la chaîne
+        // ρ → beff ne doit pas paniquer (platebk_effective_width exige ρ ≤ 1).
+        let fy = 355.0e6;
+        let sigma_cr = fy / (0.6731 * 0.6731);
+        let lambda = platebk_relative_slenderness(fy, sigma_cr);
+        let rho = platebk_reduction_factor(lambda);
+        let beff = platebk_effective_width(rho, 0.5);
+        assert_relative_eq!(beff, 0.5, epsilon = 1e-9, max_relative = 1e-9);
     }
 
     #[test]
