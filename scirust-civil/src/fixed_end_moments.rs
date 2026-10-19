@@ -10,8 +10,8 @@
 //! charge répartie          |M| = w·L² / 12
 //! charge au milieu         |M| = P·L / 8
 //! charge quelconque        Mab = P·a·b² / L²   (appui côté a)
-//! charge triangulaire      |M| = w·L² / 30   (extrémité chargée)
-//!                          |M| = w·L² / 20   (extrémité déchargée)
+//! charge triangulaire      |M| = w·L² / 20   (appui côté crête)
+//!                          |M| = w·L² / 30   (appui côté nul)
 //! tassement d'appui        |M| = 6·E·I·δ / L²
 //! ```
 //!
@@ -117,14 +117,16 @@ pub fn fem_point_general(point_load: f64, distance_a: f64, distance_b: f64, span
 
 /// Moment d'encastrement parfait d'une **charge triangulaire** dont l'intensité
 /// varie linéairement de zéro à une valeur de crête `w`, sur une poutre
-/// bi-encastrée. La fonction renvoie le moment à l'**extrémité chargée**
-/// (côté crête) : `|M| = w·L² / 30`. À l'**extrémité déchargée** (côté nul), le
-/// moment d'encastrement vaut `|M| = w·L² / 20` ; il s'obtient en multipliant le
-/// résultat par `30/20 = 1,5`.
+/// bi-encastrée. La fonction renvoie le moment à l'appui situé du **côté de la
+/// crête** (extrémité la plus chargée, moment le plus grand) :
+/// `|M| = w·L² / 20`. À l'appui situé du **côté nul** de la charge, le moment
+/// d'encastrement vaut `|M| = w·L² / 30` ; il s'obtient en multipliant le
+/// résultat par `20/30 = 2/3`. (Pour `q(x) = w·x/L`, `M(x = L) = ∫ q·x²·(L−x)/L² dx
+/// = w·L²/20` et `M(x = 0) = ∫ q·x·(L−x)²/L² dx = w·L²/30`.)
 ///
 /// `peak_load_per_length` = `w` valeur de crête de la charge linéique (N/m),
 /// `span` = `L` portée (m) ; renvoie la valeur absolue du moment d'encastrement à
-/// l'extrémité chargée (N·m).
+/// l'appui côté crête (N·m).
 ///
 /// Panique si `peak_load_per_length` est non fini, ou si `span` est non fini ou
 /// n'est pas strictement positif (une portée physique est strictement positive).
@@ -137,7 +139,7 @@ pub fn fem_triangular(peak_load_per_length: f64, span: f64) -> f64 {
         span.is_finite() && span > 0.0,
         "la portée doit être finie et strictement positive"
     );
-    peak_load_per_length * span * span / 30.0
+    peak_load_per_length * span * span / 20.0
 }
 
 /// Moment d'encastrement induit par un **tassement d'appui différentiel** `δ`
@@ -234,18 +236,18 @@ mod tests {
         assert_relative_eq!(m_ab + m_ba, 60_000.0 * 2.0 * 4.0 / 6.0, epsilon = 1e-3);
     }
 
-    /// Rapport des deux moments de la charge triangulaire : l'extrémité déchargée
-    /// (`w·L²/20`) porte un moment `30/20 = 1,5` fois celui de l'extrémité chargée
+    /// Rapport des deux moments de la charge triangulaire : l'appui côté crête
+    /// (`w·L²/20`) porte un moment `30/20 = 1,5` fois celui de l'appui côté nul
     /// (`w·L²/30`). Cas chiffré : `w = 9 000 N/m`, `L = 10 m` ⇒
-    /// `|M| = 9 000 · 100 / 30 = 30 000 N·m` à l'extrémité chargée.
+    /// `|M| = 9 000 · 100 / 20 = 45 000 N·m` à l'appui côté crête.
     #[test]
     fn triangular_ratio_and_computed_case() {
-        // Recalcul indépendant : 10^2 = 100 ; 9000 * 100 = 900000 ; /30 = 30000.
-        let loaded = fem_triangular(9_000.0, 10.0);
-        assert_relative_eq!(loaded, 30_000.0, epsilon = 1e-6);
-        // Moment à l'extrémité déchargée = w·L²/20 = 1,5 · (w·L²/30).
-        let unloaded = 9_000.0 * 10.0 * 10.0 / 20.0;
-        assert_relative_eq!(unloaded / loaded, 1.5, epsilon = 1e-9);
+        // Recalcul indépendant : 10^2 = 100 ; 9000 * 100 = 900000 ; /20 = 45000.
+        let peak_end = fem_triangular(9_000.0, 10.0);
+        assert_relative_eq!(peak_end, 45_000.0, epsilon = 1e-6);
+        // Moment à l'appui côté nul = w·L²/30 = (w·L²/20) / 1,5.
+        let zero_end = 9_000.0 * 10.0 * 10.0 / 30.0;
+        assert_relative_eq!(peak_end / zero_end, 1.5, epsilon = 1e-9);
     }
 
     /// Cas chiffré du tassement d'appui : `E = 200 GPa = 2,0e11 Pa`,
@@ -257,6 +259,54 @@ mod tests {
         // L^2 = 16 ; 960000 / 16 = 60000.
         let m = fem_support_settlement(2.0e11, 8.0e-5, 0.010, 4.0);
         assert_relative_eq!(m, 60_000.0, epsilon = 1e-3);
+    }
+
+    /// Référence indépendante de la charge triangulaire : on superpose des
+    /// charges concentrées élémentaires `dP = q(x)·dx`, `q(x) = w·x/L` (nulle en
+    /// `x = 0`, crête en `x = L`), via [`fem_point_general`] (`P·a·b²/L²`, `a`
+    /// distance à l'appui considéré), intégrées par la méthode de Simpson
+    /// (intégrande polynomial de degré 4, donc erreur de quadrature négligeable).
+    /// Valeurs exactes : `w·L²/20` à l'appui côté crête, `w·L²/30` à l'appui côté
+    /// nul. Cas chiffré : `w = 9 000 N/m`, `L = 10 m` ⇒ 45 000 N·m côté crête,
+    /// 30 000 N·m côté nul.
+    #[test]
+    fn triangular_matches_superposition_of_point_loads() {
+        let (w, span) = (9_000.0_f64, 10.0_f64);
+        let n = 2_000; // nombre pair d'intervalles de Simpson
+        let h = span / n as f64;
+        let (mut peak_end, mut zero_end) = (0.0_f64, 0.0_f64);
+        for k in 0..=n
+        {
+            let x = k as f64 * h;
+            let weight = if k == 0 || k == n
+            {
+                1.0
+            }
+            else if k % 2 == 1
+            {
+                4.0
+            }
+            else
+            {
+                2.0
+            };
+            let q = w * x / span;
+            // Appui côté crête (x = L) : a = L − x, b = x.
+            peak_end += weight * fem_point_general(q, span - x, x, span);
+            // Appui côté nul (x = 0) : a = x, b = L − x.
+            zero_end += weight * fem_point_general(q, x, span - x, span);
+        }
+        peak_end *= h / 3.0;
+        zero_end *= h / 3.0;
+        assert_relative_eq!(peak_end, 45_000.0, max_relative = 1e-9);
+        assert_relative_eq!(zero_end, 30_000.0, max_relative = 1e-9);
+        // La fonction renvoie le moment à l'appui côté crête (le plus grand).
+        assert_relative_eq!(fem_triangular(w, span), peak_end, max_relative = 1e-9);
+        assert_relative_eq!(
+            fem_triangular(w, span) * 2.0 / 3.0,
+            zero_end,
+            max_relative = 1e-9
+        );
     }
 
     /// Une portée nulle est physiquement inadmissible et doit être rejetée.
