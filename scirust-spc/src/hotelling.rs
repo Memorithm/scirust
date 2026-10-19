@@ -17,7 +17,9 @@ pub struct HotellingT2 {
 
 impl HotellingT2 {
     /// Fit on in-control multivariate samples (each row a length-p observation).
-    /// Returns `None` if the covariance is singular.
+    /// Returns `None` if the covariance is singular: a variable with zero (or
+    /// non-finite) variance, or variables that are (numerically) collinear.
+    /// The singularity check is independent of the units of each variable.
     pub fn fit(data: &[Vec<f64>]) -> Option<Self> {
         let n = data.len();
         if n < 2
@@ -52,10 +54,36 @@ impl HotellingT2 {
         {
             *v /= (n - 1) as f64;
         }
-        Some(Self {
-            mean,
-            cov_inv: cov.inverse()?,
-        })
+        // Invert the correlation matrix `R = D⁻¹ Σ D⁻¹` (`D = diag(σᵢ)`) and
+        // map back with `Σ⁻¹ = D⁻¹ R⁻¹ D⁻¹`. The singularity test of
+        // `Mat::inverse` is relative to the largest entry of the matrix, so on
+        // the raw covariance a variable measured in large units (Pa, σ ≈ 1e3)
+        // made a perfectly regular one in small units (m, σ ≈ 1e-5) look like
+        // a zero pivot and `fit` returned `None`. T² does not depend on the
+        // units of each variable, and `R` has a unit diagonal, so the test is
+        // now applied where it only reflects genuine (near-)collinearity.
+        let sd: Vec<f64> = (0..p).map(|i| cov.data[i * p + i].sqrt()).collect();
+        if sd.iter().any(|&s| !(s.is_finite() && s > 0.0))
+        {
+            return None;
+        }
+        let mut corr = Mat::zeros(p, p);
+        for i in 0..p
+        {
+            for j in 0..p
+            {
+                corr.data[i * p + j] = cov.data[i * p + j] / sd[i] / sd[j];
+            }
+        }
+        let mut cov_inv = corr.inverse()?;
+        for i in 0..p
+        {
+            for j in 0..p
+            {
+                cov_inv.data[i * p + j] /= sd[i] * sd[j];
+            }
+        }
+        Some(Self { mean, cov_inv })
     }
 
     /// `T²` statistic for an observation.
@@ -121,5 +149,55 @@ mod tests {
             "T² {}",
             h.t2(&[2.5, -2.5])
         );
+    }
+
+    #[test]
+    fn fit_accepts_variables_measured_in_very_different_units() {
+        // Pressure in Pa (σ ≈ 1e3) next to a length in metres (σ ≈ 1e-5):
+        // the covariance diagonal spans 1e6 .. 1e-10, a ratio of 1e16, although
+        // the variables are only mildly correlated. T² is invariant to the
+        // units of each variable, so this must fit and give the same T² as the
+        // same data expressed in kPa and µm (both σ ≈ 1–10).
+        let mut rng = Rng::new(0x51C);
+        let unit: Vec<Vec<f64>> = (0..400)
+            .map(|_| {
+                let a = rng.normal();
+                vec![a, 0.4 * a + rng.normal()]
+            })
+            .collect();
+        let si: Vec<Vec<f64>> = unit
+            .iter()
+            .map(|r| vec![101_325.0 + 1.0e3 * r[0], 0.05 + 1.0e-5 * r[1]])
+            .collect();
+        let scaled: Vec<Vec<f64>> = unit
+            .iter()
+            .map(|r| vec![101.325 + r[0], 50_000.0 + 10.0 * r[1]])
+            .collect();
+        let h_ref = HotellingT2::fit(&scaled).expect("well-conditioned in kPa/µm");
+        let h_si = HotellingT2::fit(&si).expect("same data in Pa/m is not singular");
+        for r in [[0.0, 0.0], [1.5, -0.7], [-2.0, 3.0], [3.0, 3.0]]
+        {
+            let t_ref = h_ref.t2(&[101.325 + r[0], 50_000.0 + 10.0 * r[1]]);
+            let t_si = h_si.t2(&[101_325.0 + 1.0e3 * r[0], 0.05 + 1.0e-5 * r[1]]);
+            assert!(
+                (t_si - t_ref).abs() <= 1e-8 * t_ref.max(1.0),
+                "point {r:?}: T² {t_si} in Pa/m vs {t_ref} in kPa/µm"
+            );
+        }
+    }
+
+    #[test]
+    fn fit_still_rejects_a_collinear_covariance() {
+        // x2 = 3·x1 exactly: the covariance is singular whatever the units.
+        let data: Vec<Vec<f64>> = (0..50)
+            .map(|i| {
+                let a = (i as f64 * 0.37).sin();
+                vec![a, 3.0 * a]
+            })
+            .collect();
+        assert!(HotellingT2::fit(&data).is_none());
+        // A constant variable has zero variance.
+        let flat: Vec<Vec<f64>> = (0..50).map(|i| vec![i as f64, 2.0]).collect();
+        assert!(HotellingT2::fit(&flat).is_none());
     }
 }
