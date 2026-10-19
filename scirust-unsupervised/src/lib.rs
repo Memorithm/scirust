@@ -881,16 +881,48 @@ impl GaussianMixtureModel {
         var
     }
 
-    fn gaussian_pdf(x: &[f64], mean: &[f64], variance: &[f64], floor: &[f64]) -> f64 {
-        let dim = x.len();
+    /// Natural log of the diagonal-Gaussian density at `x`.
+    ///
+    /// Kept in log space throughout: the density itself is a product over
+    /// dimensions, so it underflows to `0` for a point about 38 standard
+    /// deviations from the mean, or for typical points of unit-variance data
+    /// in about 500 dimensions, and overflows to `+inf` for small-variance
+    /// data in high dimension (e.g. `σ = 1e-4` per coordinate beyond about
+    /// 90 dimensions).
+    fn gaussian_log_pdf(x: &[f64], mean: &[f64], variance: &[f64], floor: &[f64]) -> f64 {
+        let ln_2pi = (2.0 * std::f64::consts::PI).ln();
         let mut log_prob = 0.0;
-        for d in 0..dim
+        for d in 0..x.len()
         {
             let diff = x[d] - mean[d];
             let var = variance[d].max(floor[d]);
-            log_prob += -0.5 * (diff * diff / var + var.ln() + (2.0 * std::f64::consts::PI).ln());
+            log_prob += -0.5 * (diff * diff / var + var.ln() + ln_2pi);
         }
-        log_prob.exp()
+        log_prob
+    }
+
+    /// Weighted log densities `ln w_j + ln N(x | μ_j, σ²_j)` of one sample
+    /// under every component.
+    fn weighted_log_densities(
+        x: &[f64],
+        components: &[GaussianComponent],
+        floor: &[f64],
+    ) -> Vec<f64> {
+        components
+            .iter()
+            .map(|c| c.weight.ln() + Self::gaussian_log_pdf(x, &c.mean, &c.variance, floor))
+            .collect()
+    }
+
+    /// `ln Σ_j exp(v_j)` without overflow or underflow; `-inf` for an empty
+    /// slice or when every term is `-inf`.
+    fn log_sum_exp(values: &[f64]) -> f64 {
+        let max = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        if !max.is_finite()
+        {
+            return max;
+        }
+        max + values.iter().map(|&v| (v - max).exp()).sum::<f64>().ln()
     }
 
     #[allow(clippy::needless_range_loop)]
@@ -905,29 +937,24 @@ impl GaussianMixtureModel {
 
         for i in 0..n
         {
-            let mut max_log = f64::NEG_INFINITY;
-            let mut log_probs = Vec::with_capacity(k);
-            for c in components
+            // Normalise in log space (log-sum-exp) so that the relative
+            // weight of the components survives even when every density is
+            // far below (or above) the `f64` range.
+            let log_probs = Self::weighted_log_densities(&data[i], components, floor);
+            let log_norm = Self::log_sum_exp(&log_probs);
+            if !log_norm.is_finite()
             {
-                let lp = Self::gaussian_pdf(&data[i], &c.mean, &c.variance, floor)
-                    .max(1e-300)
-                    .ln()
-                    + c.weight.ln();
-                log_probs.push(lp);
-                if lp > max_log
+                // No component gives the sample a usable density: fall
+                // back to the mixture weights.
+                for (j, c) in components.iter().enumerate()
                 {
-                    max_log = lp;
+                    resp[i][j] = c.weight;
                 }
+                continue;
             }
-            let mut sum = 0.0;
             for (j, &lp) in log_probs.iter().enumerate()
             {
-                resp[i][j] = (lp - max_log).exp();
-                sum += resp[i][j];
-            }
-            for j in 0..k
-            {
-                resp[i][j] /= sum;
+                resp[i][j] = (lp - log_norm).exp();
             }
         }
         resp
@@ -935,14 +962,7 @@ impl GaussianMixtureModel {
 
     fn log_likelihood(data: &[Vec<f64>], components: &[GaussianComponent], floor: &[f64]) -> f64 {
         data.iter()
-            .map(|x| {
-                let mut total = 0.0;
-                for c in components
-                {
-                    total += c.weight * Self::gaussian_pdf(x, &c.mean, &c.variance, floor);
-                }
-                total.max(1e-300).ln()
-            })
+            .map(|x| Self::log_sum_exp(&Self::weighted_log_densities(x, components, floor)))
             .sum()
     }
 
@@ -2403,5 +2423,112 @@ mod tests {
         assert!((s_big - s_exact).abs() < 1e-12);
         // Sanity: the lone outlier is highly anomalous.
         assert!(s_big > 0.5, "outlier should score high, got {}", s_big);
+    }
+
+    // ---- GMM log-space regressions ----
+
+    /// Two well-separated 1-D components: weight 0.7 at 0 and 0.3 at 10,
+    /// both with unit variance.
+    fn two_component_1d_gmm() -> GaussianMixtureModel {
+        let mut gmm = GaussianMixtureModel::new(GmmConfig::default());
+        gmm.components = vec![
+            GaussianComponent {
+                mean: vec![0.0],
+                variance: vec![1.0],
+                weight: 0.7,
+            },
+            GaussianComponent {
+                mean: vec![10.0],
+                variance: vec![1.0],
+                weight: 0.3,
+            },
+        ];
+        gmm.variance_floor = vec![1e-9];
+        gmm
+    }
+
+    /// Deterministic `dim`-dimensional data: `n / 2` points jittered by
+    /// `spread` around 0 and `n / 2` around `offset` in every coordinate.
+    fn two_cluster_data(n: usize, dim: usize, offset: f64, spread: f64) -> Vec<Vec<f64>> {
+        (0..n)
+            .map(|i| {
+                let centre = if i < n / 2 { 0.0 } else { offset };
+                (0..dim)
+                    .map(|d| centre + spread * (((i * 7 + d * 13) % 11) as f64 / 10.0 - 0.5))
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn assert_two_pure_halves(labels: &[usize]) {
+        let half = labels.len() / 2;
+        assert!(
+            labels[..half].iter().all(|&l| l == labels[0])
+                && labels[half..].iter().all(|&l| l == labels[half])
+                && labels[0] != labels[half],
+            "expected the two clusters to get two distinct labels, got {labels:?}"
+        );
+    }
+
+    #[test]
+    fn test_gmm_far_point_goes_to_the_nearest_component() {
+        // x = 60 is 60σ from the heavier component and 50σ from the lighter
+        // one: both densities underflow `f64`, but the posterior still
+        // overwhelmingly favours the component at 10 (log-odds ≈ 549). The
+        // log-likelihood is ln(0.3) − (2500 + ln 2π)/2 + ln(1 + e^−549.15).
+        let gmm = two_component_1d_gmm();
+        let x = vec![vec![60.0]];
+        assert_eq!(gmm.predict(&x), vec![1]);
+        let proba = gmm.predict_proba(&x);
+        assert!(proba[0][1] > 1.0 - 1e-12, "proba {proba:?}");
+        let score = gmm.score(&x);
+        let expected = -1252.1229113375307;
+        assert!(
+            (score - expected).abs() <= 1e-9 * expected.abs(),
+            "score {score}, expected {expected}"
+        );
+        // Symmetric case on the other side: the component at 0 is nearer.
+        assert_eq!(gmm.predict(&[vec![-50.0]]), vec![0]);
+    }
+
+    #[test]
+    fn test_gmm_separates_clusters_in_600_dimensions() {
+        // With the initial component variance (the data variance, ≈ 2.35 per
+        // coordinate) each sample's density is a product of 600 factors of
+        // about e^-1.85, i.e. far below the smallest positive `f64`.
+        let data = two_cluster_data(40, 600, 3.0, 1.0);
+        let config = GmmConfig {
+            n_components: 2,
+            max_iterations: 100,
+            tolerance: 1e-9,
+            seed: 42,
+        };
+        let mut gmm = GaussianMixtureModel::new(config);
+        gmm.fit(&data);
+        assert_two_pure_halves(&gmm.predict(&data));
+        let score = gmm.score(&data);
+        assert!(score.is_finite(), "score {score}");
+    }
+
+    #[test]
+    fn test_gmm_small_scale_high_dimension_stays_finite() {
+        // The initial component variance (the data variance, ≈ 2.5e-7 per
+        // coordinate) gives every sample a density of about e^(6.2 · 120) ≈
+        // e^744, beyond the largest finite `f64` (≈ e^709.8).
+        let data = two_cluster_data(40, 120, 1e-3, 1e-4);
+        let config = GmmConfig {
+            n_components: 2,
+            max_iterations: 100,
+            tolerance: 1e-9,
+            seed: 42,
+        };
+        let mut gmm = GaussianMixtureModel::new(config);
+        gmm.fit(&data);
+        for c in &gmm.components
+        {
+            assert!(c.weight.is_finite(), "weight {}", c.weight);
+            assert!(c.mean.iter().chain(&c.variance).all(|v| v.is_finite()));
+        }
+        assert_two_pure_halves(&gmm.predict(&data));
     }
 }
