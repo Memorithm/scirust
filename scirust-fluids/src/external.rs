@@ -2,6 +2,10 @@
 
 use crate::error::{FluidsError, in_range, non_negative, positive};
 
+/// Upper Reynolds-number bound of the Clift–Gauvin sphere drag correlation
+/// used by [`sphere_drag_coefficient`] (onset of the drag crisis).
+const SPHERE_DRAG_RE_MAX: f64 = 3.0e5;
+
 /// Stokes drag force on a sphere in creeping flow, `F = 3π μ d V` \[N\]
 /// (valid for Re ≲ 0.1).
 pub fn stokes_drag(dyn_viscosity: f64, diameter: f64, speed: f64) -> Result<f64, FluidsError> {
@@ -29,7 +33,7 @@ pub fn drag_force(cd: f64, density: f64, speed: f64, area: f64) -> Result<f64, F
 /// Valid for `0 < Re ≤ 3×10⁵` (below the drag crisis); reduces to
 /// Stokes `24/Re` as Re → 0. Reproduces the standard curve within ~6 %.
 pub fn sphere_drag_coefficient(re: f64) -> Result<f64, FluidsError> {
-    in_range("re", re, f64::MIN_POSITIVE, 3.0e5)?;
+    in_range("re", re, f64::MIN_POSITIVE, SPHERE_DRAG_RE_MAX)?;
     Ok(24.0 / re * (1.0 + 0.15 * re.powf(0.687)) + 0.42 / (1.0 + 42_500.0 / re.powf(1.16)))
 }
 
@@ -42,6 +46,14 @@ pub fn sphere_drag_coefficient(re: f64) -> Result<f64, FluidsError> {
 /// results on every platform. Requires `particle_density > fluid_density`
 /// (a settling, not rising, particle) and a terminal Reynolds number
 /// within the correlation's validity (`Re ≤ 3×10⁵`).
+///
+/// The bracket is searched only over speeds whose Reynolds number stays
+/// inside that range, so a Stokes-law estimate far above `Re = 3×10⁵`
+/// (e.g. a centimetre-sized steel ball in water) does not by itself cause
+/// an error. When the terminal Reynolds number itself exceeds `3×10⁵`, the
+/// function returns [`FluidsError::OutOfRange`] for `re`, whose `value` is
+/// the Stokes-law Reynolds number `ρ_f V_Stokes d / μ` (an upper bound on
+/// the terminal Reynolds number).
 pub fn sphere_terminal_velocity(
     diameter: f64,
     particle_density: f64,
@@ -72,31 +84,47 @@ pub fn sphere_terminal_velocity(
         Ok(sphere_drag_coefficient(re)? * v * v - rhs)
     };
 
-    // Bracket: grow `hi` from the Stokes estimate until the residual is
-    // positive (bounded number of doublings keeps this deterministic).
+    // Largest speed whose Reynolds number is inside the correlation's
+    // range (stepped down by ulps if rounding pushes Re just above it).
+    let mut v_re_max = SPHERE_DRAG_RE_MAX * dyn_viscosity / (fluid_density * diameter);
+    for _ in 0..8
+    {
+        if fluid_density * v_re_max * diameter / dyn_viscosity <= SPHERE_DRAG_RE_MAX
+        {
+            break;
+        }
+        v_re_max *= 1.0 - f64::EPSILON;
+    }
+
+    // Bracket: grow `hi` from the Stokes estimate (capped at `v_re_max`)
+    // until the residual is positive (bounded number of doublings keeps
+    // this deterministic).
     let v_stokes =
         gravity * diameter * diameter * (particle_density - fluid_density) / (18.0 * dyn_viscosity);
-    let mut lo = v_stokes * 1e-6;
-    let mut hi = v_stokes.max(1e-12);
+    // h(0⁺) < 0, and bisection never evaluates `lo` itself.
+    let mut lo = 0.0;
+    let mut hi = v_stokes.max(1e-12).min(v_re_max);
     let mut bracketed = false;
     for _ in 0..200
     {
-        match residual(hi)
+        if residual(hi)? > 0.0
         {
-            Ok(r) if r > 0.0 =>
-            {
-                bracketed = true;
-                break;
-            },
-            Ok(_) =>
-            {
-                lo = hi;
-                hi *= 2.0;
-            },
-            // Re left the correlation's validity range before balancing:
-            // the terminal Re is out of domain for this correlation.
-            Err(e) => return Err(e),
+            bracketed = true;
+            break;
         }
+        if hi >= v_re_max
+        {
+            // Even at Re = 3e5 the drag is below the weight: the terminal
+            // Re is out of domain for this correlation.
+            return Err(FluidsError::OutOfRange {
+                name: "re",
+                value: fluid_density * v_stokes * diameter / dyn_viscosity,
+                min: f64::MIN_POSITIVE,
+                max: SPHERE_DRAG_RE_MAX,
+            });
+        }
+        lo = hi;
+        hi = (2.0 * hi).min(v_re_max);
     }
     if !bracketed
     {
@@ -187,6 +215,46 @@ mod tests {
         assert!(
             (weight - drag).abs() / weight < 1e-9,
             "unbalanced: {weight} vs {drag}"
+        );
+    }
+
+    #[test]
+    fn terminal_velocity_when_stokes_estimate_exceeds_correlation_range() {
+        // 10 mm steel ball settling in water: the Stokes estimate
+        // g d² Δρ / (18 μ) ≈ 370.6 m/s corresponds to Re ≈ 3.7e6, outside
+        // the Clift–Gauvin range, but the actual terminal Reynolds number is
+        // ≈ 1.43e4, inside it. Reference: SciPy `brentq` on the same force
+        // balance and correlation gives V = 1.4261228151 m/s.
+        let (d, rp, rf, mu, g) = (1.0e-2, 7800.0, 1000.0, 1.0e-3, 9.81);
+        let v = sphere_terminal_velocity(d, rp, rf, mu, g).unwrap();
+        assert!(
+            (v - 1.426_122_815_126).abs() / 1.426_122_815_126 < 1e-9,
+            "v = {v}"
+        );
+        let re = rf * v * d / mu;
+        let cd = sphere_drag_coefficient(re).unwrap();
+        let weight = (rp - rf) * g * std::f64::consts::PI * d * d * d / 6.0;
+        let drag = 0.5 * cd * rf * v * v * std::f64::consts::PI * d * d / 4.0;
+        assert!(
+            (weight - drag).abs() / weight < 1e-9,
+            "unbalanced: {weight} vs {drag}"
+        );
+        // 7 mm gravel grain in water: Stokes Re ≈ 3.08e5, terminal Re ≈ 4.38e3;
+        // SciPy `brentq` reference V = 0.6262792472 m/s.
+        let v = sphere_terminal_velocity(7.0e-3, 2650.0, 1000.0, 1.0e-3, 9.81).unwrap();
+        assert!(
+            (v - 0.626_279_247_155).abs() / 0.626_279_247_155 < 1e-9,
+            "v = {v}"
+        );
+    }
+
+    #[test]
+    fn terminal_velocity_rejects_terminal_re_above_correlation_range() {
+        // 0.5 m steel ball falling in air: terminal Re far above 3e5.
+        let err = sphere_terminal_velocity(0.5, 7800.0, 1.2, 1.8e-5, 9.81).unwrap_err();
+        assert!(
+            matches!(err, FluidsError::OutOfRange { name: "re", .. }),
+            "{err:?}"
         );
     }
 
