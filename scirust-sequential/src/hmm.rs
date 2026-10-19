@@ -18,7 +18,10 @@ fn idx(row: usize, col: usize, cols: usize) -> usize {
 /// - `emission[i][obs]` = P(obs | state_i)
 /// - `initial[i]` = P(state_i at t=0)
 ///
-/// All probabilities are stored in **log-space** for numerical stability.
+/// All probabilities are stored in **log-space** for numerical stability. A
+/// zero probability is stored as `-inf`, so transitions, emissions and initial
+/// states with probability 0 are impossible: Viterbi never selects them and
+/// they contribute nothing to the forward/backward likelihoods.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HMM {
     pub n_states: usize,
@@ -30,6 +33,9 @@ pub struct HMM {
 
 impl HMM {
     /// Create a new HMM from probability (not log) matrices.
+    ///
+    /// Returns `Err` if a matrix has the wrong length or if any entry is
+    /// negative or not finite.
     pub fn new(
         transition: &[f64],
         emission: &[f64],
@@ -49,9 +55,19 @@ impl HMM {
         {
             return Err("initial vector length must be n_states");
         }
-        let log_a: Vec<f64> = transition.iter().map(|&p| p.max(1e-300).ln()).collect();
-        let log_b: Vec<f64> = emission.iter().map(|&p| p.max(1e-300).ln()).collect();
-        let log_pi: Vec<f64> = initial.iter().map(|&p| p.max(1e-300).ln()).collect();
+        if transition
+            .iter()
+            .chain(emission)
+            .chain(initial)
+            .any(|p| !p.is_finite() || *p < 0.0)
+        {
+            return Err("probabilities must be finite and non-negative");
+        }
+        // `ln(0) = -inf`: a zero probability stays an impossible event instead
+        // of being floored to a small but possible one.
+        let log_a: Vec<f64> = transition.iter().map(|&p| p.ln()).collect();
+        let log_b: Vec<f64> = emission.iter().map(|&p| p.ln()).collect();
+        let log_pi: Vec<f64> = initial.iter().map(|&p| p.ln()).collect();
         Ok(HMM {
             n_states,
             n_obs,
@@ -220,8 +236,14 @@ impl HMM {
                     continue;
                 }
                 let (log_alpha, ll) = self.forward(obs_seq);
-                let log_beta = self.backward(obs_seq);
                 total_ll += ll;
+                if ll == NEG_INF
+                {
+                    // Impossible under the current parameters: no posterior
+                    // mass to accumulate (and `x - ll` would be NaN).
+                    continue;
+                }
+                let log_beta = self.backward(obs_seq);
 
                 let mut gamma = vec![NEG_INF; t * n];
                 for step in 0..t
@@ -285,10 +307,15 @@ impl HMM {
             // Normalize the accumulated initial-state mass into a valid probability
             // distribution. Without this, multi-sequence training leaves sum_i pi_i
             // equal to the number of sequences instead of 1.
+            // Rows that received no posterior mass (unvisited states, or no
+            // possible sequence) keep their previous parameters.
             let pi_norm = log_sum_exp_slice(&accum_pi);
-            for (dst, &acc) in self.log_pi.iter_mut().zip(accum_pi.iter())
+            if pi_norm > NEG_INF
             {
-                *dst = acc - pi_norm;
+                for (dst, &acc) in self.log_pi.iter_mut().zip(accum_pi.iter())
+                {
+                    *dst = acc - pi_norm;
+                }
             }
 
             for i in 0..n
@@ -297,6 +324,10 @@ impl HMM {
                 for j in 0..n
                 {
                     row_sum = log_sum_exp(row_sum, accum_a[idx(i, j, n)]);
+                }
+                if row_sum == NEG_INF
+                {
+                    continue;
                 }
                 for j in 0..n
                 {
@@ -310,6 +341,10 @@ impl HMM {
                 for k in 0..o
                 {
                     row_sum = log_sum_exp(row_sum, accum_b[idx(i, k, o)]);
+                }
+                if row_sum == NEG_INF
+                {
+                    continue;
                 }
                 for k in 0..o
                 {
@@ -467,5 +502,129 @@ mod tests {
         hmm.baum_welch(&seqs, 1, 1e-12);
         let pi_sum: f64 = hmm.log_pi.iter().map(|&x| x.exp()).sum();
         assert!((pi_sum - 1.0).abs() < 1e-9, "pi_sum={}", pi_sum);
+    }
+}
+
+#[cfg(test)]
+mod zero_probability_tests {
+    use super::*;
+
+    /// Two states that never switch (`A = I`). State 0 emits symbols 0/1 with
+    /// probability 1/2 each, state 1 only ever emits symbol 1.
+    fn sticky_hmm() -> HMM {
+        let transition = [1.0, 0.0, 0.0, 1.0];
+        let emission = [0.5, 0.5, 0.0, 1.0];
+        let initial = [0.5, 0.5];
+        HMM::new(&transition, &emission, &initial, 2, 2).unwrap()
+    }
+
+    /// Symbol 0 (which only state 0 can emit) followed by `tail` copies of
+    /// symbol 1. Since the chain can never leave state 0, the only possible
+    /// path is all-zeros with probability 0.5^(tail + 2).
+    fn sticky_obs(tail: usize) -> Vec<usize> {
+        let mut obs = vec![0usize];
+        obs.extend(std::iter::repeat_n(1usize, tail));
+        obs
+    }
+
+    #[test]
+    fn viterbi_never_uses_a_zero_probability_transition() {
+        let hmm = sticky_hmm();
+        let tail = 1000;
+        let obs = sticky_obs(tail);
+        let (states, log_prob) = hmm.viterbi(&obs);
+        assert!(
+            states.iter().all(|&s| s == 0),
+            "Viterbi path switches to state 1 through a zero-probability transition"
+        );
+        let expected = (tail as f64 + 2.0) * 0.5f64.ln();
+        assert!(
+            (log_prob - expected).abs() <= 1e-9 * expected.abs(),
+            "log_prob={log_prob}, expected={expected}"
+        );
+    }
+
+    #[test]
+    fn forward_ignores_paths_through_zero_probabilities() {
+        let hmm = sticky_hmm();
+        for tail in [10usize, 1000, 5000]
+        {
+            let obs = sticky_obs(tail);
+            let expected = (tail as f64 + 2.0) * 0.5f64.ln();
+            let ll = hmm.log_probability(&obs);
+            assert!(
+                (ll - expected).abs() <= 1e-9 * expected.abs(),
+                "tail={tail}: ll={ll}, expected={expected}"
+            );
+            // Backward pass gives the same likelihood.
+            let log_beta = hmm.backward(&obs);
+            let ll_b = log_sum_exp_slice(
+                &(0..2)
+                    .map(|i| hmm.log_pi[i] + hmm.log_b[idx(i, obs[0], 2)] + log_beta[i])
+                    .collect::<Vec<_>>(),
+            );
+            assert!(
+                (ll_b - expected).abs() <= 1e-9 * expected.abs(),
+                "tail={tail}: backward ll={ll_b}, expected={expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn impossible_sequence_has_zero_probability() {
+        let hmm = HMM::new(
+            &[1.0, 0.0, 0.0, 1.0],
+            &[1.0, 0.0, 0.0, 1.0],
+            &[0.5, 0.5],
+            2,
+            2,
+        )
+        .unwrap();
+        // Symbol 0 needs state 0, symbol 1 needs state 1, and states never switch.
+        let ll = hmm.log_probability(&[0, 1]);
+        assert_eq!(ll, f64::NEG_INFINITY, "ll={ll}");
+        let (_, vp) = hmm.viterbi(&[0, 1]);
+        assert_eq!(vp, f64::NEG_INFINITY, "viterbi log-prob={vp}");
+    }
+
+    #[test]
+    fn baum_welch_keeps_structural_zeros_and_stays_finite() {
+        let mut hmm = sticky_hmm();
+        let seqs = vec![sticky_obs(20), vec![1, 1, 1, 1], vec![0, 1, 0, 0, 1]];
+        let ll = hmm.baum_welch(&seqs, 20, 1e-10);
+        assert!(ll.is_finite(), "ll={ll}");
+        for v in hmm.log_a.iter().chain(&hmm.log_b).chain(&hmm.log_pi)
+        {
+            assert!(!v.is_nan(), "NaN parameter after training");
+        }
+        // EM never revives a zero transition probability.
+        assert_eq!(hmm.log_a[idx(0, 1, 2)].exp(), 0.0);
+        assert_eq!(hmm.log_a[idx(1, 0, 2)].exp(), 0.0);
+        for i in 0..2
+        {
+            let row: f64 = (0..2).map(|j| hmm.log_a[idx(i, j, 2)].exp()).sum();
+            assert!(
+                (row - 1.0).abs() < 1e-12,
+                "transition row {i} sums to {row}"
+            );
+            let row: f64 = (0..2).map(|k| hmm.log_b[idx(i, k, 2)].exp()).sum();
+            assert!((row - 1.0).abs() < 1e-12, "emission row {i} sums to {row}");
+        }
+    }
+
+    #[test]
+    fn new_rejects_negative_or_non_finite_probabilities() {
+        assert!(HMM::new(&[1.1, -0.1, 0.0, 1.0], &[1.0, 1.0], &[0.5, 0.5], 2, 1).is_err());
+        assert!(HMM::new(&[1.0, 0.0, 0.0, 1.0], &[f64::NAN, 1.0], &[0.5, 0.5], 2, 1).is_err());
+        assert!(
+            HMM::new(
+                &[1.0, 0.0, 0.0, 1.0],
+                &[1.0, 1.0],
+                &[f64::INFINITY, 0.5],
+                2,
+                1
+            )
+            .is_err()
+        );
     }
 }
