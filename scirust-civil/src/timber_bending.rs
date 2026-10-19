@@ -5,7 +5,8 @@
 //! ```text
 //! résistance de calcul   fm,d = kmod · kh · fm,k / γ_M
 //! contrainte de flexion  σm,d = M_d / W
-//! coefficient de hauteur kh   = min( (h_ref / h)^s , kh,max )
+//! coefficient de hauteur kh   = min( (h_ref / h)^s , kh,max )   si h < h_ref
+//!                        kh   = 1                               si h ≥ h_ref
 //! taux de travail        η    = σm,d / fm,d
 //! ```
 //!
@@ -34,7 +35,9 @@
 //! d'après l'**Eurocode 5 (EN 1995-1-1)** et son **Annexe Nationale** — aucune
 //! valeur « par défaut » n'est inventée. Les paramètres de l'effet d'échelle
 //! (`h_ref`, `s`, `kh,max`, p. ex. 150 mm, 0,2 et 1,3 pour le bois massif) sont
-//! eux aussi **normatifs** et fournis par l'appelant.
+//! eux aussi **normatifs** et fournis par l'appelant. Conformément à
+//! l'EN 1995-1-1 (éq. 3.1, 3.2 et 3.3), `kh` ne s'applique qu'aux hauteurs
+//! **inférieures** à `h_ref` : au-delà, `kh = 1` (pas de minoration).
 
 /// Résistance de calcul en flexion `fm,d = kmod · kh · fm,k / γ_M` (MPa)
 /// (Eurocode 5, EN 1995-1-1 §2.4.1 et §6.1.6).
@@ -88,8 +91,15 @@ pub fn timber_bending_stress(design_moment: f64, section_modulus: f64) -> f64 {
 }
 
 /// Coefficient d'effet d'échelle sur la hauteur
-/// `kh = min( (h_ref / h)^s , kh,max )` (sans dimension) (Eurocode 5,
-/// EN 1995-1-1 §3.2, §3.3, §3.4).
+/// `kh = min( (h_ref / h)^s , kh,max )` si `h < h_ref`, et `kh = 1` si
+/// `h ≥ h_ref` (sans dimension) (Eurocode 5, EN 1995-1-1 §3.2 éq. 3.1, §3.3
+/// éq. 3.2, §3.4 éq. 3.3).
+///
+/// L'Eurocode 5 autorise une **majoration** de `fm,k` pour les hauteurs
+/// inférieures à la hauteur de référence ; il ne prévoit **aucune minoration**
+/// pour les hauteurs supérieures. Par exemple, pour du bois massif
+/// (`h_ref = 150 mm`, `s = 0,2`, `kh,max = 1,3`) et `h = 200 mm`, `kh = 1`
+/// (et non `(150/200)^0,2 ≈ 0,9441`).
 ///
 /// `reference_depth` = `h_ref` hauteur de référence (mm, p. ex. 150 mm pour le
 /// bois massif), `actual_depth` = `h` hauteur réelle de la section fléchie (mm),
@@ -118,6 +128,11 @@ pub fn timber_size_factor_depth(
         maximum > 0.0,
         "le plafond kh,max doit être strictement positif"
     );
+    if actual_depth >= reference_depth
+    {
+        // EN 1995-1-1 éq. 3.1-3.3 : pas d'effet d'échelle au-delà de h_ref.
+        return 1.0;
+    }
     (reference_depth / actual_depth).powf(exponent).min(maximum)
 }
 
@@ -211,10 +226,10 @@ mod tests {
         //   σm,d = 5·10⁶ / 666 666,67       = 7,5 MPa
         //   η    = 7,5 / 14,76923 = 7,5·1,3 / 19,2 = 9,75 / 19,2 = 0,5078125
         let kh = timber_size_factor_depth(150.0, 200.0, 0.2, 1.3);
-        // (150/200)^0,2 = 0,75^0,2 ≈ 0,9439 < 1,3 → pas de plafond.
-        assert_relative_eq!(kh, 0.75_f64.powf(0.2), epsilon = 1e-12);
+        // h = 200 mm ≥ h_ref = 150 mm : pas d'effet d'échelle, kh = 1.
+        assert_relative_eq!(kh, 1.0, epsilon = 1e-12);
 
-        let fmd = timber_design_bending_strength(0.8, 1.0, 24.0, 1.3);
+        let fmd = timber_design_bending_strength(0.8, kh, 24.0, 1.3);
         assert_relative_eq!(fmd, 14.769_230_769, epsilon = 1e-6);
 
         let w = 100.0 * 200.0_f64.powi(2) / 6.0;
@@ -224,6 +239,28 @@ mod tests {
         let eta = timber_utilisation(sigma, fmd);
         assert_relative_eq!(eta, 0.507_812_5, epsilon = 1e-6);
         assert!(eta < 1.0); // section vérifiée
+    }
+
+    #[test]
+    fn size_factor_is_one_above_reference_depth() {
+        // EN 1995-1-1 §3.2(3), éq. 3.1 : kh = min((150/h)^0,2 ; 1,3) ne vaut
+        // que pour h < 150 mm ; au-delà, kh = 1. L'ancienne implémentation
+        // renvoyait (150/h)^0,2 < 1, soit une minoration non prévue :
+        //   h = 200 mm → 0,75^0,2 ≈ 0,9441 ; h = 600 mm → 0,25^0,2 ≈ 0,7579.
+        for h in [150.0_f64, 150.000_001, 200.0, 600.0, 2000.0]
+        {
+            let kh = timber_size_factor_depth(150.0, h, 0.2, 1.3);
+            assert_relative_eq!(kh, 1.0, max_relative = 1e-12);
+        }
+        // Lamellé-collé (§3.3, éq. 3.2 : h_ref = 600 mm, s = 0,1, plafond 1,1) :
+        // h = 1200 mm → kh = 1 (et non 0,5^0,1 ≈ 0,9330).
+        let kh_glulam = timber_size_factor_depth(600.0, 1200.0, 0.1, 1.1);
+        assert_relative_eq!(kh_glulam, 1.0, max_relative = 1e-12);
+        // Sous la hauteur de référence, la majoration est inchangée :
+        // h = 100 mm → (150/100)^0,2 = 1,5^0,2 ≈ 1,084472.
+        let kh_low = timber_size_factor_depth(150.0, 100.0, 0.2, 1.3);
+        assert_relative_eq!(kh_low, 1.5_f64.powf(0.2), max_relative = 1e-12);
+        assert!(kh_low > 1.0 && kh_low < 1.3);
     }
 
     #[test]
