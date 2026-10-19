@@ -5,9 +5,11 @@
 //! poids recommandé   RWL = LC·HM·VM·DM·AM·FM·CM
 //! indice de levage   LI  = charge/RWL              (LI > 1 ⇒ risque)
 //! multiplicateurs
-//!   horizontal       HM = 25/H                     (H ≥ 25 cm ; 25/H sinon plafonné)
-//!   vertical         VM = 1 − 0,003·|V − 75|
-//!   distance         DM = 0,82 + 4,5/D
+//!   horizontal       HM = 25/H                     (H ≤ 25 cm ⇒ 1 ; H > 63 cm ⇒ 0)
+//!   vertical         VM = 1 − 0,003·|V − 75|       (V > 175 cm ⇒ 0)
+//!   distance         DM = 0,82 + 4,5/D             (D < 25 cm ⇒ D = 25, DM = 1 ;
+//!                                                   D > 175 cm ⇒ 0)
+//!   asymétrie        AM = 1 − 0,0032·A             (A > 135° ⇒ 0)
 //! ```
 //!
 //! `LC` constante de charge (23 kg, [`LOAD_CONSTANT`]), `RWL` limite de poids
@@ -17,45 +19,91 @@
 //! `FM`/`CM` multiplicateurs (sans dimension, ∈ [0, 1]).
 //!
 //! **Convention** : distances en cm, poids en kg (unités d'origine de l'équation
-//! NIOSH). **Limite honnête** : le multiplicateur d'asymétrie `AM = 1 − 0,0032·A`,
-//! le multiplicateur de fréquence `FM` et le multiplicateur de prise `CM` (qualité
-//! de la préhension) proviennent des **tables NIOSH fournies par l'appelant**
+//! NIOSH). **Limite honnête** : le multiplicateur de fréquence `FM` et le
+//! multiplicateur de prise `CM` (qualité de la préhension) proviennent des
+//! **tables NIOSH fournies par l'appelant**
 //! (aucune valeur inventée ici) ; seules les corrélations continues `HM`, `VM`,
 //! `DM` et `AM` sont calculées. Modèle empirique valable dans son domaine de
-//! validité (25 ≤ H, 0 ≤ V ≤ 175 cm, 25 ≤ D ≤ 175 cm).
+//! validité (25 ≤ H ≤ 63 cm, 0 ≤ V ≤ 175 cm, 25 ≤ D ≤ 175 cm, 0 ≤ A ≤ 135°).
+//!
+//! **Bornes** (Waters, Putz-Anderson & Garg, *Applications Manual for the
+//! Revised NIOSH Lifting Equation*, DHHS (NIOSH) Publication No. 94-110, §1.3,
+//! tableaux 1 à 4) : en deçà des minima, la variable prend sa valeur minimale
+//! (`H < 25` ⇒ `HM = 1`, `D < 25` ⇒ `DM = 1`) ; au-delà des maxima
+//! (`H > 63`, `V > 175`, `D > 175` cm, `A > 135°`) le multiplicateur vaut `0`,
+//! donc `RWL = 0` : la tâche sort du domaine de l'équation. Chaque
+//! multiplicateur renvoyé est ainsi dans `[0, 1]`.
 
 /// Constante de charge de l'équation NIOSH révisée : `LC = 23 kg`.
 pub const LOAD_CONSTANT: f64 = 23.0;
 
-/// Multiplicateur horizontal `HM = 25/H` (`H` en cm, plafonné à 1 pour `H ≤ 25`).
+/// Multiplicateur horizontal `HM = 25/H` (`H` en cm) : `1` pour `H ≤ 25` cm,
+/// `0` pour `H > 63` cm (tableau 1 du manuel NIOSH 94-110).
 ///
-/// Panique si `h_cm <= 0`.
+/// Panique si `h_cm <= 0` ou `NaN`.
 pub fn niosh_horizontal_multiplier(h_cm: f64) -> f64 {
     assert!(h_cm > 0.0, "H > 0 cm requis");
-    if h_cm <= 25.0 { 1.0 } else { 25.0 / h_cm }
+    if h_cm <= 25.0
+    {
+        1.0
+    }
+    else if h_cm > 63.0
+    {
+        0.0
+    }
+    else
+    {
+        25.0 / h_cm
+    }
 }
 
-/// Multiplicateur vertical `VM = 1 − 0,003·|V − 75|` (`V` en cm, optimum à 75 cm).
+/// Multiplicateur vertical `VM = 1 − 0,003·|V − 75|` (`V` en cm, optimum à
+/// 75 cm) : `0` pour `V > 175` cm, au-delà de la portée verticale (tableau 2
+/// du manuel NIOSH 94-110).
 ///
-/// Panique si `v_cm < 0`.
+/// Panique si `v_cm < 0` ou `NaN`.
 pub fn niosh_vertical_multiplier(v_cm: f64) -> f64 {
     assert!(v_cm >= 0.0, "V ≥ 0 cm requis");
+    if v_cm > 175.0
+    {
+        return 0.0;
+    }
     1.0 - 0.003 * (v_cm - 75.0).abs()
 }
 
 /// Multiplicateur de distance verticale `DM = 0,82 + 4,5/D` (`D` en cm).
 ///
-/// Panique si `d_cm <= 0`.
+/// Pour `D < 25` cm, `D` est pris égal à 25 cm, donc `DM = 1` (jamais plus) ;
+/// pour `D > 175` cm, `DM = 0` (tableau 3 et §1.3.3 du manuel NIOSH 94-110 :
+/// `DM` va de 1,0 à 0,85 quand `D` va de 0 à 175 cm).
+///
+/// Panique si `d_cm < 0` ou `NaN`.
 pub fn niosh_distance_multiplier(d_cm: f64) -> f64 {
-    assert!(d_cm > 0.0, "D > 0 cm requis");
-    0.82 + 4.5 / d_cm
+    assert!(d_cm >= 0.0, "D ≥ 0 cm requis");
+    if d_cm <= 25.0
+    {
+        1.0
+    }
+    else if d_cm > 175.0
+    {
+        0.0
+    }
+    else
+    {
+        0.82 + 4.5 / d_cm
+    }
 }
 
-/// Multiplicateur d'asymétrie `AM = 1 − 0,0032·A` (`A` angle de torsion en degrés).
+/// Multiplicateur d'asymétrie `AM = 1 − 0,0032·A` (`A` angle de torsion en
+/// degrés) : `0` pour `A > 135°` (tableau 4 du manuel NIOSH 94-110).
 ///
-/// Panique si `asymmetry_deg < 0`.
+/// Panique si `asymmetry_deg < 0` ou `NaN`.
 pub fn niosh_asymmetry_multiplier(asymmetry_deg: f64) -> f64 {
     assert!(asymmetry_deg >= 0.0, "A ≥ 0° requis");
+    if asymmetry_deg > 135.0
+    {
+        return 0.0;
+    }
     1.0 - 0.0032 * asymmetry_deg
 }
 
@@ -92,7 +140,8 @@ pub fn lifting_recommended_weight_limit(
 
 /// Indice de levage `LI = charge/RWL` (`LI > 1` signale un risque lombaire).
 ///
-/// Panique si `load < 0` ou `rwl <= 0`.
+/// Panique si `load < 0` ou `rwl <= 0` ; en particulier `RWL = 0` (tâche hors
+/// des bornes de l'équation, voir le module) n'a pas d'indice fini.
 pub fn lifting_index(load: f64, rwl: f64) -> f64 {
     assert!(load >= 0.0, "charge ≥ 0 kg requise");
     assert!(rwl > 0.0, "RWL > 0 kg requis");
@@ -109,10 +158,10 @@ mod tests {
         // À H=25 cm, HM=25/25=1 (limite haute) ; à H=50, HM=0,5.
         assert_relative_eq!(niosh_horizontal_multiplier(25.0), 1.0, epsilon = 1e-12);
         assert_relative_eq!(niosh_horizontal_multiplier(50.0), 0.5, epsilon = 1e-12);
-        // Proportionnalité inverse : doubler H halve HM.
+        // Proportionnalité inverse dans [25, 63] cm : doubler H divise HM par 2.
         assert_relative_eq!(
-            niosh_horizontal_multiplier(80.0),
-            0.5 * niosh_horizontal_multiplier(40.0),
+            niosh_horizontal_multiplier(60.0),
+            0.5 * niosh_horizontal_multiplier(30.0),
             epsilon = 1e-12
         );
     }
