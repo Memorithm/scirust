@@ -15,7 +15,10 @@ pub use matching::{boyer_moore, dynamic_time_warping, kmp, longest_common_subseq
 
 // ─── internal helpers ───────────────────────────────────────────────────────
 
-const NEG_INF: f64 = -1e308;
+/// `log(0)`. A true `-inf` (not a large finite sentinel) so that sums of
+/// log-probabilities of impossible events stay impossible instead of
+/// overflowing or being absorbed by finite values.
+const NEG_INF: f64 = f64::NEG_INFINITY;
 
 #[inline]
 fn log_sum_exp(a: f64, b: f64) -> f64 {
