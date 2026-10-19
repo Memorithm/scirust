@@ -28,6 +28,8 @@
 
 use std::f64::consts::PI;
 
+use super::kalman::mode_update_log;
+
 /// The Cartesian tracking state layout `[x, vₓ, y, v_y]` produced by the model
 /// constructors: position is indices `0`/`2`, velocity `1`/`3`.
 const POS_X: usize = 0;
@@ -82,8 +84,16 @@ impl KalmanLinear {
 
     /// Measurement update with `z`; returns the Gaussian innovation likelihood
     /// `𝒩(residual; 0, S)`. If the innovation covariance is not positive
-    /// definite the state is left unchanged and `0.0` is returned.
+    /// definite the state is left unchanged and `0.0` is returned. The density
+    /// underflows to `0.0` for innovations far outside `S`; the [`Imm2D`]
+    /// therefore weights its models with the log-likelihood instead.
     pub fn update(&mut self, z: &[f64]) -> f64 {
+        self.update_log(z).exp()
+    }
+
+    /// Measurement update returning the log-likelihood `ln 𝒩(residual; 0, S)`,
+    /// or `−∞` (state unchanged) if `S` is not positive definite.
+    fn update_log(&mut self, z: &[f64]) -> f64 {
         let n = self.x.len();
         let m = z.len();
         let hx = mat_vec(&self.h, &self.x);
@@ -93,7 +103,7 @@ impl KalmanLinear {
         let l = match cholesky(&s)
         {
             Some(l) => l,
-            None => return 0.0,
+            None => return f64::NEG_INFINITY,
         };
         // Kalman gain K = P·Hᵀ·S⁻¹, solved row-wise: S·K[i]ᵀ = (P·Hᵀ)[i].
         let pht = mat_mul(&self.p, &ht);
@@ -130,21 +140,24 @@ impl KalmanLinear {
                 self.p[i][j] = 0.5 * (np[i][j] + np[j][i]);
             }
         }
-        // Likelihood from the same Cholesky: exp(−½ yᵀS⁻¹y) / √((2π)^m·det S).
+        // Log-likelihood from the same Cholesky:
+        // −½ yᵀS⁻¹y − ½ m·ln 2π − ½ ln det S, with ½ ln det S = Σ ln L_ii.
         let sinv_y = chol_solve(&l, &y);
         let quad: f64 = (0..m).map(|i| y[i] * sinv_y[i]).sum();
-        let mut det = 1.0;
-        for i in 0..m
-        {
-            det *= l[i][i] * l[i][i];
-        }
-        (-0.5 * quad).exp() / ((2.0 * PI).powi(m as i32) * det).sqrt()
+        let half_log_det: f64 = (0..m).map(|i| l[i][i].ln()).sum();
+        -0.5 * quad - 0.5 * m as f64 * (2.0 * PI).ln() - half_log_det
     }
 
     /// Predict then update in one frame; returns the innovation likelihood.
     pub fn step(&mut self, z: &[f64]) -> f64 {
         self.predict();
         self.update(z)
+    }
+
+    /// Predict then update in one frame; returns the innovation log-likelihood.
+    fn step_log(&mut self, z: &[f64]) -> f64 {
+        self.predict();
+        self.update_log(z)
     }
 
     /// The current state vector.
@@ -311,15 +324,10 @@ impl Imm2D {
             self.models[j].x = xmix;
             self.models[j].p = pmix;
         }
-        let like: Vec<f64> = self.models.iter_mut().map(|m| m.step(z)).collect();
-        let mut newmu: Vec<f64> = (0..n).map(|j| cbar[j] * like[j]).collect();
-        let norm: f64 = newmu.iter().sum();
-        if norm <= 1e-300
-        {
-            newmu = cbar;
-        }
-        normalise(&mut newmu);
-        self.mu = newmu;
+        // Mode-probability update μ_j ∝ c̄_j·Λ_j, in log space so that a
+        // measurement far from every model still selects the most likely one.
+        let log_like: Vec<f64> = self.models.iter_mut().map(|m| m.step_log(z)).collect();
+        self.mu = mode_update_log(cbar, &log_like);
     }
 
     /// The combined position estimate `(x, y) = Σ_j μ_j·(x_j, y_j)`.
@@ -652,6 +660,107 @@ mod tests {
         assert!((b[0] - 2.0).abs() < 1e-12 && (b[1] - 1.0).abs() < 1e-12);
         // A non-positive-definite matrix is rejected.
         assert!(cholesky(&[vec![1.0, 2.0], vec![2.0, 1.0]]).is_none());
+    }
+
+    /// Quiet (`q = 0.01`) and agile (`q = 100`) planar CV models with `dt = 1`,
+    /// `r = 1`, `var0 = 1`, starting at the origin with equal mode probabilities.
+    /// After the first predict each axis has innovation variance `s = 3 + q/3`:
+    /// `s_quiet = 3.00333…`, `s_agile = 36.333…`.
+    fn quiet_agile_imm2d() -> Imm2D {
+        Imm2D::new(
+            vec![
+                cv_model_2d(1.0, 0.01, 1.0, 0.0, 0.0, 1.0),
+                cv_model_2d(1.0, 100.0, 1.0, 0.0, 0.0, 1.0),
+            ],
+            vec![vec![0.95, 0.05], vec![0.05, 0.95]],
+            vec![0.5, 0.5],
+        )
+    }
+
+    #[test]
+    fn imm2d_large_innovation_switches_to_the_agile_model() {
+        // z = (300, 400), 500 away: both linear-space likelihoods underflow to 0.
+        // Exact posterior (log space, mpmath at 50 digits): ln L = [-41623.36,
+        // -3445.80], mu = [5.0e-16581, 1]; the estimate is the agile update
+        // (35.333/36.333)·(300, 400) = (291.743119266055…, 388.990825688073…).
+        let mut imm = quiet_agile_imm2d();
+        imm.step(&[300.0, 400.0]);
+        let mu = imm.mode_probabilities();
+        assert!(mu[0] < 1e-12, "quiet mode probability {}", mu[0]);
+        assert!(
+            (mu[1] - 1.0).abs() < 1e-12,
+            "agile mode probability {}",
+            mu[1]
+        );
+        let (x, y) = imm.position();
+        assert!((x - 291.743_119_266_055_05).abs() < 1e-9, "x {x}");
+        assert!((y - 388.990_825_688_073_4).abs() < 1e-9, "y {y}");
+    }
+
+    #[test]
+    fn imm2d_tiny_but_representable_likelihoods_are_not_discarded() {
+        // z = (135, 180): the agile likelihood exp(-702.10) ≈ 1.2e-305 is
+        // representable, but c̄·Λ sums below 1e-300. Exact mu = [2.2e-3357, 1],
+        // estimate (35.333/36.333)·(135, 180) = (131.284403669725…, 175.045871559633…).
+        let mut imm = quiet_agile_imm2d();
+        imm.step(&[135.0, 180.0]);
+        let mu = imm.mode_probabilities();
+        assert!(
+            (mu[1] - 1.0).abs() < 1e-12,
+            "agile mode probability {}",
+            mu[1]
+        );
+        let (x, y) = imm.position();
+        assert!((x - 131.284_403_669_724_77).abs() < 1e-9, "x {x}");
+        assert!((y - 175.045_871_559_633_03).abs() < 1e-9, "y {y}");
+    }
+
+    #[test]
+    fn imm2d_moderate_innovation_matches_closed_form() {
+        // z = (3, 4): mu_j ∝ c̄_j·N(z; 0, s_j·I₂); mpmath gives
+        // mu = [0.209988842984635, 0.790011157015365].
+        let mut imm = quiet_agile_imm2d();
+        imm.step(&[3.0, 4.0]);
+        let mu = imm.mode_probabilities();
+        assert!((mu[0] - 0.209_988_842_984_634_51).abs() < 1e-12, "{mu:?}");
+        assert!((mu[1] - 0.790_011_157_015_365_5).abs() < 1e-12, "{mu:?}");
+        let (x, y) = imm.position();
+        assert!((x - 2.725_013_939_974_643_4).abs() < 1e-9, "x {x}");
+        assert!((y - 3.633_351_919_966_191).abs() < 1e-9, "y {y}");
+    }
+
+    #[test]
+    fn imm2d_degenerate_models_get_zero_weight_unless_all_are_degenerate() {
+        // r = -10 makes S = (3.0033 - 10)·I₂ indefinite: no Cholesky, the model's
+        // update returns likelihood 0 and leaves its state unchanged.
+        let mut bad = cv_model_2d(1.0, 0.01, -10.0, 0.0, 0.0, 1.0);
+        assert_eq!(bad.step(&[1.0, 1.0]), 0.0);
+        let trans = vec![vec![0.9, 0.1], vec![0.3, 0.7]];
+        // One degenerate model beside a valid one: all weight on the valid one.
+        let mut imm = Imm2D::new(
+            vec![
+                cv_model_2d(1.0, 0.01, -10.0, 0.0, 0.0, 1.0),
+                cv_model_2d(1.0, 1.0, 1.0, 0.0, 0.0, 1.0),
+            ],
+            trans.clone(),
+            vec![0.5, 0.5],
+        );
+        imm.step(&[300.0, 400.0]);
+        assert_eq!(imm.mode_probabilities()[0], 0.0);
+        assert!((imm.mode_probabilities()[1] - 1.0).abs() < 1e-12);
+        // Every model degenerate: the predicted probabilities are kept,
+        // c̄ = [0.9·0.5 + 0.3·0.5, 0.1·0.5 + 0.7·0.5] = [0.6, 0.4].
+        let mut imm = Imm2D::new(
+            vec![
+                cv_model_2d(1.0, 0.01, -10.0, 0.0, 0.0, 1.0),
+                cv_model_2d(1.0, 1.0, -10.0, 0.0, 0.0, 1.0),
+            ],
+            trans,
+            vec![0.5, 0.5],
+        );
+        imm.step(&[1.0, 1.0]);
+        assert!((imm.mode_probabilities()[0] - 0.6).abs() < 1e-12);
+        assert!((imm.mode_probabilities()[1] - 0.4).abs() < 1e-12);
     }
 
     #[test]

@@ -74,9 +74,18 @@ impl KalmanCV {
     }
 
     /// Measurement update with position measurement `z`; returns the Gaussian
-    /// likelihood `𝒩(residual; 0, S)` of the innovation, which the [`Imm`] uses
-    /// to weight the model. Observation matrix `H = [1, 0]`.
+    /// likelihood `𝒩(residual; 0, S)` of the innovation. Observation matrix
+    /// `H = [1, 0]`. The density underflows to `0.0` once the innovation is
+    /// beyond roughly 38 standard deviations; the [`Imm`] therefore weights its
+    /// models with the log-likelihood instead.
     pub fn update(&mut self, z: f64) -> f64 {
+        self.update_log(z).exp()
+    }
+
+    /// Measurement update returning the log-likelihood `ln 𝒩(residual; 0, S)`
+    /// of the innovation (finite well past the range where the density itself
+    /// underflows).
+    fn update_log(&mut self, z: f64) -> f64 {
         let y = z - self.p; // innovation
         let s = self.p00 + self.r; // innovation variance S = H·P·Hᵀ + R
         let k0 = self.p00 / s; // Kalman gain K = P·Hᵀ / S
@@ -88,13 +97,19 @@ impl KalmanCV {
         self.p00 = (1.0 - k0) * p00;
         self.p01 = (1.0 - k0) * p01;
         self.p11 = p11 - k1 * p01;
-        (-(y * y) / (2.0 * s)).exp() / (2.0 * PI * s).sqrt()
+        -(y * y) / (2.0 * s) - 0.5 * (2.0 * PI * s).ln()
     }
 
     /// Predict then update in one frame; returns the innovation likelihood.
     pub fn step(&mut self, z: f64) -> f64 {
         self.predict();
         self.update(z)
+    }
+
+    /// Predict then update in one frame; returns the innovation log-likelihood.
+    fn step_log(&mut self, z: f64) -> f64 {
+        self.predict();
+        self.update_log(z)
     }
 
     /// The current filtered position.
@@ -191,18 +206,9 @@ impl Imm {
             m.p01 = c01;
             m.p11 = c11;
         }
-        // Model-matched filtering; collect likelihoods.
-        let like: Vec<f64> = self.models.iter_mut().map(|m| m.step(z)).collect();
-        // Mode-probability update μ_j ∝ c̄_j·Λ_j.
-        let mut newmu: Vec<f64> = (0..n).map(|j| cbar[j] * like[j]).collect();
-        let norm: f64 = newmu.iter().sum();
-        if norm <= 1e-300
-        {
-            // Likelihoods underflowed — fall back to the predicted modes.
-            newmu = cbar;
-        }
-        normalise(&mut newmu);
-        self.mu = newmu;
+        // Model-matched filtering; collect log-likelihoods.
+        let log_like: Vec<f64> = self.models.iter_mut().map(|m| m.step_log(z)).collect();
+        self.mu = mode_update_log(cbar, &log_like);
     }
 
     /// The combined position estimate `Σ_j μ_j·p_j`.
@@ -227,6 +233,34 @@ impl Imm {
     pub fn mode_probabilities(&self) -> &[f64] {
         &self.mu
     }
+}
+
+/// IMM mode-probability update `μ_j ∝ c̄_j·Λ_j`, evaluated in log space from
+/// the model log-likelihoods `ln Λ_j`: the largest `ln c̄_j + ln Λ_j` is
+/// subtracted before exponentiating, so a measurement far from every model
+/// (where each `Λ_j` underflows in linear space) still selects the most likely
+/// model. A NaN log-likelihood counts as `−∞` (zero weight). If no model has a
+/// finite weight the predicted probabilities `c̄` are kept.
+pub(super) fn mode_update_log(cbar: Vec<f64>, log_like: &[f64]) -> Vec<f64> {
+    let log_w: Vec<f64> = cbar
+        .iter()
+        .zip(log_like)
+        .map(|(&c, &ll)| {
+            let ll = if ll.is_nan() { f64::NEG_INFINITY } else { ll };
+            c.ln() + ll
+        })
+        .collect();
+    let max_lw = log_w.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let mut mu = if max_lw.is_finite()
+    {
+        log_w.iter().map(|&lw| (lw - max_lw).exp()).collect()
+    }
+    else
+    {
+        cbar
+    };
+    normalise(&mut mu);
+    mu
 }
 
 /// Scale a vector to sum to one; a degenerate all-zero vector becomes uniform.
@@ -412,6 +446,78 @@ mod tests {
             imm_err < lone_err,
             "IMM error {imm_err} should beat the lone quiet filter {lone_err}"
         );
+    }
+
+    /// Quiet (`q = 0.01`) and agile (`q = 100`) constant-velocity models with
+    /// `dt = 1`, `r = 1`, `var0 = 1`, starting at 0 with equal mode probabilities.
+    /// After the first predict the innovation variances are
+    /// `s = 2 + q/3 + 1`: `s_quiet = 3.00333…`, `s_agile = 36.333…`.
+    fn quiet_agile_imm() -> Imm {
+        Imm::new(
+            vec![
+                KalmanCV::new(1.0, 0.01, 1.0, 0.0, 1.0),
+                KalmanCV::new(1.0, 100.0, 1.0, 0.0, 1.0),
+            ],
+            vec![vec![0.95, 0.05], vec![0.05, 0.95]],
+            vec![0.5, 0.5],
+        )
+    }
+
+    #[test]
+    fn imm_large_innovation_switches_to_the_agile_model() {
+        // z = 500 is ~83 innovation standard deviations away for the agile model
+        // and ~289 for the quiet one, so both linear-space likelihoods underflow
+        // to 0. Exact posterior (log space, mpmath at 50 digits):
+        // ln L = [-41621.89, -3443.08], mu = [1.4e-16581, 1] and the combined
+        // estimate is the agile update (35.333/36.333)·500 = 486.238532110091…
+        let mut imm = quiet_agile_imm();
+        imm.step(500.0);
+        let mu = imm.mode_probabilities();
+        assert!(mu[0] < 1e-12, "quiet mode probability {}", mu[0]);
+        assert!(
+            (mu[1] - 1.0).abs() < 1e-12,
+            "agile mode probability {}",
+            mu[1]
+        );
+        let expected = 486.238_532_110_091_74;
+        assert!(
+            (imm.position() - expected).abs() < 1e-9,
+            "position {} vs {expected}",
+            imm.position()
+        );
+    }
+
+    #[test]
+    fn imm_tiny_but_representable_likelihoods_are_not_discarded() {
+        // z = 225: the agile likelihood exp(-699.39) ≈ 1.8e-304 is representable,
+        // but c̄·Λ ≈ 9.1e-305 sums below 1e-300. Exact posterior mu = [6.5e-3358, 1],
+        // estimate (35.333/36.333)·225 = 218.807339449541…
+        let mut imm = quiet_agile_imm();
+        imm.step(225.0);
+        let mu = imm.mode_probabilities();
+        assert!(
+            (mu[1] - 1.0).abs() < 1e-12,
+            "agile mode probability {}",
+            mu[1]
+        );
+        let expected = 218.807_339_449_541_28;
+        assert!(
+            (imm.position() - expected).abs() < 1e-9,
+            "position {} vs {expected}",
+            imm.position()
+        );
+    }
+
+    #[test]
+    fn imm_moderate_innovation_matches_closed_form() {
+        // z = 5: mu_j ∝ c̄_j·N(5; 0, s_j); mpmath gives mu = [0.0709953690897617,
+        // 0.929004630910238] and estimate 4.75396103785877.
+        let mut imm = quiet_agile_imm();
+        imm.step(5.0);
+        let mu = imm.mode_probabilities();
+        assert!((mu[0] - 0.070_995_369_089_761_74).abs() < 1e-12, "{mu:?}");
+        assert!((mu[1] - 0.929_004_630_910_238_3).abs() < 1e-12, "{mu:?}");
+        assert!((imm.position() - 4.753_961_037_858_771_4).abs() < 1e-9);
     }
 
     #[test]
