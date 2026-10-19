@@ -8,7 +8,7 @@
 //! contrainte de comparaison   σcomp = √( σ⊥² + 3·(τ⊥² + τ∥²) )
 //! critère directionnel        σcomp ≤ fu / (βw · γ_M2)   et   σ⊥ ≤ 0,9·fu/γ_M2
 //! contrainte limite           σlim  = fu / (βw · γ_M2)
-//! méthode simplifiée          Fw,Rd/l = fvw,d · a = a · fu / (√2 · βw · γ_M2)
+//! méthode simplifiée          Fw,Rd/l = fvw,d · a = a · fu / (√3 · βw · γ_M2)
 //! ```
 //!
 //! `z` côté (leg) du cordon d'angle isocèle (mm), `a` gorge utile (mm) ; `σ⊥`
@@ -112,8 +112,9 @@ pub fn steelweld_limit_stress(
 }
 
 /// Résistance de calcul au cisaillement **par unité de longueur** de la **méthode
-/// simplifiée** `Fw,Rd/l = fvw,d · a = a · fu / (√2 · βw · γ_M2)` (N/mm)
-/// (Eurocode 3, EN 1993-1-8, § 4.5.3.3).
+/// simplifiée** `Fw,Rd/l = fvw,d · a = a · fu / (√3 · βw · γ_M2)` (N/mm)
+/// (Eurocode 3, EN 1993-1-8, § 4.5.3.3, éq. 4.3 et 4.4, avec
+/// `fvw,d = (fu/√3) / (βw · γ_M2)`).
 ///
 /// `throat` = `a` gorge utile (mm), `ultimate_strength` = `fu` résistance ultime de
 /// la pièce la plus faible (MPa), `correlation_factor` = `βw` facteur de corrélation
@@ -143,7 +144,7 @@ pub fn steelweld_simplified_resistance_per_length(
         gamma_m2 > 0.0,
         "le coefficient partiel γ_M2 doit être strictement positif"
     );
-    throat * ultimate_strength / (core::f64::consts::SQRT_2 * correlation_factor * gamma_m2)
+    throat * ultimate_strength / (3.0_f64.sqrt() * correlation_factor * gamma_m2)
 }
 
 #[cfg(test)]
@@ -212,12 +213,33 @@ mod tests {
     #[test]
     fn simplified_resistance_realistic_case() {
         // Cordon z = 6 mm (a = 6/√2 mm), S235 : fu = 360 MPa, βw = 0,8, γ_M2 = 1,25 :
-        //   Fw,Rd/l = a · fu / (√2 · βw · γ_M2)
-        //           = (6/√2) · 360 / (√2 · 0,8 · 1,25)
-        //           = 6 · 360 / (2 · 0,8 · 1,25) = 2 160 / 2,0 = 1 080 N/mm.
+        //   Fw,Rd/l = a · fu / (√3 · βw · γ_M2)
+        //           = (6/√2) · 360 / (√3 · 0,8 · 1,25)
+        //           = 2 160 / (√6 · 1,0) ≈ 881,816 N/mm.
         let a = steelweld_throat(6.0);
         let fvw = steelweld_simplified_resistance_per_length(a, 360.0, 0.8, 1.25);
-        assert_relative_eq!(fvw, 1080.0, epsilon = 1e-3);
+        assert_relative_eq!(fvw, 2160.0 / 6.0_f64.sqrt(), max_relative = 1e-12);
+        assert_relative_eq!(fvw, 881.816_307_401_9, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn simplified_resistance_matches_en1993_eq_4_4() {
+        // EN 1993-1-8 §4.5.3.3, éq. (4.4) : fvw,d = (fu/√3) / (βw · γ_M2).
+        // a = 4 mm, S235 (fu = 360 MPa, βw = 0,8, γ_M2 = 1,25) :
+        //   Fw,Rd/l = 4 · 360 / (√3 · 0,8 · 1,25) = 1 440 / √3 ≈ 831,384 N/mm.
+        // Avec √2 au lieu de √3, on obtiendrait 1 440 / √2 ≈ 1 018,23 N/mm,
+        // soit √(3/2) ≈ 1,22 fois trop.
+        let fw = steelweld_simplified_resistance_per_length(4.0, 360.0, 0.8, 1.25);
+        assert_relative_eq!(fw, 1440.0 / 3.0_f64.sqrt(), max_relative = 1e-12);
+        assert_relative_eq!(fw, 831.384_387_633, max_relative = 1e-9);
+
+        // Cohérence avec la méthode directionnelle en cisaillement longitudinal
+        // pur (τ∥ seul, cas du cordon latéral) : à Fw,Ed/l = Fw,Rd/l, la
+        // contrainte τ∥ = Fw,Rd/(l·a) donne σcomp = √3·τ∥ = σlim (à l'arrondi près).
+        let tau_par = fw / 4.0;
+        let sigma_comp = steelweld_von_mises_stress(0.0, 0.0, tau_par);
+        let sigma_lim = steelweld_limit_stress(360.0, 0.8, 1.25);
+        assert_relative_eq!(sigma_comp, sigma_lim, max_relative = 1e-12);
     }
 
     #[test]
