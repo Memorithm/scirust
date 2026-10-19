@@ -236,13 +236,29 @@ pub fn nelson_aalen(
     Ok(out)
 }
 
+/// Hypergeometric variance `n_a·n_b·d·(n − d) / (n²·(n − 1))` of the group-A
+/// event count at one event time, with `n = n_a + n_b > 1` at risk and `d`
+/// events.
+///
+/// Evaluated in `f64`: the integer product `n_a·n_b·d·(n − d)` exceeds
+/// `u64::MAX` once about 131 000 subjects are at risk with many tied events
+/// (and `n²·(n − 1)` does beyond about 2.6 million), and both overflow far
+/// earlier where `usize` is 32 bits.
+fn hypergeometric_variance(n_a: usize, n_b: usize, d: usize) -> f64 {
+    let (n_a, n_b, d) = (n_a as f64, n_b as f64, d as f64);
+    let n = n_a + n_b;
+    n_a * n_b * d * (n - d) / (n * n * (n - 1.0))
+}
+
 /// Compare two right-censored samples with the unweighted two-sample log-rank
 /// test.
 ///
 /// For each pooled event time, the expected number of group-A events is
 /// `d_i * n_ai / n_i`. The variance uses the finite-population
 /// hypergeometric correction
-/// `n_ai*n_bi*d_i*(n_i-d_i) / (n_i^2*(n_i-1))`.
+/// `n_ai*n_bi*d_i*(n_i-d_i) / (n_i^2*(n_i-1))`, evaluated in `f64` so that
+/// large risk sets with heavily tied event times cannot overflow an integer
+/// intermediate.
 pub fn log_rank(
     group_a: &[RightCensoredObservation],
     group_b: &[RightCensoredObservation],
@@ -295,7 +311,7 @@ pub fn log_rank(
         expected_a += d as f64 * n_a as f64 / n as f64;
         if n > 1
         {
-            variance += (n_a * n_b * d * (n - d)) as f64 / ((n * n * (n - 1)) as f64);
+            variance += hypergeometric_variance(n_a, n_b, d);
         }
     }
 
@@ -402,6 +418,45 @@ mod tests {
         close(r.variance, 0.6775, 1e-15);
         close(r.chi_square, 5.051_660_516_605_166, 1e-12);
         assert!(r.p_value > 0.02 && r.p_value < 0.03);
+    }
+
+    #[test]
+    fn hypergeometric_variance_is_finite_and_exact_for_huge_risk_sets() {
+        // Small case from the hand calculation above: n_A = 2, n_B = 3, d = 1.
+        close(hypergeometric_variance(2, 3, 1), 6.0 / 25.0, 1e-15);
+        // 70 000⁴ / (140 000²·139 999): the integer numerator is 2.401e19.
+        let v = hypergeometric_variance(70_000, 70_000, 70_000);
+        assert!((v - 8_750.062_500_446_431).abs() <= 1e-12 * 8_750.0, "{v}");
+        // n = 4e6: n²·(n − 1) alone is 6.4e19 > u64::MAX. With d = 1 the
+        // variance is n_A·n_B/n² = 1/4 to within (n − 1)/n.
+        let v = hypergeometric_variance(2_000_000, 2_000_000, 1);
+        assert!((v - 0.25).abs() <= 1e-12, "{v}");
+    }
+
+    // 140 000 observations: ~200 s under Miri, so the integer-overflow
+    // arithmetic is covered there by the test above instead.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn log_rank_variance_does_not_overflow_for_large_tied_risk_sets() {
+        // 140 000 subjects, 70 000 tied events at t = 1 (40 000 in A, 30 000
+        // in B), everyone else censored at t = 2. The single event time has
+        // n_A = n_B = 70 000, d = 70 000, n = 140 000, so the variance
+        // numerator n_A·n_B·d·(n − d) = 2.401e19 exceeds u64::MAX (1.8e19).
+        // Exact values: V = 70 000⁴ / (140 000²·139 999) = 8750.0625004464…,
+        // O − E = 40 000 − 35 000 = 5000, χ² = 5000² / V = 2857.1224489795…
+        // (exact rational arithmetic). Before the fix the u64 product
+        // panicked in debug builds and wrapped in release, giving
+        // V = 2027.44 and χ² ≈ 12 330.8.
+        let mut a = vec![e(1.0); 40_000];
+        a.extend(std::iter::repeat_n(c(2.0), 30_000));
+        let mut b = vec![e(1.0); 30_000];
+        b.extend(std::iter::repeat_n(c(2.0), 40_000));
+        let r = log_rank(&a, &b).unwrap();
+        close(r.observed_a, 40_000.0, 1e-9);
+        close(r.expected_a, 35_000.0, 1e-9);
+        close(r.variance, 8_750.062_500_446_431, 1e-8);
+        close(r.chi_square, 2_857.122_448_979_592, 1e-8);
+        assert!(r.p_value < 1e-300, "p = {}", r.p_value);
     }
 
     #[test]
