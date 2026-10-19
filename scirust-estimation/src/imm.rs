@@ -117,8 +117,9 @@ impl Imm {
             }
         }
 
-        // 3. Mode-matched Kalman predict + update; collect likelihoods.
-        let mut likelihood = vec![0.0; k];
+        // 3. Mode-matched Kalman predict + update; collect log-likelihoods.
+        // `None` marks a degenerate mode (innovation variance `s <= 0`).
+        let mut log_likelihood: Vec<Option<f64>> = vec![None; k];
         for j in 0..k
         {
             let m = &self.models[j];
@@ -134,7 +135,6 @@ impl Imm {
             {
                 self.x[j] = xp;
                 self.p[j] = pp;
-                likelihood[j] = 1e-300;
                 continue;
             }
             // Kalman gain K = P Hᵀ / s.
@@ -151,17 +151,40 @@ impl Imm {
                 }
             }
             self.p[j] = Mat::identity(n).sub(&kh).matmul(&pp);
-            // Gaussian likelihood of the innovation.
-            likelihood[j] = (-0.5 * y * y / s).exp() / (2.0 * core::f64::consts::PI * s).sqrt();
+            // Gaussian log-likelihood of the innovation. Kept in log space: the
+            // linear-space density underflows to 0 once |y| exceeds ~38 sqrt(s),
+            // which would otherwise zero every mode at once on a large jump.
+            log_likelihood[j] =
+                Some(-0.5 * y * y / s - 0.5 * (2.0 * core::f64::consts::PI * s).ln());
         }
 
-        // 4. Mode-probability update.
+        // 4. Mode-probability update, mu_j ∝ cbar_j * L_j, normalized in log space
+        // (subtract the largest log-weight before exponentiating). A degenerate
+        // mode carries no likelihood and gets zero weight, unless every mode is
+        // degenerate, in which case the likelihoods are uninformative (equal) and
+        // the predicted probabilities `cbar` are kept.
+        let all_degenerate = log_likelihood.iter().all(Option::is_none);
+        let log_w: Vec<f64> = (0..k)
+            .map(|j| {
+                let ll = match log_likelihood[j]
+                {
+                    Some(ll) => ll,
+                    None if all_degenerate => 0.0,
+                    None => f64::NEG_INFINITY,
+                };
+                ll + cbar[j].ln()
+            })
+            .collect();
+        let max_lw = log_w.iter().copied().fold(f64::NEG_INFINITY, f64::max);
         let mut norm = 0.0;
         let mut new_mu = vec![0.0; k];
-        for j in 0..k
+        if max_lw.is_finite()
         {
-            new_mu[j] = likelihood[j] * cbar[j];
-            norm += new_mu[j];
+            for j in 0..k
+            {
+                new_mu[j] = (log_w[j] - max_lw).exp();
+                norm += new_mu[j];
+            }
         }
         if norm > 0.0
         {
@@ -274,5 +297,103 @@ mod tests {
             maneuver_mode1 > quiet_mode1 + 0.2,
             "maneuver p1 {maneuver_mode1} vs quiet p1 {quiet_mode1}"
         );
+    }
+
+    /// Two scalar random-walk modes (quiet `q = 0.01`, agile `q = 100`, `r = 1`)
+    /// and a jump `z = 500` that is > 38 innovation standard deviations away for
+    /// *both* modes, so both Gaussian likelihoods underflow to 0 in linear space.
+    fn jump_imm() -> Imm {
+        let rw = |q: f64| ImmModel {
+            a: Mat::new(1, 1, vec![1.0]),
+            q: Mat::new(1, 1, vec![q]),
+            h: Mat::new(1, 1, vec![1.0]),
+            r: Mat::new(1, 1, vec![1.0]),
+        };
+        Imm::new(
+            vec![rw(0.01), rw(100.0)],
+            vec![0.0],
+            Mat::new(1, 1, vec![1.0]),
+            vec![0.5, 0.5],
+            vec![vec![0.95, 0.05], vec![0.05, 0.95]],
+        )
+    }
+
+    #[test]
+    fn large_innovation_does_not_freeze_mode_probabilities() {
+        let mut imm = jump_imm();
+        imm.step(500.0);
+        // s_quiet = 1 + 0.01 + 1 = 2.01, s_agile = 1 + 100 + 1 = 102.
+        // log L_quiet - log L_agile = -0.5*500^2*(1/2.01 - 1/102) - 0.5*ln(2.01/102)
+        //   ≈ -6.0962e4, so the exact posterior is mu = [exp(-6.0962e4), 1] ≈ [0, 1].
+        let mu = imm.mode_probabilities();
+        assert!(mu[0] < 1e-12, "quiet mode probability {}", mu[0]);
+        assert!(
+            (mu[1] - 1.0).abs() < 1e-12,
+            "agile mode probability {}",
+            mu[1]
+        );
+        assert!(((mu[0] + mu[1]) - 1.0).abs() < 1e-12);
+        // Agile-mode update: x = 0 + (101/102)*500 = 495.098..., which is the
+        // overall estimate once mu = [0, 1] (the quiet mode would give 251.24).
+        let expected = 101.0 / 102.0 * 500.0;
+        let est = imm.estimate()[0];
+        assert!(
+            (est - expected).abs() < 1e-9,
+            "estimate {est} vs {expected}"
+        );
+    }
+
+    #[test]
+    fn moderate_innovation_mode_probabilities_match_closed_form() {
+        // z = 5: both likelihoods are representable; check against the closed form
+        // mu_j ∝ cbar_j * N(5; 0, s_j) with cbar = [0.5, 0.5].
+        let mut imm = jump_imm();
+        imm.step(5.0);
+        let ll = |s: f64| -0.5 * 25.0 / s - 0.5 * (2.0 * core::f64::consts::PI * s).ln();
+        let (l0, l1) = (ll(2.01), ll(102.0));
+        let p1 = 1.0 / (1.0 + (l0 - l1).exp());
+        let mu = imm.mode_probabilities();
+        assert!((mu[1] - p1).abs() < 1e-12, "agile {} vs {}", mu[1], p1);
+        assert!(
+            (mu[0] - (1.0 - p1)).abs() < 1e-12,
+            "quiet {} vs {}",
+            mu[0],
+            1.0 - p1
+        );
+    }
+
+    #[test]
+    fn degenerate_modes_get_zero_weight_unless_all_are_degenerate() {
+        // r = -10 makes the innovation variance s = 1 + q - 10 < 0 (degenerate).
+        let rw = |q: f64, r: f64| ImmModel {
+            a: Mat::new(1, 1, vec![1.0]),
+            q: Mat::new(1, 1, vec![q]),
+            h: Mat::new(1, 1, vec![1.0]),
+            r: Mat::new(1, 1, vec![r]),
+        };
+        let pi = vec![vec![0.9, 0.1], vec![0.3, 0.7]];
+        // One degenerate mode next to a valid one: all weight on the valid mode.
+        let mut imm = Imm::new(
+            vec![rw(0.0, -10.0), rw(1.0, 1.0)],
+            vec![0.0],
+            Mat::new(1, 1, vec![1.0]),
+            vec![0.5, 0.5],
+            pi.clone(),
+        );
+        imm.step(500.0);
+        assert_eq!(imm.mode_probabilities()[0], 0.0);
+        assert!((imm.mode_probabilities()[1] - 1.0).abs() < 1e-12);
+        // Every mode degenerate: the predicted probabilities cbar are kept,
+        // cbar = [0.9*0.5 + 0.3*0.5, 0.1*0.5 + 0.7*0.5] = [0.6, 0.4].
+        let mut imm = Imm::new(
+            vec![rw(0.0, -10.0), rw(1.0, -10.0)],
+            vec![0.0],
+            Mat::new(1, 1, vec![1.0]),
+            vec![0.5, 0.5],
+            pi,
+        );
+        imm.step(1.0);
+        assert!((imm.mode_probabilities()[0] - 0.6).abs() < 1e-12);
+        assert!((imm.mode_probabilities()[1] - 0.4).abs() < 1e-12);
     }
 }
