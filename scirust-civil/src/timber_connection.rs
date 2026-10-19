@@ -6,8 +6,8 @@
 //! ```text
 //! enfoncement   fh,k = 0,082 · (1 - 0,01·d) · ρk
 //! moment plast. My,Rk = 0,3 · fu · d^2,6
-//! mode plaque mince    Fv,Rk = fh,k · t · d
-//! mode plaque épaisse  Fv,Rk = 2,3 · sqrt( My,Rk · fh,k · d )
+//! plaque mince, mode (a)      Fv,Rk = 0,4 · fh,k · t · d             (éq. 8.9)
+//! plaque épaisse, une rotule  Fv,Rk = 2,3 · sqrt( My,Rk · fh,k · d )  (éq. 8.10)
 //! ```
 //!
 //! `ρk` = `density` masse volumique caractéristique du bois (kg/m³), `d` =
@@ -34,7 +34,12 @@
 //! le **coefficient partiel** `γ_M` et le **coefficient** `kmod` sont à vérifier
 //! et à appliquer par l'appelant d'après l'Eurocode 5 et son Annexe Nationale.
 //! La **capacité de calcul** de l'assemblage est le **minimum** des capacités de
-//! tous les modes de rupture pertinents.
+//! tous les modes de rupture pertinents **du même jeu** (plaque mince `t_plaque ≤
+//! 0,5·d` : éq. 8.9 ; plaque épaisse `t_plaque ≥ d` : éq. 8.10 ; interpolation
+//! linéaire entre les deux selon §8.2.3(1)). Ce module ne fournit qu'**un** mode
+//! de chaque jeu : le mode plaque mince (b) `1,15·sqrt(2·My,Rk·fh,k·d)`, les
+//! modes plaque épaisse `fh,k·t·d` (portance) et à deux rotules, ainsi que
+//! l'effet de corde `Fax,Rk/4`, restent à évaluer par l'appelant.
 
 /// Résistance caractéristique à l'enfoncement
 /// `fh,k = 0,082 · (1 - 0,01·d) · ρk` (MPa) pour un organe **non prédétré** dans
@@ -83,9 +88,16 @@ pub fn timberconn_yield_moment(ultimate_tensile_strength: f64, fastener_diameter
     0.3 * ultimate_tensile_strength * fastener_diameter.powf(2.6)
 }
 
-/// Capacité caractéristique du mode de rupture « **plaque mince** » (écrasement
-/// du bois sur toute l'épaisseur, sans rotule plastique dans l'organe)
-/// `Fv,Rk = fh,k · t · d` (N) (Eurocode 5, EN 1995-1-1 §8.2.3, mode a).
+/// Capacité caractéristique du mode de rupture (a) d'une **plaque métallique
+/// mince** (`t_plaque ≤ 0,5·d`) en simple cisaillement, sans rotule plastique
+/// dans l'organe : `Fv,Rk = 0,4 · fh,k · t · d` (N) (Eurocode 5, EN 1995-1-1
+/// §8.2.3, éq. 8.9 (a)).
+///
+/// Le facteur `0,4` traduit la rotation libre de l'organe dans une plaque mince.
+/// L'expression sans ce facteur, `fh,k · t · d`, est le mode de portance d'une
+/// plaque **épaisse** (éq. 8.10) et n'est **pas** ce que renvoie cette fonction.
+/// Le second mode plaque mince, (b) `1,15·sqrt(2·My,Rk·fh,k·d) + Fax,Rk/4`, est à
+/// évaluer par l'appelant : la capacité plaque mince est le minimum des deux.
 ///
 /// `embedment_strength` = `fh,k` résistance à l'enfoncement (MPa),
 /// `fastener_diameter` = `d` diamètre de l'organe (mm), `timber_thickness` = `t`
@@ -111,13 +123,17 @@ pub fn timberconn_capacity_thin_plate_single_shear(
         timber_thickness >= 0.0,
         "l'épaisseur du bois t doit être ≥ 0"
     );
-    embedment_strength * timber_thickness * fastener_diameter
+    0.4 * embedment_strength * timber_thickness * fastener_diameter
 }
 
-/// Capacité caractéristique du mode de rupture « **plaque épaisse** » (rotule
-/// plastique dans l'organe, plastification du bois)
-/// `Fv,Rk = 2,3 · sqrt( My,Rk · fh,k · d )` (N)
-/// (Eurocode 5, EN 1995-1-1 §8.2.3, mode b).
+/// Capacité caractéristique du mode de rupture d'une **plaque métallique
+/// épaisse** (`t_plaque ≥ d`) en simple cisaillement avec **une rotule
+/// plastique** dans l'organe et plastification du bois
+/// `Fv,Rk = 2,3 · sqrt( My,Rk · fh,k · d )` (N), sans l'effet de corde
+/// `Fax,Rk/4` (Eurocode 5, EN 1995-1-1 §8.2.3, éq. 8.10).
+///
+/// Les autres modes plaque épaisse de l'éq. 8.10 (portance `fh,k · t · d` et
+/// mode à deux rotules) sont à évaluer par l'appelant.
 ///
 /// `embedment_strength` = `fh,k` résistance à l'enfoncement (MPa),
 /// `fastener_diameter` = `d` diamètre de l'organe (mm), `yield_moment` =
@@ -178,10 +194,10 @@ mod tests {
 
     #[test]
     fn thin_plate_capacity_proportionalities() {
-        // Fv,Rk = fh,k·t·d : linéaire en chacun des trois facteurs.
+        // Fv,Rk = 0,4·fh,k·t·d : linéaire en chacun des trois facteurs.
         let base = timberconn_capacity_thin_plate_single_shear(27.552, 4.0, 20.0);
-        // 27,552·20·4 = 2204,16 N.
-        assert_relative_eq!(base, 2204.16, epsilon = 1e-9);
+        // 0,4·27,552·20·4 = 881,664 N.
+        assert_relative_eq!(base, 881.664, epsilon = 1e-9);
         // Doubler l'épaisseur double la capacité.
         let dbl_t = timberconn_capacity_thin_plate_single_shear(27.552, 4.0, 40.0);
         assert_relative_eq!(dbl_t, 2.0 * base, epsilon = 1e-9);
@@ -202,29 +218,53 @@ mod tests {
     #[test]
     fn realistic_nailed_joint_governing_mode() {
         // Assemblage cloué, simple cisaillement, plaque métallique + bois massif :
-        //   ρk = 350 kg/m³ ; pointe d = 4 mm ; fu = 600 MPa ; t = 20 mm.
+        //   ρk = 350 kg/m³ ; pointe d = 4 mm ; fu = 600 MPa ; t1 = 20 mm.
         //   fh,k  = 0,082·0,96·350                = 27,552 MPa
         //   My,Rk = 0,3·600·4^2,6 = 180·36,758347 = 6616,50 N·mm
-        //   plaque mince   : 27,552·20·4          = 2204,16 N
-        //   plaque épaisse : 2,3·sqrt(6616,50·27,552·4)
-        //                  = 2,3·sqrt(729191,7)
-        //                  = 2,3·853,928           = 1964,03 N
-        //   capacité retenue = min(2204,16 ; 1964,03) = 1964,03 N (plaque épaisse).
+        // Plaque mince (t_plaque ≤ 0,5·d = 2 mm), éq. 8.9, sans effet de corde :
+        //   (a) 0,4·27,552·20·4                   =  881,66 N
+        //   (b) 1,15·sqrt(2·6616,50·27,552·4)     = 1388,78 N
+        //   capacité plaque mince = 881,66 N (mode a).
+        // Plaque épaisse (t_plaque ≥ d = 4 mm), éq. 8.10, sans effet de corde :
+        //   portance   27,552·20·4                         = 2204,16 N
+        //   2 rotules  2204,16·(sqrt(2 + 4·My/(fh·d·t1²)) − 1) = 1350,19 N
+        //   1 rotule   2,3·sqrt(6616,50·27,552·4)          = 1964,03 N
+        //   capacité plaque épaisse = 1350,19 N (deux rotules).
         let fhk = timberconn_embedment_strength(350.0, 4.0);
         assert_relative_eq!(fhk, 27.552, epsilon = 1e-9);
 
         let my = timberconn_yield_moment(600.0, 4.0);
         assert_relative_eq!(my, 6616.5025, epsilon = 1e-3);
 
-        let thin = timberconn_capacity_thin_plate_single_shear(fhk, 4.0, 20.0);
-        assert_relative_eq!(thin, 2204.16, epsilon = 1e-3);
+        let (d, t1) = (4.0_f64, 20.0_f64);
+        let thin_a = timberconn_capacity_thin_plate_single_shear(fhk, d, t1);
+        assert_relative_eq!(thin_a, 881.664, epsilon = 1e-3);
+        let thin_b = 1.15 * (2.0 * my * fhk * d).sqrt();
+        assert_relative_eq!(thin_b, 1388.7806, epsilon = 1e-3);
+        assert_relative_eq!(thin_a.min(thin_b), 881.664, epsilon = 1e-3);
 
-        let thick = timberconn_capacity_thick_plate_yield(fhk, 4.0, my);
-        assert_relative_eq!(thick, 1964.032, epsilon = 1e-3);
+        let thick_one_hinge = timberconn_capacity_thick_plate_yield(fhk, d, my);
+        assert_relative_eq!(thick_one_hinge, 1964.032, epsilon = 1e-3);
+        let bearing = fhk * t1 * d;
+        let two_hinges = bearing * ((2.0 + 4.0 * my / (fhk * d * t1 * t1)).sqrt() - 1.0);
+        assert_relative_eq!(two_hinges, 1350.1907, epsilon = 1e-3);
+        let thick = bearing.min(two_hinges).min(thick_one_hinge);
+        assert_relative_eq!(thick, 1350.1907, epsilon = 1e-3);
 
-        let governing = thin.min(thick);
-        assert_relative_eq!(governing, 1964.032, epsilon = 1e-3);
-        assert!(thick < thin); // le mode plaque épaisse gouverne
+        // Une plaque mince offre moins de capacité qu'une plaque épaisse.
+        assert!(thin_a < thick);
+    }
+
+    #[test]
+    fn thin_plate_capacity_matches_en1995_eq_8_9a() {
+        // EN 1995-1-1 §8.2.3, éq. (8.9) (a), plaque mince en simple cisaillement :
+        //   Fv,Rk = 0,4·fh,k·t1·d = 0,4·27,552·20·4 = 881,664 N.
+        // Sans le facteur 0,4, on obtiendrait fh,k·t1·d = 2204,16 N (mode de
+        // portance de la plaque **épaisse**, éq. 8.10), soit 2,5 fois trop.
+        let thin = timberconn_capacity_thin_plate_single_shear(27.552, 4.0, 20.0);
+        assert_relative_eq!(thin, 881.664, max_relative = 1e-12);
+        // Le mode (a) reste inférieur au mode de portance plaque épaisse fh,k·t1·d.
+        assert!(thin < 27.552 * 20.0 * 4.0);
     }
 
     #[test]
