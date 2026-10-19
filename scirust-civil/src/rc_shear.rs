@@ -5,6 +5,7 @@
 //!
 //! ```text
 //! sans armatures            VRd,c   = CRd,c · k · (100 · ρl · fck)^(1/3) · bw · d
+//!                                     avec ρl plafonné à 0,02
 //! coefficient d'échelle     k       = 1 + √(200 / d)   (plafonné à 2)
 //! avec étriers (treillis)   VRd,s   = (Asw/s) · z · fywd · cot θ
 //! écrasement des bielles     VRd,max = αcw · bw · z · ν1 · fcd / (cot θ + tan θ)
@@ -35,14 +36,30 @@
 //! `αcw`, le ratio d'armatures `ρl` et la densité d'étriers `Asw/s` sont
 //! **fournis par l'appelant** d'après l'Eurocode 2 et son Annexe Nationale ;
 //! aucune valeur « par défaut » n'est inventée. Le coefficient d'échelle `k` est
-//! **plafonné à 2,0**. La vérification finale (`VEd ≤ min(VRd,s, VRd,max)`, choix
+//! **plafonné à 2,0** et le ratio `ρl` est **plafonné à 0,02** dans le calcul de
+//! `VRd,c` (EN 1992-1-1 §6.2.2(1) : `ρl = Asl / (bw·d) ≤ 0,02`) ; le terme de
+//! précontrainte `k1·σcp` et le plancher `VRd,c ≥ vmin·bw·d` (éq. 6.2.b) ne sont
+//! **pas** appliqués par ce module. La vérification finale (`VEd ≤ min(VRd,s, VRd,max)`, choix
 //! de `θ`, dispositions constructives) reste à la charge de l'ingénieur.
 
 use core::f64::consts::FRAC_PI_2;
 
 /// Effort tranchant résistant sans armatures d'effort tranchant
 /// `VRd,c = CRd,c · k · (100 · ρl · fck)^(1/3) · bw · d` (N), avec `fck` en MPa
-/// et `bw`, `d` en mm.
+/// et `bw`, `d` en mm (EN 1992-1-1 éq. 6.2.a sans le terme `k1·σcp`).
+///
+/// Le ratio `ρl = Asl / (bw·d)` est **plafonné à 0,02** comme l'exige
+/// EN 1992-1-1 §6.2.2(1) : un ratio supérieur est accepté mais donne la même
+/// résistance qu'avec `ρl = 0,02`. Le plancher `vmin·bw·d` (éq. 6.2.b) n'est
+/// pas appliqué.
+///
+/// ```
+/// use scirust_civil::rcshear_resistance_without_reinforcement;
+/// // ρl = 0,04 est ramené à 0,02 : 100 · 0,02 · 27 = 54.
+/// let v_4 = rcshear_resistance_without_reinforcement(0.12, 2.0, 0.04, 27.0, 300.0, 200.0);
+/// let v_2 = rcshear_resistance_without_reinforcement(0.12, 2.0, 0.02, 27.0, 300.0, 200.0);
+/// assert!((v_4 - v_2).abs() <= 1e-9 * v_2);
+/// ```
 ///
 /// Panique si `crd_c <= 0`, si `k_factor` n'est pas dans `[1, 2]`, si
 /// `rho_l < 0`, si `fck <= 0`, si `width <= 0` ou si `effective_depth <= 0`.
@@ -78,8 +95,13 @@ pub fn rcshear_resistance_without_reinforcement(
         effective_depth > 0.0,
         "la hauteur utile d doit être strictement positive"
     );
+    let rho_l = rho_l.min(RHO_L_MAX);
     crd_c * k_factor * (100.0 * rho_l * fck).cbrt() * width * effective_depth
 }
+
+/// Plafond du ratio d'armatures longitudinales tendues `ρl ≤ 0,02` pris en
+/// compte dans `VRd,c` (EN 1992-1-1 §6.2.2(1) et §6.4.4(1)).
+pub(crate) const RHO_L_MAX: f64 = 0.02;
 
 /// Coefficient d'échelle `k = 1 + √(200 / d)`, **plafonné à 2,0** (sans
 /// dimension), avec la hauteur utile `d` en mm.
@@ -203,6 +225,22 @@ mod tests {
         let v1 = rcshear_resistance_without_reinforcement(0.12, 1.8, 0.008, 30.0, 250.0, 400.0);
         let v2 = rcshear_resistance_without_reinforcement(0.12, 1.8, 0.008, 30.0, 500.0, 400.0);
         assert_relative_eq!(v2 / v1, 2.0, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn resistance_without_reinforcement_caps_rho_l_at_two_percent() {
+        // EN 1992-1-1 §6.2.2(1) : ρl = Asl/(bw·d) ≤ 0,02. Avec ρl = 0,04 :
+        //   100 · min(0,04 ; 0,02) · 27 = 54 → 54^(1/3) ≈ 3,7798
+        //   VRd,c = 0,12 · 2,0 · 3,7798 · 300 · 200 ≈ 54 429 N
+        // (sans le plafond : 108^(1/3) ≈ 4,7622 → ≈ 68 576 N, soit +26 %).
+        let capped = rcshear_resistance_without_reinforcement(0.12, 2.0, 0.04, 27.0, 300.0, 200.0);
+        let at_cap = rcshear_resistance_without_reinforcement(0.12, 2.0, 0.02, 27.0, 300.0, 200.0);
+        let expected = 0.12 * 2.0 * 54.0_f64.cbrt() * 300.0 * 200.0;
+        assert_relative_eq!(capped, expected, max_relative = 1e-12);
+        assert_relative_eq!(capped, at_cap, max_relative = 1e-12);
+        // Sous le plafond, ρl reste pris tel quel.
+        let below = rcshear_resistance_without_reinforcement(0.12, 2.0, 0.015, 27.0, 300.0, 200.0);
+        assert!(below < at_cap);
     }
 
     #[test]
