@@ -37,7 +37,8 @@
 /// `gain` `K` gain statique du procédé, `time_constant` `τ` constante de temps
 /// `s`, `time` `t` temps depuis l'application de l'échelon `s`, `step_amplitude`
 /// `A` amplitude de l'échelon d'entrée. À `t = τ`, la sortie atteint `≈ 63.2 %`
-/// de sa valeur finale `K·A`.
+/// de sa valeur finale `K·A`. Calculée sous la forme `−K·A·expm1(−t/τ)`, qui
+/// garde la précision relative pour `t ≪ τ`.
 ///
 /// Panique si `gain`, `time` ou `step_amplitude` n'est pas fini, si `time` est
 /// négatif, ou si `time_constant` n'est pas strictement positif (division).
@@ -56,7 +57,8 @@ pub fn ford_step_response(gain: f64, time_constant: f64, time: f64, step_amplitu
         "l'amplitude de l'échelon doit être finie"
     );
     let ratio: f64 = -time / time_constant;
-    gain * step_amplitude * (1.0 - ratio.exp())
+    // `1 − exp(x)` écrit `−expm1(x)` : pas d'annulation pour `t ≪ τ`.
+    gain * step_amplitude * -ratio.exp_m1()
 }
 
 /// Temps nécessaire pour atteindre une **fraction** `f` de la valeur finale d'une
@@ -66,6 +68,8 @@ pub fn ford_step_response(gain: f64, time_constant: f64, time: f64, step_amplitu
 /// `time_constant` `τ` constante de temps `s`, `fraction` `f` fraction de la
 /// valeur finale visée [sans dimension, dans `[0, 1[`]. Cas usuels : `f = 0.632`
 /// donne `t = τ`, `f = 0.95` donne `t ≈ 3·τ`, `f = 0.99` donne `t ≈ 4.6·τ`.
+/// Calculé sous la forme `−τ·ln_1p(−f)`, qui garde la précision relative pour
+/// `f ≪ 1` (et rend `+0` pour `f = 0`).
 ///
 /// Panique si `time_constant` n'est pas strictement positif, ou si `fraction`
 /// sort de `[0, 1[` (la borne 1 fait diverger le logarithme).
@@ -78,7 +82,8 @@ pub fn ford_time_to_fraction(time_constant: f64, fraction: f64) -> f64 {
         fraction.is_finite() && (0.0..1.0).contains(&fraction),
         "la fraction doit être comprise dans [0, 1[ (strictement inférieure à 1)"
     );
-    -time_constant * (1.0 - fraction).ln()
+    // `ln(1 − f)` écrit `ln_1p(−f)` : pas d'arrondi de `1 − f` pour `f ≪ 1`.
+    -time_constant * (-fraction).ln_1p()
 }
 
 /// Gain proportionnel d'un régulateur **PI** par la méthode de la réponse
@@ -129,7 +134,8 @@ pub fn ford_zn_pi_integral_time(dead_time: f64) -> f64 {
 /// `gain` `K` gain statique, `time_constant` `τ` constante de temps `s`,
 /// `dead_time` `θ` retard pur `s`, `time` `t` temps depuis l'échelon `s`,
 /// `step_amplitude` `A` amplitude de l'échelon d'entrée. Tant que `t < θ`, la
-/// sortie n'a pas encore réagi (retard de transport / temps mort).
+/// sortie n'a pas encore réagi (retard de transport / temps mort). Calculée sous
+/// la forme `−K·A·expm1(−(t − θ)/τ)`, précise juste après le retard.
 ///
 /// Panique si `gain`, `time` ou `step_amplitude` n'est pas fini, si `time` ou
 /// `dead_time` est négatif, ou si `time_constant` n'est pas strictement positif.
@@ -163,7 +169,8 @@ pub fn ford_first_order_plus_deadtime(
     }
     else
     {
-        gain * step_amplitude * (1.0 - (-(time - dead_time) / time_constant).exp())
+        // `1 − exp(x)` écrit `−expm1(x)` : pas d'annulation juste après `θ`.
+        gain * step_amplitude * -(-(time - dead_time) / time_constant).exp_m1()
     }
 }
 
@@ -245,6 +252,77 @@ mod tests {
         assert_relative_eq!(y, 6.321205588, epsilon = 1e-6);
         // Équivalence au premier ordre décalé du retard.
         assert_relative_eq!(y, ford_step_response(2.0, 10.0, 10.0, 5.0), epsilon = 1e-12);
+    }
+
+    /// Petits `t/τ` : `1 − exp(−t/τ)` annule presque tous les chiffres
+    /// significatifs (pour `t/τ = 1e-12`, l'ancienne formule rendait
+    /// `9.999778782798785e-13`, erreur relative `2.2e-5` ; pour `t/τ = 1e-17`
+    /// elle rendait `0`). Référence mpmath (50 chiffres) :
+    /// `−expm1(−1e-12) = 9.99999999999500e-13`,
+    /// `−expm1(−1e-17) = 1.00000000000000e-17` (série `x − x²/2 + …`).
+    #[test]
+    fn step_response_petit_t_sur_tau_garde_la_precision() {
+        let y = ford_step_response(1.0, 1.0, 1.0e-12, 1.0);
+        assert_relative_eq!(
+            y,
+            9.999_999_999_995e-13,
+            epsilon = 0.0,
+            max_relative = 1e-12
+        );
+        let y = ford_step_response(1.0, 1.0, 1.0e-17, 1.0);
+        assert_relative_eq!(y, 1.0e-17, epsilon = 0.0, max_relative = 1e-12);
+        // Mise à l'échelle : K·A = 10, τ = 1e3, t = 1e-9 ⇒ t/τ = 1e-12.
+        let y = ford_step_response(2.0, 1.0e3, 1.0e-9, 5.0);
+        assert_relative_eq!(
+            y,
+            10.0 * 9.999_999_999_995e-13,
+            epsilon = 0.0,
+            max_relative = 1e-12
+        );
+    }
+
+    /// Même annulation pour le FOPDT juste après le retard pur : `θ = 0`,
+    /// `τ = 1`, `t = 1e-12` doit coïncider avec la référence
+    /// `−expm1(−1e-12) = 9.99999999999500e-13` (mpmath).
+    #[test]
+    fn fopdt_juste_apres_retard_garde_la_precision() {
+        let y = ford_first_order_plus_deadtime(1.0, 1.0, 0.0, 1.0e-12, 1.0);
+        assert_relative_eq!(
+            y,
+            9.999_999_999_995e-13,
+            epsilon = 0.0,
+            max_relative = 1e-12
+        );
+        let y = ford_first_order_plus_deadtime(1.0, 1.0, 0.0, 1.0e-17, 1.0);
+        assert_relative_eq!(y, 1.0e-17, epsilon = 0.0, max_relative = 1e-12);
+    }
+
+    /// Petites fractions : `−ln(1 − f)` perd la précision car `1 − f` est
+    /// arrondi (pour `f = 1e-12`, l'ancienne formule rendait
+    /// `9.999778782803785e-13` ; pour `f = 1e-17` elle rendait `-0.0`).
+    /// Référence mpmath (50 chiffres) : `−log1p(−1e-12) = 1.0000000000005e-12`,
+    /// `−log1p(−1e-17) = 1.00000000000000e-17`.
+    #[test]
+    fn time_to_fraction_petite_fraction_garde_la_precision() {
+        let t = ford_time_to_fraction(1.0, 1.0e-12);
+        assert_relative_eq!(
+            t,
+            1.000_000_000_000_5e-12,
+            epsilon = 0.0,
+            max_relative = 1e-12
+        );
+        let t = ford_time_to_fraction(1.0, 1.0e-17);
+        assert!(
+            t > 0.0,
+            "le temps doit être strictement positif, obtenu {t:e}"
+        );
+        assert_relative_eq!(t, 1.0e-17, epsilon = 0.0, max_relative = 1e-12);
+        // Fraction nulle : temps nul (et non `-0.0`).
+        assert!(ford_time_to_fraction(3.0, 0.0).is_sign_positive());
+        // Réciprocité aux petites fractions.
+        let f = 1.0e-15;
+        let y = ford_step_response(1.0, 7.0, ford_time_to_fraction(7.0, f), 1.0);
+        assert_relative_eq!(y, f, epsilon = 0.0, max_relative = 1e-12);
     }
 
     #[test]
