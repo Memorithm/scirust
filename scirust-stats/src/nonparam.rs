@@ -98,14 +98,66 @@ fn all_finite(values: &[f64]) -> bool {
     values.iter().all(|v| v.is_finite())
 }
 
+/// `2^k` for `−1022 ≤ k ≤ 1023`, built from its bit pattern so it is exact
+/// by construction.
+fn pow2(k: i32) -> f64 {
+    debug_assert!((-1022..=1023).contains(&k));
+    f64::from_bits(((k + 1023) as u64) << 52)
+}
+
+/// `v · 2^k`, exact whenever the result is a normal number. Two steps keep
+/// each factor representable (`k` ranges over `[−1023, 1074]` here).
+fn mul_pow2(v: f64, k: i32) -> f64 {
+    let half = k / 2;
+    v * pow2(half) * pow2(k - half)
+}
+
+/// The exponent `e` with `2^e ≤ m < 2^(e+1)`, for finite `m > 0`.
+fn binary_exponent(m: f64) -> i32 {
+    let biased = ((m.to_bits() >> 52) & 0x7ff) as i32;
+    if biased == 0
+    {
+        // Subnormal: normalise first (2^54 is exact).
+        binary_exponent(m * pow2(54)) - 54
+    }
+    else
+    {
+        biased - 1023
+    }
+}
+
+/// `values` multiplied by the power of two that brings `max |v|` into
+/// `[1, 2)`. Exact (barring entries `2^1022` times smaller than the largest,
+/// which are negligible against it), so `r`, which is invariant under a
+/// positive rescaling of either variable, is unchanged; `None` if every
+/// value is zero.
+fn scaled_to_unit(values: &[f64]) -> Option<Vec<f64>> {
+    let m = values.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+    if m == 0.0
+    {
+        return None;
+    }
+    let k = -binary_exponent(m);
+    Some(values.iter().map(|&v| mul_pow2(v, k)).collect())
+}
+
 /// Pearson correlation of finite, equal-length slices; `None` when either
 /// side has zero variance.
+///
+/// Each side is first rescaled by a power of two so its largest magnitude
+/// lies in `[1, 2)`. Without that, the mean overflows for values near
+/// `f64::MAX`, and the sums of squared deviations overflow for a spread
+/// above about `1e154` (giving `r = sxy/∞ = 0`) or underflow to 0 below
+/// about `1e-154` (rejecting a non-constant sample as constant). Where the
+/// unscaled sums stay in the normal range, the rescaling is exact and leaves
+/// `r` unchanged.
 fn pearson_r(x: &[f64], y: &[f64]) -> Option<f64> {
+    let (x, y) = (scaled_to_unit(x)?, scaled_to_unit(y)?);
     let n = x.len() as f64;
     let mx = x.iter().sum::<f64>() / n;
     let my = y.iter().sum::<f64>() / n;
     let (mut sxy, mut sxx, mut syy) = (0.0, 0.0, 0.0);
-    for (&a, &b) in x.iter().zip(y)
+    for (&a, &b) in x.iter().zip(&y)
     {
         let (dx, dy) = (a - mx, b - my);
         sxy += dx * dy;
@@ -116,18 +168,10 @@ fn pearson_r(x: &[f64], y: &[f64]) -> Option<f64> {
     {
         return None;
     }
-    let prod = sxx * syy;
-    // `sqrt(sxx·syy)` keeps perfect correlations exactly ±1; fall back to the
-    // split form only if the product overflows.
-    let denom = if prod.is_finite()
-    {
-        prod.sqrt()
-    }
-    else
-    {
-        sxx.sqrt() * syy.sqrt()
-    };
-    let r = sxy / denom;
+    // Every scaled value and both means lie in (−2, 2), so each squared
+    // deviation is below 16 and `sxx·syy < 256n²` cannot overflow;
+    // `sqrt(sxx·syy)` keeps perfect correlations exactly ±1.
+    let r = sxy / (sxx * syy).sqrt();
     r.is_finite().then_some(r.clamp(-1.0, 1.0))
 }
 
@@ -177,7 +221,10 @@ fn correlation_from_r(r: f64, n: usize, tail: Tail) -> CorrelationTest {
 /// Pearson correlation test of `H₀: ρ = 0`.
 ///
 /// Returns `None` for mismatched lengths, fewer than three pairs, non-finite
-/// values, or a constant `x` or `y`.
+/// values, or a constant `x` or `y`. The result does not depend on the
+/// magnitude of the data: `x` and `y` may be scaled by any positive factor
+/// that keeps them finite (down to subnormal values) without changing `r`
+/// beyond rounding.
 ///
 /// ```
 /// use scirust_stats::prelude::*;
@@ -439,6 +486,79 @@ mod tests {
         assert_eq!(r.statistic, f64::NEG_INFINITY);
         assert_eq!(r.p_value, 0.0);
         assert_eq!(pearson_test(&x, &y, Tail::Greater).unwrap().p_value, 1.0);
+    }
+
+    #[test]
+    fn pearson_is_scale_invariant_at_the_ends_of_the_f64_range() {
+        // Regression test: `pearson_r` summed raw products and squares of the
+        // deviations. For a spread above ~1e154 `sxx` overflowed to `∞` and
+        // `r = sxy/∞` came out as 0 (p = 1); below ~1e-154 `sxx` underflowed
+        // to 0 and the non-constant sample was rejected as constant; for
+        // values near `f64::MAX` the mean itself overflowed (`None`); and the
+        // product `sxx·syy` underflowed for two small samples. `r` is
+        // invariant under scaling either variable by a positive factor.
+        // Reference (unit scale, exact): r = 6.5/√43.75 = 13/√175
+        // = 0.98270762982399079076 (mpmath, 40 digits), t = 7.5055534994651349,
+        // two-sided p = 1 − t/√(2 + t²) = 0.0172923701760092092 (mpmath);
+        // SciPy 1.18.1 `pearsonr` gives r = 0.9827076298239908 at unit
+        // scale and at scales 2⁶⁰⁰ and 2⁻⁶⁰⁰.
+        let x = [1.0, 2.0, 3.0, 4.0];
+        let y = [1.0, 2.0, 3.0, 5.0];
+        // Powers of two keep the scaled data exact (subnormal included).
+        for scale in [
+            1.0,
+            2f64.powi(600),
+            2f64.powi(-600),
+            2f64.powi(1021),
+            2f64.powi(-1000) * 2f64.powi(-70),
+        ]
+        {
+            let sx: Vec<f64> = x.iter().map(|v| v * scale).collect();
+            for (a, b) in [(&sx[..], &y[..]), (&y[..], &sx[..]), (&sx[..], &sx[..])]
+            {
+                let r = pearson_test(a, b, Tail::TwoSided)
+                    .unwrap_or_else(|| panic!("scale {scale:e}: rejected"));
+                if std::ptr::eq(a, b)
+                {
+                    assert_eq!(r.coefficient, 1.0, "scale {scale:e}");
+                    continue;
+                }
+                assert!(
+                    close(r.coefficient, 0.982_707_629_823_990_8, 1e-14),
+                    "scale {scale:e}: r = {}",
+                    r.coefficient
+                );
+                assert!(
+                    close(r.p_value, 0.017_292_370_176_009_21, 1e-10),
+                    "scale {scale:e}: p = {}",
+                    r.p_value
+                );
+            }
+            // Negating one side flips the sign of r and nothing else.
+            let neg: Vec<f64> = sx.iter().map(|v| -v).collect();
+            let r = pearson_test(&neg, &y, Tail::TwoSided).unwrap();
+            assert!(close(r.coefficient, -0.982_707_629_823_990_8, 1e-14));
+        }
+        // Both sides small: `sxx·syy` underflowed into the subnormal range
+        // (r = 0.98270755, relative error 8e-8, at 1e-80) or to 0 (`None`
+        // at 1e-100) even though `sxx` and `syy` were representable.
+        for scale in [1e-80, 1e-100]
+        {
+            let sx: Vec<f64> = x.iter().map(|v| v * scale).collect();
+            let sy: Vec<f64> = y.iter().map(|v| v * scale).collect();
+            let r = pearson_test(&sx, &sy, Tail::TwoSided)
+                .unwrap_or_else(|| panic!("scale {scale:e}: rejected"));
+            assert!(
+                close(r.coefficient, 0.982_707_629_823_990_8, 1e-14),
+                "scale {scale:e}: r = {}",
+                r.coefficient
+            );
+        }
+        // A genuinely constant side is still rejected at every scale.
+        for c in [1e300, 1.0, 1e-300, 5e-324]
+        {
+            assert!(pearson_test(&x, &[c; 4], Tail::TwoSided).is_none());
+        }
     }
 
     #[test]
