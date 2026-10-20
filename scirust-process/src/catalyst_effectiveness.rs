@@ -5,23 +5,35 @@
 //! ```text
 //! module de Thiele (réaction d'ordre 1)
 //!   φ = L · sqrt(k / D_e)                                      `sans dimension`
-//! facteur d'efficacité d'une plaque (slab, ordre 1)
+//! facteur d'efficacité d'une plaque (slab, ordre 1), L = demi-épaisseur
 //!   η = tanh(φ) / φ                                            `sans dimension`
-//! facteur d'efficacité d'une sphère (ordre 1)
+//! facteur d'efficacité d'une sphère (ordre 1), L = rayon R
 //!   η = (3/φ) · (1/tanh(φ) − 1/φ) = (3/φ) · (coth(φ) − 1/φ)    `sans dimension`
 //! vitesse observée
 //!   r_obs = η · r_int                                          `mol·m⁻³·s⁻¹`
 //! ```
 //!
-//! `L` longueur caractéristique du grain (rapport volume/surface V/S) `m`, `k`
-//! constante de vitesse intrinsèque d'ordre 1 `s⁻¹`, `D_e` diffusivité effective
-//! dans le grain `m²·s⁻¹` ; `φ` module de Thiele `sans dimension` ; `η` facteur
-//! d'efficacité `sans dimension` ; `r_int` vitesse intrinsèque (sur grain sans
-//! limitation) `mol·m⁻³·s⁻¹` ; `r_obs` vitesse observée `mol·m⁻³·s⁻¹`.
+//! `L` longueur du grain `m` qui entre dans φ — elle **dépend de la formule de η
+//! utilisée** : **demi-épaisseur** de la plaque (= V/S d'une plaque ouverte sur
+//! ses deux faces, bords négligés) pour [`cateff_effectiveness_slab`], **rayon
+//! `R`** de la sphère (= 3·V/S, car V/S = R/3) pour
+//! [`cateff_effectiveness_sphere`] (φ₁ = R·sqrt(k/D_e) de Fogler, *Elements of
+//! Chemical Reaction Engineering*, ch. 15) ; `k` constante de vitesse
+//! intrinsèque d'ordre 1 `s⁻¹`, `D_e` diffusivité effective dans le grain
+//! `m²·s⁻¹` ; `φ` module de Thiele `sans dimension` ; `η` facteur d'efficacité
+//! `sans dimension` ; `r_int` vitesse intrinsèque (sur grain sans limitation)
+//! `mol·m⁻³·s⁻¹` ; `r_obs` vitesse observée `mol·m⁻³·s⁻¹`.
+//!
+//! Passer `L = V/S = R/3` à la formule de la sphère sous-estime φ d'un facteur 3
+//! et surestime η (R = 30 mm, k = 0.16 s⁻¹, D_e = 1e-6 m²/s : η = 0.563 au lieu
+//! de 0.229). Le module généralisé d'Aris `φ_A = (V/S)·sqrt(k/D_e)` vaut φ₁/3
+//! pour la sphère ; les deux formules de η tendent alors vers `1/φ_A` aux
+//! grands modules.
 //!
 //! **Limite honnête** : grain de catalyseur **isotherme**, réaction d'**ordre 1**.
 //! La **diffusivité effective** `D_e`, la **constante de vitesse intrinsèque** `k`
-//! et la **longueur caractéristique** `L = V/S` sont **FOURNIES** par l'appelant :
+//! et la **longueur** `L` (demi-épaisseur ou rayon selon la géométrie) sont
+//! **FOURNIES** par l'appelant :
 //! aucune constante cinétique, diffusivité, enthalpie, volatilité ou isotherme
 //! d'adsorption n'est calculée ni inventée ici. `η < 1` traduit la limitation par
 //! la **diffusion interne** (φ élevé) ; ce module ne traite ni la diffusion
@@ -32,8 +44,10 @@
 /// `φ = L · sqrt(k / D_e)` (sans dimension), rapport de la vitesse de réaction à
 /// la vitesse de diffusion dans le grain.
 ///
-/// `characteristic_length` (L) longueur caractéristique V/S `m`, `rate_constant`
-/// (k) constante de vitesse intrinsèque d'ordre 1 `s⁻¹`, `effective_diffusivity`
+/// `characteristic_length` (L) longueur du grain `m` attendue par la formule de η
+/// visée : demi-épaisseur pour [`cateff_effectiveness_slab`], **rayon `R`** (et
+/// non V/S = R/3) pour [`cateff_effectiveness_sphere`] ; `rate_constant` (k)
+/// constante de vitesse intrinsèque d'ordre 1 `s⁻¹`, `effective_diffusivity`
 /// (D_e) diffusivité effective `m²·s⁻¹`.
 ///
 /// Panique si `L < 0`, si `k < 0`, ou si `D_e ≤ 0`.
@@ -44,7 +58,7 @@ pub fn cateff_thiele_modulus_first_order(
 ) -> f64 {
     assert!(
         characteristic_length >= 0.0,
-        "L ≥ 0 requis (longueur caractéristique V/S)"
+        "L ≥ 0 requis (longueur caractéristique du grain)"
     );
     assert!(
         rate_constant >= 0.0,
@@ -61,7 +75,8 @@ pub fn cateff_thiele_modulus_first_order(
 /// `η = tanh(φ) / φ` (sans dimension) ; tend vers 1 quand `φ → 0` (pas de
 /// limitation diffusionnelle) et vers `1/φ` quand `φ` est grand.
 ///
-/// `thiele_modulus` (φ) module de Thiele `sans dimension`.
+/// `thiele_modulus` (φ) module de Thiele `sans dimension`, calculé avec la
+/// **demi-épaisseur** de la plaque comme longueur `L`.
 ///
 /// Panique si `φ ≤ 0`.
 pub fn cateff_effectiveness_slab(thiele_modulus: f64) -> f64 {
@@ -76,7 +91,18 @@ pub fn cateff_effectiveness_slab(thiele_modulus: f64) -> f64 {
 /// `η = (3/φ) · (1/tanh(φ) − 1/φ)` (sans dimension), avec `1/tanh(φ) = coth(φ)` ;
 /// tend vers 1 quand `φ → 0` et vers `3/φ` quand `φ` est grand.
 ///
-/// `thiele_modulus` (φ) module de Thiele `sans dimension`.
+/// `thiele_modulus` (φ) module de Thiele `sans dimension`, calculé avec le
+/// **rayon `R`** de la sphère comme longueur (`φ = R·sqrt(k/D_e)`, φ₁ de
+/// Fogler) et non avec `V/S = R/3`, qui donnerait un φ trois fois trop petit.
+///
+/// ```
+/// use scirust_process::{cateff_effectiveness_sphere, cateff_thiele_modulus_first_order};
+///
+/// // Sphère de rayon R = 3 mm, k = 0.16 s⁻¹, D_e = 1e-6 m²/s : φ = 3e-3 · 400 = 1.2.
+/// let phi = cateff_thiele_modulus_first_order(3.0e-3, 0.16, 1.0e-6);
+/// let eta = cateff_effectiveness_sphere(phi);
+/// assert!((eta - 0.915_510_527_147_543_6).abs() < 1e-12);
+/// ```
 ///
 /// Pour `φ < 0.5`, la différence `coth(φ) − 1/φ ≈ φ/3` se perd par annulation
 /// entre deux termes voisins de `1/φ` (erreur relative 4e-8 à `φ = 1e-4`, η > 1
@@ -231,6 +257,31 @@ mod tests {
             7.5 * 0.999_999_999_993_333_3,
             max_relative = 1e-14
         );
+    }
+
+    #[test]
+    fn sphere_thiele_modulus_uses_radius_not_volume_to_surface() {
+        // Sphère R = 30 mm, k = 0.16 s⁻¹, D_e = 1e-6 m²/s : la formule de la sphère
+        // attend φ₁ = R·sqrt(k/D_e) = 12 (Fogler), η = 0.229166666685542 (mpmath).
+        // Avec L = V/S = R/3, φ = 4 et η = 0.563 : facteur 2.46 de surestimation.
+        let radius = 30.0e-3_f64;
+        let phi_radius = cateff_thiele_modulus_first_order(radius, 0.16, 1.0e-6);
+        assert_relative_eq!(phi_radius, 12.0, max_relative = 1e-12);
+        let eta = cateff_effectiveness_sphere(phi_radius);
+        assert_relative_eq!(eta, 0.229_166_666_685_542_34, max_relative = 1e-13);
+        let phi_aris = cateff_thiele_modulus_first_order(radius / 3.0, 0.16, 1.0e-6);
+        assert_relative_eq!(
+            cateff_effectiveness_sphere(phi_aris),
+            0.563_003_362_801_262,
+            max_relative = 1e-13
+        );
+        // Aux grands modules, plaque (L = demi-épaisseur = V/S) et sphère
+        // (L = R = 3·V/S) tendent toutes deux vers 1/φ_A, φ_A = (V/S)·sqrt(k/D_e).
+        let phi_a = 50.0_f64;
+        let eta_slab = cateff_effectiveness_slab(phi_a);
+        let eta_sphere = cateff_effectiveness_sphere(3.0 * phi_a);
+        assert_relative_eq!(eta_slab, 1.0 / phi_a, max_relative = 1e-12);
+        assert_relative_eq!(eta_sphere, 1.0 / phi_a, max_relative = 0.01);
     }
 
     #[test]
