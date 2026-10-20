@@ -101,7 +101,9 @@ pub fn kinetics_first_order_conversion(rate_constant: f64, time: f64) -> f64 {
         time.is_finite() && time >= 0.0,
         "le temps doit être fini et positif ou nul (s)"
     );
-    1.0 - (-rate_constant * time).exp()
+    // −expm1(−k·t) : la soustraction 1 − exp(−k·t) perd la précision relative
+    // quand k·t → 0 (et rend 0 pour k·t < ε/2).
+    -(-rate_constant * time).exp_m1()
 }
 
 /// Demi-vie d'une réaction d'**ordre 1** : `t½ = ln 2 / k` `s`,
@@ -245,6 +247,32 @@ mod tests {
             kinetics_activation_energy_from_two_rates(k1, k2, t1, t2, r),
             ea,
             epsilon = 1e-6
+        );
+    }
+
+    #[test]
+    fn first_order_conversion_keeps_precision_for_small_kt() {
+        // Pour k·t ≪ 1, X = 1 − exp(−k·t) ≈ k·t − (k·t)²/2. Références mpmath
+        // (−expm1(−k·t)) : k·t = 1e-10 → 9.9999999995e-11 ; k·t = 1e-12 →
+        // 9.999999999995e-13. La forme `1 − exp(−k·t)` donnait 1.0000000827e-10
+        // (écart relatif 8.3e-8), 9.99977878e-13 (2.2e-5) et 0 pour k·t = 1e-17.
+        assert_relative_eq!(
+            kinetics_first_order_conversion(1.0e-4, 1.0e-6),
+            9.999_999_999_5e-11,
+            epsilon = 0.0,
+            max_relative = 1e-13
+        );
+        assert_relative_eq!(
+            kinetics_first_order_conversion(1.0e-6, 1.0e-6),
+            9.999_999_999_995e-13,
+            epsilon = 0.0,
+            max_relative = 1e-13
+        );
+        assert_relative_eq!(
+            kinetics_first_order_conversion(1.0e-9, 1.0e-8),
+            1.0e-17,
+            epsilon = 0.0,
+            max_relative = 1e-13
         );
     }
 
