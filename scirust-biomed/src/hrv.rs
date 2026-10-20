@@ -20,7 +20,19 @@ pub struct HrvMetrics {
     pub pnn50: f64,
 }
 
+/// pNN50 threshold on successive RR differences (seconds).
+const PNN50_THRESHOLD_S: f64 = 0.05;
+
+/// Differences within this distance of [`PNN50_THRESHOLD_S`] are treated as
+/// equal to it (seconds). 1 ns is far above the rounding error of a difference
+/// of two RR intervals in seconds (~1e-16 s) and far below any RR resolution
+/// (0.1 ms at 10 kHz).
+const PNN50_TIE_TOLERANCE_S: f64 = 1e-9;
+
 /// Compute HRV time-domain metrics from RR intervals (seconds).
+///
+/// `pnn50` is the percentage of successive differences strictly greater than
+/// 50 ms; a difference equal to 50 ms (to within 1 ns) is not counted.
 pub fn compute_hrv(rr_seconds: &[f64]) -> HrvMetrics {
     let n = rr_seconds.len();
     if n == 0
@@ -50,7 +62,15 @@ pub fn compute_hrv(rr_seconds: &[f64]) -> HrvMetrics {
     else
     {
         let ms = (diffs.iter().map(|&d| d * d).sum::<f64>() / diffs.len() as f64).sqrt() * 1000.0;
-        let over = diffs.iter().filter(|&&d| d.abs() > 0.05).count();
+        // Strictly greater than 50 ms (Task Force 1996). A difference within
+        // `PNN50_TIE_TOLERANCE_S` of 50 ms is a tie: RR intervals built from
+        // sample indices (e.g. at 200, 360, 500 or 1000 Hz) can differ by
+        // exactly 50 ms, and in seconds that difference lands a few ulps either
+        // side of 0.05, which must not decide whether it counts.
+        let over = diffs
+            .iter()
+            .filter(|&&d| d.abs() > PNN50_THRESHOLD_S + PNN50_TIE_TOLERANCE_S)
+            .count();
         (ms, 100.0 * over as f64 / diffs.len() as f64)
     };
 
@@ -146,6 +166,37 @@ mod tests {
             m.rmssd_ms > m.sdnn_ms,
             "RMSSD should exceed SDNN for this series"
         );
+    }
+
+    #[test]
+    fn successive_differences_of_exactly_50_ms_are_not_counted() {
+        // pNN50 counts differences strictly greater than 50 ms. RR intervals
+        // derived from sample indices at 1000 Hz (or 200, 360, 500 Hz) can
+        // differ by exactly 50 ms; in seconds, `b - a` then lands a few ulps
+        // either side of 0.05 (0.9 - 0.85 = 0.050000000000000044,
+        // 0.85 - 0.8 = 0.04999999999999993), so such a tie must not be
+        // classified by rounding noise.
+        let rr = [0.80, 0.85, 0.90, 0.95, 1.00, 0.95, 0.90, 0.85, 0.80];
+        let m = compute_hrv(&rr);
+        assert!(m.pnn50.abs() < 1e-12, "pNN50 {}", m.pnn50);
+        assert!((m.rmssd_ms - 50.0).abs() < 1e-9, "RMSSD {}", m.rmssd_ms);
+
+        // Same through the R-peak pipeline: peaks at 1000 Hz with successive
+        // RR of 800, 850, 900, 950, 1000 ms (differences of exactly 50 ms)
+        // followed by a 1051 ms beat (a 51 ms difference, which counts).
+        let peaks = [0usize, 800, 1650, 2550, 3500, 4500, 5551];
+        let rr = crate::ecg::rr_intervals(&peaks, 1000.0);
+        let m = compute_hrv(&rr);
+        assert!((m.pnn50 - 20.0).abs() < 1e-9, "pNN50 {}", m.pnn50);
+    }
+
+    #[test]
+    fn differences_just_above_50_ms_still_count() {
+        // 50.001 ms (1 µs above the threshold) is a genuine exceedance.
+        let m = compute_hrv(&[0.8, 0.850_001]);
+        assert!((m.pnn50 - 100.0).abs() < 1e-12, "pNN50 {}", m.pnn50);
+        let m = compute_hrv(&[0.850_001, 0.8]);
+        assert!((m.pnn50 - 100.0).abs() < 1e-12, "pNN50 {}", m.pnn50);
     }
 
     #[test]
