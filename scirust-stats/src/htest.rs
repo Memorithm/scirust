@@ -30,6 +30,20 @@ pub enum Tail {
 }
 
 fn t_p_value(t: f64, df: f64, tail: Tail) -> f64 {
+    // `StudentT::new` asserts `df > 0`. An undefined dof (NaN, e.g. the
+    // Welch dof of two constant samples) leaves the p-value determined by
+    // `t` alone only when `t` is infinite: the tails of every Student-t
+    // vanish at ±∞. Otherwise there is no p-value.
+    if df.is_nan() || df <= 0.0
+    {
+        return match (t.is_infinite(), tail)
+        {
+            (false, _) => f64::NAN,
+            (true, Tail::TwoSided) => 0.0,
+            (true, Tail::Greater) => (t < 0.0) as u8 as f64,
+            (true, Tail::Less) => (t > 0.0) as u8 as f64,
+        };
+    }
     let dist = StudentT::new(df);
     match tail
     {
@@ -64,6 +78,20 @@ pub fn t_test_one_sample(data: &[f64], mu0: f64, tail: Tail) -> Option<TestResul
 /// `equal_var = true` uses the pooled-variance Student test; `false` uses
 /// Welch's unequal-variance test (the safer default in practice). Returns `None`
 /// if either group has fewer than two samples.
+///
+/// The Welch–Satterthwaite degrees of freedom are undefined (`0/0`) when both
+/// samples are constant; `df` is then `NaN`, and the p-value follows from the
+/// statistic alone: `t = ±∞` (different constants) gives `0` or `1`, and
+/// `t = NaN` (equal constants) gives `NaN`. A `NaN` sample gives a `NaN`
+/// p-value in both variants.
+///
+/// ```
+/// use scirust_stats::prelude::*;
+/// let r = t_test_two_sample(&[1.0, 1.0, 1.0], &[2.0, 2.0], false, Tail::TwoSided).unwrap();
+/// assert_eq!(r.statistic, f64::NEG_INFINITY);
+/// assert!(r.df.is_nan());
+/// assert_eq!(r.p_value, 0.0);
+/// ```
 pub fn t_test_two_sample(a: &[f64], b: &[f64], equal_var: bool, tail: Tail) -> Option<TestResult> {
     let (n1, n2) = (a.len(), b.len());
     if n1 < 2 || n2 < 2
@@ -82,11 +110,25 @@ pub fn t_test_two_sample(a: &[f64], b: &[f64], equal_var: bool, tail: Tail) -> O
     }
     else
     {
-        let se = (v1 / n1f + v2 / n2f).sqrt();
-        // Welch–Satterthwaite degrees of freedom.
-        let num = (v1 / n1f + v2 / n2f).powi(2);
-        let den = (v1 / n1f).powi(2) / (n1f - 1.0) + (v2 / n2f).powi(2) / (n2f - 1.0);
-        ((m1 - m2) / se, num / den)
+        let (w1, w2) = (v1 / n1f, v2 / n2f);
+        let se = (w1 + w2).sqrt();
+        // Welch–Satterthwaite degrees of freedom
+        // `(w1 + w2)² / (w1²/(n1 − 1) + w2²/(n2 − 1))`, evaluated on `wᵢ`
+        // divided by the larger one. The ratio is scale-invariant, but the
+        // squares of the raw `wᵢ` underflow for a data spread below about 1e-77 (and
+        // overflow above about 1e77), which used to give a wrong dof or `0/0 = NaN`.
+        // Two constant samples (`w1 = w2 = 0`) leave it undefined (`NaN`).
+        let w_max = w1.max(w2);
+        let df = if w_max > 0.0 && w_max.is_finite()
+        {
+            let (r1, r2) = (w1 / w_max, w2 / w_max);
+            (r1 + r2).powi(2) / (r1 * r1 / (n1f - 1.0) + r2 * r2 / (n2f - 1.0))
+        }
+        else
+        {
+            f64::NAN
+        };
+        ((m1 - m2) / se, df)
     };
     Some(TestResult {
         statistic: t,
@@ -529,6 +571,95 @@ mod tests {
         let same = t_test_two_sample(&a, &a, true, Tail::TwoSided).unwrap();
         assert!(close(same.statistic, 0.0, 1e-9));
         assert!(close(same.p_value, 1.0, 1e-9));
+    }
+
+    #[test]
+    fn welch_degrees_of_freedom_are_scale_invariant() {
+        // Regression test: the Welch–Satterthwaite dof squared `v/n`
+        // directly. For a data spread ≲ 1e-77 (or ≳ 1e77) those squares
+        // underflow (overflow), the dof became 0/0 = NaN (∞/∞) and
+        // `StudentT::new(NaN)` panicked; just above the underflow threshold
+        // the subnormal squares returned a wrong dof (5.5 instead of 4.824
+        // at scale 2⁻²⁶⁸ ≈ 2.1e-81). The dof, t and p are
+        // invariant under scaling both samples by the same factor.
+        // Reference (unit scale): SciPy 1.18 `ttest_ind(a, b,
+        // equal_var=False)`: t = −1.364096585169425,
+        // df = 4.824272094820922 (mpmath: 4.82427209482092242),
+        // p = 0.23272669004045568 (two-sided), 0.11636334502022784 (less),
+        // 0.8836366549797722 (greater).
+        let a = [1.0, 2.0, 3.0, 4.0];
+        let b = [2.0, 3.0, 5.0, 7.0];
+        // Powers of two keep the scaled data exact.
+        for scale in [
+            1.0,
+            2f64.powi(-268),
+            2f64.powi(-270),
+            2f64.powi(-300),
+            2f64.powi(300),
+        ]
+        {
+            let sa: Vec<f64> = a.iter().map(|x| x * scale).collect();
+            let sb: Vec<f64> = b.iter().map(|x| x * scale).collect();
+            for (tail, want_p) in [
+                (Tail::TwoSided, 0.232_726_690_040_455_68),
+                (Tail::Less, 0.116_363_345_020_227_84),
+                (Tail::Greater, 0.883_636_654_979_772_2),
+            ]
+            {
+                let r = t_test_two_sample(&sa, &sb, false, tail).unwrap();
+                assert!(
+                    close(r.statistic, -1.364_096_585_169_425, 1e-12),
+                    "scale {scale:e}: t = {}",
+                    r.statistic
+                );
+                assert!(
+                    close(r.df, 4.824_272_094_820_922, 1e-12),
+                    "scale {scale:e}: df = {}",
+                    r.df
+                );
+                assert!(
+                    close(r.p_value, want_p, 1e-10),
+                    "scale {scale:e}, {tail:?}: p = {}",
+                    r.p_value
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn welch_handles_constant_and_nan_samples_without_panicking() {
+        // Regression test: two constant samples made the Welch dof 0/0 = NaN
+        // and `StudentT::new(NaN)` panicked; so did any NaN in either
+        // sample. Different constant means give t = ±∞, whose p-value is
+        // 0 (or 1) for every dof (SciPy gives t = −inf, p = 0); the dof
+        // itself is undefined and reported as NaN.
+        let lo = [1.0, 1.0, 1.0];
+        let hi = [2.0, 2.0, 2.0, 2.0];
+        let r = t_test_two_sample(&lo, &hi, false, Tail::TwoSided).unwrap();
+        assert_eq!(r.statistic, f64::NEG_INFINITY);
+        assert!(r.df.is_nan());
+        assert_eq!(r.p_value, 0.0);
+        let less = t_test_two_sample(&lo, &hi, false, Tail::Less).unwrap();
+        assert_eq!(less.p_value, 0.0);
+        let greater = t_test_two_sample(&lo, &hi, false, Tail::Greater).unwrap();
+        assert_eq!(greater.p_value, 1.0);
+        let up = t_test_two_sample(&hi, &lo, false, Tail::Greater).unwrap();
+        assert_eq!(up.statistic, f64::INFINITY);
+        assert_eq!(up.p_value, 0.0);
+        // Identical constant samples: t = 0/0, nothing to test.
+        let same = t_test_two_sample(&lo, &lo, false, Tail::TwoSided).unwrap();
+        assert!(same.statistic.is_nan() && same.p_value.is_nan());
+        // NaN input propagates to a NaN p-value, as in the pooled test.
+        let with_nan = [1.0, f64::NAN, 3.0];
+        let r = t_test_two_sample(&with_nan, &hi, false, Tail::TwoSided).unwrap();
+        assert!(r.p_value.is_nan());
+        let pooled = t_test_two_sample(&with_nan, &hi, true, Tail::TwoSided).unwrap();
+        assert!(pooled.p_value.is_nan());
+        // One constant sample keeps a finite dof (n − 1 of the other).
+        let b = [2.0, 3.0, 5.0, 7.0];
+        let r = t_test_two_sample(&lo, &b, false, Tail::TwoSided).unwrap();
+        assert!(close(r.df, 3.0, 1e-12), "df = {}", r.df);
+        assert!(r.p_value > 0.0 && r.p_value < 1.0);
     }
 
     #[test]
