@@ -164,7 +164,8 @@ fn invert_cdf(cdf: impl Fn(f64) -> f64, p: f64, mut lo: f64, mut hi: f64) -> f64
 /// `sf(x) = 1 − p` instead (`1 − p` is exact there): inverting the CDF near
 /// `1` can only resolve the upper tail to the `≈1.1e-16` spacing of `f64`
 /// values just below `1`, and some CDFs lose more than that when their own
-/// argument rounds towards `1` (`FisherF` forms `d1·x/(d1·x + d2)`). That
+/// argument rounds towards `1` (as `FisherF` did when it formed the
+/// complement of `d1·x/(d1·x + d2)` as `1 − y`). That
 /// limited upper-tail quantiles to a few significant digits, e.g.
 /// `FisherF::new(1.0, 1.0).quantile(1.0 - 1e-8)` came back ≈11 % low and
 /// `ChiSquared::new(1.0).quantile(1.0 - 1e-15)` ≈0.17 % low. The negated
@@ -709,10 +710,60 @@ impl FisherF {
         assert!(d1 > 0.0 && d2 > 0.0, "FisherF: both dof must be > 0");
         Self { d1, d2 }
     }
+
+    /// The incomplete-beta argument `y = d1·x / (d1·x + d2)` of the CDF and
+    /// its complement `z = 1 − y = d2 / (d1·x + d2)`, each formed directly
+    /// for `x > 0`.
+    ///
+    /// Forming `z` as `1 − y` instead would discard it once `y` rounds to
+    /// `1` (`z ≲ 1.1e-16`), and `y` itself is `∞/∞ = NaN` once `d1·x`
+    /// overflows (`x = +∞`, or `x ≳ 1.8e308 / d1`); both are handled here.
+    fn beta_arguments(&self, x: f64) -> (f64, f64) {
+        let u = self.d1 * x;
+        if u == f64::INFINITY
+        {
+            return (1.0, 0.0);
+        }
+        let s = u + self.d2;
+        (u / s, self.d2 / s)
+    }
+}
+
+/// `I_y(a, b)` given both `y` and its complement `z = 1 − y`, each computed
+/// without forming one from the other.
+///
+/// [`regularized_incomplete_beta`] evaluates the upper side
+/// `y ≥ (a+1)/(a+b+2)` as `1 − I_{1−y}(b, a)`, forming `1 − y` itself. When
+/// `1 − y` is far below the spacing of `f64` values near `1` that loses it
+/// (or `y` rounds to exactly `1` and the result becomes `1`), although
+/// `I_{1−y}(b, a)` can be far from `0` when `b` is small. Here that side is
+/// evaluated from the exact `z` instead (the same continued fraction for
+/// `I_z(b, a)`, which [`regularized_incomplete_beta`] uses directly since
+/// `z` lies on its lower side).
+///
+/// The small-`b` upper-side path of [`regularized_incomplete_beta`]
+/// (`b ≤ 1e-3`, which avoids the cancellation of `1 − I_{1−y}(b, a)` when
+/// the result is `O(b)`) is kept whenever `y < 1`.
+fn incomplete_beta_with_complement(a: f64, b: f64, y: f64, z: f64) -> f64 {
+    const SMALL_B_MAX: f64 = 1e-3;
+    if y.is_nan() || z.is_nan()
+    {
+        return f64::NAN;
+    }
+    if y < (a + 1.0) / (a + b + 2.0) || (b <= SMALL_B_MAX && y < 1.0)
+    {
+        regularized_incomplete_beta(a, b, y)
+    }
+    else
+    {
+        1.0 - regularized_incomplete_beta(b, a, z)
+    }
 }
 impl Distribution for FisherF {
     fn pdf(&self, x: f64) -> f64 {
-        if x <= 0.0
+        // The density vanishes at +∞; evaluating the log form there would
+        // give `∞ − ∞ = NaN`.
+        if x <= 0.0 || x == f64::INFINITY
         {
             return 0.0;
         }
@@ -728,19 +779,18 @@ impl Distribution for FisherF {
         {
             return 0.0;
         }
-        let (d1, d2) = (self.d1, self.d2);
-        let y = d1 * x / (d1 * x + d2);
-        regularized_incomplete_beta(d1 / 2.0, d2 / 2.0, y)
+        let (y, z) = self.beta_arguments(x);
+        incomplete_beta_with_complement(self.d1 / 2.0, self.d2 / 2.0, y, z)
     }
     fn sf(&self, x: f64) -> f64 {
         if x <= 0.0
         {
             return 1.0;
         }
-        let (d1, d2) = (self.d1, self.d2);
-        // Complement via the symmetry of the incomplete beta.
-        let y = d2 / (d1 * x + d2);
-        regularized_incomplete_beta(d2 / 2.0, d1 / 2.0, y)
+        // Complement via the symmetry of the incomplete beta:
+        // P(X > x) = I_z(d2/2, d1/2) with z = 1 − y.
+        let (y, z) = self.beta_arguments(x);
+        incomplete_beta_with_complement(self.d2 / 2.0, self.d1 / 2.0, z, y)
     }
     fn quantile(&self, p: f64) -> f64 {
         if p <= 0.0
@@ -1008,6 +1058,48 @@ mod tests {
         assert!(close(f.cdf(3.325_834_529_923_105), 0.95, 1e-8));
         assert!(close(f.cdf(2.0) + f.sf(2.0), 1.0, 1e-12));
         assert!(close(f.mean(), 10.0 / 8.0, 1e-13));
+    }
+
+    #[test]
+    fn fisher_f_upper_tail_keeps_the_complement_of_y() {
+        // Regression: the CDF formed y = d1·x/(d1·x + d2) and let the
+        // incomplete beta take 1 − y. Once y rounds to 1 that complement is
+        // lost, so with a small d2 (shape d2/2 = 0.01, where I_z(0.01, 2)
+        // stays far from 0 even for z ≈ 5e-21) cdf(1e18) came back as 1.0
+        // while sf(1e18) ≈ 0.633, i.e. cdf + sf ≈ 1.63.
+        // References from mpmath (50 digits).
+        let f = FisherF::new(4.0, 0.02);
+        assert!(rel_ok(f.cdf(1e18), 0.367_135_006_218_397_8, 1e-12));
+        assert!(rel_ok(f.sf(1e18), 0.632_864_993_781_602_2, 1e-12));
+        assert!(close(f.cdf(1e18) + f.sf(1e18), 1.0, 1e-14));
+        // The quantile inverts the CDF below ½, so it was wrong as well
+        // (≈7.04e13, where the true CDF is ≈0.304, for the median). SciPy
+        // `f(4, 0.02).ppf(0.5)` = 1.71437944e28.
+        assert!(rel_ok(f.quantile(0.5), 1.714_379_437_185_958_6e28, 1e-6));
+        // Mirror case, via X ~ F(d1, d2) ⇔ 1/X ~ F(d2, d1): sf near 0 lost
+        // the complement the same way (it returned 1.0).
+        let g = FisherF::new(0.02, 4.0);
+        assert!(rel_ok(g.sf(1e-18), 0.367_135_006_218_397_8, 1e-12));
+        assert!(rel_ok(g.cdf(1e-18), 0.632_864_993_781_602_2, 1e-12));
+        // Small second shape (d2/2 = 0.001): handled by the 1 − I_z(b, a)
+        // branch once y rounds to exactly 1 (cdf was 1.0; mpmath 0.0469119).
+        let h = FisherF::new(4.0, 0.002);
+        assert!(rel_ok(h.cdf(1e18), 0.046_911_899_152_187_12, 1e-12));
+    }
+
+    #[test]
+    fn fisher_f_at_and_near_infinity() {
+        // Regression: d1·x overflowed to ∞, so y = ∞/∞ = NaN and the CDF
+        // was NaN at x = +∞ and for every x ≳ 1.8e308/d1; the log-form
+        // density was ∞ − ∞ = NaN at x = +∞.
+        let f = FisherF::new(3.0, 5.0);
+        assert_eq!(f.cdf(f64::INFINITY), 1.0);
+        assert_eq!(f.sf(f64::INFINITY), 0.0);
+        assert_eq!(f.pdf(f64::INFINITY), 0.0);
+        assert_eq!(f.cdf(1e308), 1.0);
+        assert_eq!(f.sf(1e308), 0.0);
+        assert!(f.cdf(f64::NAN).is_nan());
+        assert!(f.sf(f64::NAN).is_nan());
     }
 
     #[test]
