@@ -121,6 +121,10 @@ pub fn econ_payback_period(capital_investment: f64, annual_net_cash_flow: f64) -
 /// amortissant l'investissement `I` sur `N` ans au taux `i` (facteur de
 /// récupération du capital, CRF). Pour `N = 1`, `A = I · (1 + i)`.
 ///
+/// Évaluée sous la forme stable `A = I · i / (−expm1(−N · ln(1+i)))`, qui
+/// respecte les deux limites : `A → I / N` quand `i → 0⁺` (amortissement
+/// linéaire) et `A → I · i` quand `N → ∞` (`N = +∞` est accepté).
+///
 /// `capital_investment` (I) investissement en capital [$], `interest_rate` (i)
 /// taux d'intérêt annuel `sans dimension, par an`, **FOURNI** par l'appelant,
 /// `plant_life_years` (N) durée de vie `an`.
@@ -141,8 +145,21 @@ pub fn econ_annual_capital_charge(
         plant_life_years > 0.0,
         "N > 0 requis (durée de vie de l'installation)"
     );
-    let growth = (1.0 + interest_rate).powf(plant_life_years);
-    capital_investment * interest_rate * growth / (growth - 1.0)
+    // Forme équivalente A = I · i / (1 − (1+i)^−N), évaluée par
+    // 1 − (1+i)^−N = −expm1(−N · ln_1p(i)) : pas d'annulation dans g − 1 quand
+    // i → 0⁺ (où 1 + i s'arrondit à 1) et pas de débordement inf/inf quand
+    // (1+i)^N dépasse f64::MAX (N grand).
+    let x = plant_life_years * interest_rate.ln_1p();
+    let denominator = -(-x).exp_m1();
+    if denominator > 0.0
+    {
+        capital_investment * (interest_rate / denominator)
+    }
+    else
+    {
+        // N · ln(1+i) sous-dépasse (i sous-normal) : limite i → 0⁺, CRF = 1/N.
+        capital_investment / plant_life_years
+    }
 }
 
 #[cfg(test)]
@@ -208,6 +225,47 @@ mod tests {
         // Cas limite N = 1 : A = I · (1 + i).
         let a1 = econ_annual_capital_charge(1.0e6_f64, 0.08_f64, 1.0_f64);
         assert_relative_eq!(a1, 1.0e6 * 1.08, max_relative = 1e-9);
+    }
+
+    #[test]
+    fn annual_capital_charge_small_rate_tends_to_straight_line() {
+        // Régression : i → 0⁺ ⇒ CRF → 1/N (amortissement linéaire). L'ancienne
+        // forme `i·g/(g − 1)` avec g = (1+i)^N renvoyait +inf pour i = 1e-17
+        // (1 + i arrondi à 1 ⇒ g − 1 = 0 ⇒ division par zéro) et perdait
+        // ~7 chiffres pour i = 1e-9 (annulation dans g − 1).
+        let a = econ_annual_capital_charge(1.0e6_f64, 1.0e-17_f64, 10.0_f64);
+        assert!(
+            a.is_finite(),
+            "A doit rester fini pour i minuscule, obtenu {a}"
+        );
+        assert_relative_eq!(a, 1.0e5, max_relative = 1e-12);
+        // Référence mpmath (50 chiffres) : 1e6 · CRF(1e-9, 20) ≈ 50 000,000 525.
+        let a = econ_annual_capital_charge(1.0e6_f64, 1.0e-9_f64, 20.0_f64);
+        assert_relative_eq!(a, 50_000.000_525, max_relative = 1e-12);
+        // Référence mpmath : 1e6 · CRF(1e-6, 7,5) = 133 333,900 000 613 89.
+        let a = econ_annual_capital_charge(1.0e6_f64, 1.0e-6_f64, 7.5_f64);
+        assert_relative_eq!(a, 133_333.900_000_613_89, max_relative = 1e-12);
+        // Taux sous-normal : N · ln(1+i) sous-dépasse à 0, la limite 1/N est rendue.
+        let a = econ_annual_capital_charge(1.0e6_f64, f64::from_bits(1), 0.5_f64);
+        assert_relative_eq!(a, 2.0e6, max_relative = 1e-12);
+        // Investissement nul : A = 0 (et non NaN).
+        let a0 = econ_annual_capital_charge(0.0_f64, 1.0e-17_f64, 10.0_f64);
+        assert_eq!(a0, 0.0);
+    }
+
+    #[test]
+    fn annual_capital_charge_long_life_tends_to_interest_only() {
+        // Régression : N → ∞ ⇒ CRF → i (seuls les intérêts sont payés).
+        // L'ancienne forme débordait : (1,1)^10 000 = +inf ⇒ inf/inf = NaN.
+        let a = econ_annual_capital_charge(1.0e6_f64, 0.10_f64, 1.0e4_f64);
+        assert!(a.is_finite(), "A doit rester fini pour N grand, obtenu {a}");
+        assert_relative_eq!(a, 1.0e5, max_relative = 1e-12);
+        let a_inf = econ_annual_capital_charge(1.0e6_f64, 0.10_f64, f64::INFINITY);
+        assert_relative_eq!(a_inf, 1.0e5, max_relative = 1e-12);
+        // Valeur usuelle inchangée — référence mpmath : 1e6 · CRF(0,05, 30)
+        // ≈ 65 051,435 080 276 59.
+        let a = econ_annual_capital_charge(1.0e6_f64, 0.05_f64, 30.0_f64);
+        assert_relative_eq!(a, 65_051.435_080_276_59, max_relative = 1e-12);
     }
 
     #[test]
