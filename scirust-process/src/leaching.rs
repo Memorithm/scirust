@@ -112,7 +112,8 @@ pub fn leach_stage_efficiency(actual_extraction: f64, equilibrium_extraction: f6
 /// `R = 1 − r`.
 ///
 /// `underflow_solution_ratio` (r) rapport de rétention par étage `sans dimension`,
-/// 0 ≤ r ≤ 1 ; `stages` (N) nombre d'étages de lavage.
+/// 0 ≤ r ≤ 1 ; `stages` (N) nombre d'étages de lavage, tout `u32` (y compris
+/// N > i32::MAX) donne `0 ≤ R ≤ 1`.
 ///
 /// Panique si `underflow_solution_ratio < 0` ou `underflow_solution_ratio > 1`.
 pub fn leach_countercurrent_solute_recovery(underflow_solution_ratio: f64, stages: u32) -> f64 {
@@ -124,7 +125,12 @@ pub fn leach_countercurrent_solute_recovery(underflow_solution_ratio: f64, stage
         underflow_solution_ratio <= 1.0,
         "r ≤ 1 requis (rétention fractionnaire ≤ 1)"
     );
-    1.0 - underflow_solution_ratio.powi(stages as i32 + 1)
+    // `R = 1 − r^(N+1) = −expm1((N+1)·ln r)`, avec `N + 1` en flottant : un
+    // exposant entier `stages as i32 + 1` se replierait pour N > i32::MAX (et
+    // déborderait à N = i32::MAX). Pour r = 0, ln r = −∞ et expm1(−∞) = −1 ⇒ R = 1 ;
+    // `0.0 − …` (plutôt qu’une négation) rend +0 pour r = 1.
+    let exponent = f64::from(stages) + 1.0;
+    0.0 - (exponent * underflow_solution_ratio.ln()).exp_m1()
 }
 
 #[cfg(test)]
@@ -207,6 +213,31 @@ mod tests {
         let recovery = leach_countercurrent_solute_recovery(r, 0);
         let f_o = leach_overflow_solute_fraction(8.0_f64, 2.0_f64);
         assert_relative_eq!(recovery, f_o, max_relative = 1e-12);
+    }
+
+    #[test]
+    fn countercurrent_recovery_stays_in_unit_interval_for_huge_stage_counts() {
+        // Régression : `stages as i32 + 1` repliait N > i32::MAX sur un exposant
+        // négatif ou nul (N = u32::MAX ⇒ r⁰ ⇒ R = 0 ; N = 2³¹ ⇒ r^(−2³¹+1) = ∞
+        // ⇒ R = −∞) et débordait en debug pour N = i32::MAX. Références mpmath
+        // (50 chiffres) : R = 1 − r^(N+1).
+        for &stages in &[u32::MAX, 1_u32 << 31, i32::MAX as u32]
+        {
+            let recovery = leach_countercurrent_solute_recovery(0.5_f64, stages);
+            assert!(
+                (0.0..=1.0).contains(&recovery),
+                "N = {stages}: R = {recovery}"
+            );
+            assert_relative_eq!(recovery, 1.0, max_relative = 1e-12);
+        }
+        // r = 0,999999999, N = u32::MAX ⇒ R = 0,986362980697782057…
+        assert_relative_eq!(
+            leach_countercurrent_solute_recovery(0.999_999_999_f64, u32::MAX),
+            0.986_362_980_697_782,
+            max_relative = 1e-9
+        );
+        // r = 1 (rétention totale) ⇒ R = 0 quel que soit N.
+        assert_eq!(leach_countercurrent_solute_recovery(1.0_f64, u32::MAX), 0.0);
     }
 
     #[test]
