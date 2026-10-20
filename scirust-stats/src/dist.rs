@@ -472,6 +472,29 @@ impl Distribution for Uniform {
 // (`k − 1 ≥ 1`, so the Stirling remainder `δ(k − 1)` stays finite).
 const GAMMA_PDF_SADDLE_MIN: f64 = 2.0;
 
+/// Limit at the support endpoint of a density that behaves like
+/// `at_one · t^(shape − 1)` as the distance `t` to that endpoint tends to 0:
+/// `+∞` for `shape < 1`, `at_one` for `shape = 1` and `0` for `shape > 1`.
+///
+/// Gamma (`x → 0⁺`, exponent `k − 1`), Fisher–Snedecor F (`x → 0⁺`,
+/// exponent `d1/2 − 1`) and Beta (each endpoint, exponents `a − 1` and
+/// `b − 1`) all have this form; SciPy's and R's densities return these
+/// limits at the endpoint itself.
+fn endpoint_density(shape: f64, at_one: f64) -> f64 {
+    if shape < 1.0
+    {
+        f64::INFINITY
+    }
+    else if shape == 1.0
+    {
+        at_one
+    }
+    else
+    {
+        0.0
+    }
+}
+
 /// Gamma distribution with shape `k > 0` and scale `θ > 0`.
 #[derive(Debug, Clone, Copy)]
 pub struct Gamma {
@@ -489,13 +512,23 @@ impl Gamma {
     }
 }
 impl Distribution for Gamma {
+    /// Density `x^(k−1)·e^(−x/θ) / (Γ(k)·θ^k)` for `x > 0`, and `0` for
+    /// `x < 0`.
+    ///
+    /// At `x = 0` it is the limit from the right, as in SciPy's `gamma.pdf`:
+    /// `+∞` for `k < 1`, `1/θ` for `k = 1` (the value of the equal
+    /// `Exponential(1/θ)` density) and `0` for `k > 1`.
     fn pdf(&self, x: f64) -> f64 {
-        if x <= 0.0
+        let k = self.shape;
+        let t = self.scale;
+        if x == 0.0
+        {
+            return endpoint_density(k, 1.0 / t);
+        }
+        if x < 0.0
         {
             return 0.0;
         }
-        let k = self.shape;
-        let t = self.scale;
         if k < GAMMA_PDF_SADDLE_MIN
         {
             return ((k - 1.0) * x.ln() - x / t - k * t.ln() - ln_gamma(k)).exp();
@@ -565,6 +598,8 @@ impl ChiSquared {
     }
 }
 impl Distribution for ChiSquared {
+    /// Density of `Gamma(k/2, 2)`. At `x = 0` it is the limit from the
+    /// right: `+∞` for `k < 2`, `½` for `k = 2` and `0` for `k > 2`.
     fn pdf(&self, x: f64) -> f64 {
         // χ²(k) is Gamma(k/2, 2).
         Gamma::new(self.k / 2.0, 2.0).pdf(x)
@@ -885,14 +920,23 @@ fn incomplete_beta_with_complement(a: f64, b: f64, y: f64, z: f64) -> f64 {
     }
 }
 impl Distribution for FisherF {
+    /// Density for `x > 0`, and `0` for `x < 0` and at `x = +∞`.
+    ///
+    /// At `x = 0` it is the limit from the right, as in SciPy's `f.pdf`:
+    /// `+∞` for `d1 < 2`, `1` for `d1 = 2` and `0` for `d1 > 2`.
     fn pdf(&self, x: f64) -> f64 {
+        let (d1, d2) = (self.d1, self.d2);
+        if x == 0.0
+        {
+            // `(d1/d2)^(d1/2) / B(d1/2, d2/2)` is exactly `1` at `d1 = 2`.
+            return endpoint_density(d1 / 2.0, 1.0);
+        }
         // The density vanishes at +∞; evaluating the log form there would
         // give `∞ − ∞ = NaN`.
-        if x <= 0.0 || x == f64::INFINITY
+        if x < 0.0 || x == f64::INFINITY
         {
             return 0.0;
         }
-        let (d1, d2) = (self.d1, self.d2);
         // ln pdf = (d1/2)ln(d1/d2) + (d1/2−1)ln x − ((d1+d2)/2)ln(1+d1 x/d2) − lnB(d1/2,d2/2)
         let ln = (d1 / 2.0) * (d1 / d2).ln() + (d1 / 2.0 - 1.0) * x.ln()
             - (d1 + d2) / 2.0 * (d1 * x / d2).ln_1p()
@@ -970,12 +1014,28 @@ impl Beta {
     }
 }
 impl Distribution for Beta {
+    /// Density `x^(a−1)·(1−x)^(b−1) / B(a, b)` on `(0, 1)`, and `0` outside
+    /// `[0, 1]`.
+    ///
+    /// At the endpoints it is the limit from inside, as in SciPy's
+    /// `beta.pdf`: at `x = 0`, `+∞` for `a < 1`, `b` for `a = 1` (that is
+    /// `1/B(1, b)`) and `0` for `a > 1`; at `x = 1` the same with the roles
+    /// of `a` and `b` swapped. `Beta(1, 1)` thus equals the
+    /// `Uniform(0, 1)` density on all of `[0, 1]`.
     fn pdf(&self, x: f64) -> f64 {
+        let (a, b) = (self.a, self.b);
+        if x == 0.0
+        {
+            return endpoint_density(a, b);
+        }
+        if x == 1.0
+        {
+            return endpoint_density(b, a);
+        }
         if x <= 0.0 || x >= 1.0
         {
             return 0.0;
         }
-        let (a, b) = (self.a, self.b);
         if a <= BETA_PDF_SADDLE_MIN || b <= BETA_PDF_SADDLE_MIN || !(a + b).is_finite()
         {
             // `ln_1p(−x)` keeps `ln(1 − x)` exact for tiny `x` (large-`b`
@@ -1210,6 +1270,82 @@ mod tests {
         // branch once y rounds to exactly 1 (cdf was 1.0; mpmath 0.0469119).
         let h = FisherF::new(4.0, 0.002);
         assert!(rel_ok(h.cdf(1e18), 0.046_911_899_152_187_12, 1e-12));
+    }
+
+    #[test]
+    fn densities_at_the_support_endpoints_are_their_limits() {
+        // Regression: Gamma, ChiSquared, FisherF and Beta returned a density
+        // of 0 at the support endpoints (x = 0, and x = 1 for Beta) for
+        // every shape, although the density tends to a finite non-zero
+        // value there when the shape is 1 (and to +∞ below 1). That made
+        // Gamma(1, θ) disagree with Exponential(1/θ) and Beta(1, 1) with
+        // Uniform(0, 1) at those points. Reference values: SciPy
+        // `gamma.pdf`, `chi2.pdf`, `f.pdf`, `beta.pdf` (and R's `dgamma`,
+        // `dchisq`, `df`, `dbeta`).
+        let tol = 1e-14;
+        // Finite limits (shape exactly 1).
+        assert!(close(Gamma::new(1.0, 3.0).pdf(0.0), 1.0 / 3.0, tol));
+        assert!(close(
+            Gamma::new(1.0, 3.0).pdf(0.0),
+            Exponential::new(1.0 / 3.0).pdf(0.0),
+            tol
+        ));
+        assert!(close(ChiSquared::new(2.0).pdf(0.0), 0.5, tol));
+        assert!(close(FisherF::new(2.0, 5.0).pdf(0.0), 1.0, tol));
+        assert!(close(Beta::new(1.0, 3.0).pdf(0.0), 3.0, tol));
+        assert!(close(Beta::new(4.0, 1.0).pdf(1.0), 4.0, tol));
+        let unit = Uniform::new(0.0, 1.0);
+        assert!(close(Beta::new(1.0, 1.0).pdf(0.0), unit.pdf(0.0), tol));
+        assert!(close(Beta::new(1.0, 1.0).pdf(1.0), unit.pdf(1.0), tol));
+        // The endpoint value continues the density from inside the support.
+        for (at_end, inside) in [
+            (
+                Gamma::new(1.0, 0.25).pdf(0.0),
+                Gamma::new(1.0, 0.25).pdf(1e-300),
+            ),
+            (
+                ChiSquared::new(2.0).pdf(0.0),
+                ChiSquared::new(2.0).pdf(1e-300),
+            ),
+            (
+                FisherF::new(2.0, 7.0).pdf(0.0),
+                FisherF::new(2.0, 7.0).pdf(1e-300),
+            ),
+            (
+                Beta::new(1.0, 2.5).pdf(0.0),
+                Beta::new(1.0, 2.5).pdf(1e-300),
+            ),
+            (
+                Beta::new(2.5, 1.0).pdf(1.0),
+                Beta::new(2.5, 1.0).pdf(1.0 - f64::EPSILON / 2.0),
+            ),
+        ]
+        {
+            assert!(
+                close(at_end, inside, 1e-12),
+                "endpoint {at_end} vs inside {inside}"
+            );
+        }
+        // Shape below 1: the density diverges at the endpoint.
+        assert_eq!(Gamma::new(0.5, 2.0).pdf(0.0), f64::INFINITY);
+        assert_eq!(ChiSquared::new(1.0).pdf(0.0), f64::INFINITY);
+        assert_eq!(FisherF::new(1.0, 4.0).pdf(0.0), f64::INFINITY);
+        assert_eq!(Beta::new(0.5, 2.0).pdf(0.0), f64::INFINITY);
+        assert_eq!(Beta::new(2.0, 0.5).pdf(1.0), f64::INFINITY);
+        // Shape above 1: the density vanishes at the endpoint.
+        assert_eq!(Gamma::new(1.5, 2.0).pdf(0.0), 0.0);
+        assert_eq!(ChiSquared::new(3.0).pdf(0.0), 0.0);
+        assert_eq!(FisherF::new(3.0, 4.0).pdf(0.0), 0.0);
+        assert_eq!(Beta::new(2.0, 0.5).pdf(0.0), 0.0);
+        assert_eq!(Beta::new(0.5, 2.0).pdf(1.0), 0.0);
+        // Outside the support the density is still 0, and NaN stays NaN.
+        assert_eq!(Gamma::new(1.0, 3.0).pdf(-1e-300), 0.0);
+        assert_eq!(ChiSquared::new(1.0).pdf(-1.0), 0.0);
+        assert_eq!(FisherF::new(1.0, 4.0).pdf(-1.0), 0.0);
+        assert_eq!(Beta::new(0.5, 0.5).pdf(-1e-300), 0.0);
+        assert_eq!(Beta::new(0.5, 0.5).pdf(1.0 + f64::EPSILON), 0.0);
+        assert!(Gamma::new(1.0, 3.0).pdf(f64::NAN).is_nan());
+        assert!(Beta::new(1.0, 1.0).pdf(f64::NAN).is_nan());
     }
 
     #[test]
