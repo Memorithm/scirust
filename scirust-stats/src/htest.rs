@@ -194,10 +194,74 @@ pub fn t_test_two_sample(a: &[f64], b: &[f64], equal_var: bool, tail: Tail) -> O
     })
 }
 
+/// Between- and within-group sums of squares of a one-way layout, both
+/// multiplied by the same factor `4^k`, which cancels in their ratio.
+///
+/// `2^k` brings the largest of the deviations `xᵢⱼ − x̄ᵢ` and `x̄ᵢ − x̄` into
+/// `[1, 2)` before they are squared, so neither sum overflows for a data
+/// spread above about `1e154` nor underflows below about `1e-154`. Scaling by
+/// a power of two is exact, so in between the two sums are exactly `4^k`
+/// times the unscaled ones. `k = 0` when every deviation is zero or one is
+/// non-finite, which leaves those cases to ordinary floating-point semantics.
+/// Every group must be non-empty.
+fn scaled_anova_sums_of_squares(groups: &[&[f64]]) -> (f64, f64) {
+    let n_total: usize = groups.iter().map(|g| g.len()).sum();
+    let grand = groups.iter().flat_map(|g| g.iter()).sum::<f64>() / n_total as f64;
+    let group_means: Vec<f64> = groups.iter().map(|g| mean(g)).collect();
+    let largest = groups
+        .iter()
+        .zip(&group_means)
+        .flat_map(|(g, &m)| {
+            g.iter()
+                .map(move |&x| (x - m).abs())
+                .chain([(m - grand).abs()])
+        })
+        .fold(0.0_f64, f64::max);
+    let k = if largest > 0.0 && largest.is_finite()
+    {
+        -binary_exponent(largest)
+    }
+    else
+    {
+        0
+    };
+    let mut ss_between = 0.0;
+    let mut ss_within = 0.0;
+    for (g, &m) in groups.iter().zip(&group_means)
+    {
+        let d = mul_pow2(m - grand, k);
+        ss_between += g.len() as f64 * d * d;
+        ss_within += g
+            .iter()
+            .map(|&x| {
+                let d = mul_pow2(x - m, k);
+                d * d
+            })
+            .sum::<f64>();
+    }
+    (ss_between, ss_within)
+}
+
 /// One-way ANOVA of `H₀: all group means are equal`.
 ///
 /// `groups` is a slice of samples per group. Returns `None` if fewer than two
 /// groups or fewer than one degree of freedom within groups.
+///
+/// The F statistic is invariant under a common positive rescaling of the
+/// data, and the computation keeps that property: the deviations are scaled
+/// by a power of two before they are squared, so the sums of squares do not
+/// overflow for a data spread above about `1e154` or underflow below about
+/// `1e-154` (either gave `F = NaN`). The means are still subject to the
+/// overflow limits of [`mean`].
+///
+/// ```
+/// use scirust_stats::prelude::*;
+/// let a = [1.0e200, 2.0e200, 3.0e200];
+/// let b = [4.0e200, 5.0e200, 6.0e200];
+/// let r = one_way_anova(&[&a, &b]).unwrap();
+/// // F = 13.5 for these data at any scale (SciPy `f_oneway`).
+/// assert!((r.statistic - 13.5).abs() < 1e-12);
+/// ```
 pub fn one_way_anova(groups: &[&[f64]]) -> Option<TestResult> {
     // Empty samples contain no observations and therefore are not factor
     // levels. Counting them in k corrupts both numerator and denominator dof.
@@ -212,23 +276,7 @@ pub fn one_way_anova(groups: &[&[f64]]) -> Option<TestResult> {
     {
         return None; // no within-group degrees of freedom
     }
-    let grand = mean(
-        &groups
-            .iter()
-            .flat_map(|g| g.iter().copied())
-            .collect::<Vec<_>>(),
-    );
-    let mut ss_between = 0.0;
-    let mut ss_within = 0.0;
-    for g in groups
-    {
-        let gm = mean(g);
-        ss_between += g.len() as f64 * (gm - grand).powi(2);
-        for &x in g.iter()
-        {
-            ss_within += (x - gm).powi(2);
-        }
-    }
+    let (ss_between, ss_within) = scaled_anova_sums_of_squares(&groups);
     let df1 = (k - 1) as f64;
     let df2 = (n_total - k) as f64;
     let ms_between = ss_between / df1;
@@ -264,6 +312,11 @@ pub enum LeveneCenter {
 /// within-group degrees of freedom (`N ≤ k`), any value is non-finite, or
 /// every deviation equals its group mean (the F ratio is undefined).
 ///
+/// The statistic is invariant under a common positive rescaling of the data.
+/// The sums of squares are formed as in [`one_way_anova`], so a data spread
+/// above about `1e154` or below about `1e-154` no longer makes them overflow
+/// or underflow (which returned `None`).
+///
 /// ```
 /// use scirust_stats::prelude::*;
 /// let tight = [10.0, 10.1, 9.9, 10.0, 10.05, 9.95];
@@ -291,15 +344,8 @@ pub fn levene_test(groups: &[&[f64]], center: LeveneCenter) -> Option<TestResult
             g.iter().map(|x| (x - c).abs()).collect()
         })
         .collect();
-    let group_means: Vec<f64> = deviations.iter().map(|d| mean(d)).collect();
-    let grand = deviations.iter().flatten().sum::<f64>() / n_total as f64;
-    let mut ss_between = 0.0;
-    let mut ss_within = 0.0;
-    for (d, &m) in deviations.iter().zip(&group_means)
-    {
-        ss_between += d.len() as f64 * (m - grand).powi(2);
-        ss_within += d.iter().map(|z| (z - m).powi(2)).sum::<f64>();
-    }
+    let deviations: Vec<&[f64]> = deviations.iter().map(Vec::as_slice).collect();
+    let (ss_between, ss_within) = scaled_anova_sums_of_squares(&deviations);
     if !(ss_within > 0.0 && ss_within.is_finite() && ss_between.is_finite())
     {
         return None;
@@ -790,6 +836,83 @@ mod tests {
         let result = one_way_anova(&[&g1, &g2, &empty]).unwrap();
         assert!(close(result.statistic, 8.0, 1e-12));
         assert_eq!(result.df, 1.0);
+    }
+
+    #[test]
+    fn anova_and_levene_do_not_depend_on_the_magnitude_of_the_data() {
+        // Regression: the sums of squares were formed from raw squared
+        // deviations, which overflow for a data spread above about 1e154 and
+        // underflow below about 1e-154. `one_way_anova` then returned
+        // F = ∞/∞ or 0/0 = NaN (and a NaN p-value), and `levene_test`
+        // returned `None`; just above the underflow threshold F lost digits
+        // (3.35620 instead of 3.35639 at scale 1e-160). Both statistics are
+        // invariant under a common positive rescaling. Reference values at
+        // unit scale: SciPy 1.18 `f_oneway` / `levene`, cross-checked with
+        // mpmath at 50 digits.
+        let a = [1.0, 2.0, 3.0, 4.5];
+        let b = [2.0, 3.5, 5.0, 6.0, 4.0];
+        let c = [0.5, 1.5, 2.5];
+        let rel = |x: f64, y: f64, tol: f64| (x - y).abs() <= tol * y.abs();
+        let lev_refs = [
+            (
+                LeveneCenter::Mean,
+                0.402_611_916_469_761_8,
+                0.680_036_913_823_352_2,
+            ),
+            (
+                LeveneCenter::Median,
+                0.361_215_303_825_956_5,
+                0.706_487_460_510_983_8,
+            ),
+        ];
+        // Powers of two keep the rescaled samples exact.
+        for s in [
+            2f64.powi(-1000),
+            2f64.powi(-700),
+            2f64.powi(-530),
+            1.0,
+            2f64.powi(530),
+            2f64.powi(700),
+            2f64.powi(1000),
+        ]
+        {
+            let scale = |g: &[f64]| g.iter().map(|v| v * s).collect::<Vec<f64>>();
+            let (sa, sb, sc) = (scale(&a), scale(&b), scale(&c));
+            let groups: [&[f64]; 3] = [&sa, &sb, &sc];
+            let r = one_way_anova(&groups).unwrap();
+            assert!(
+                rel(r.statistic, 3.356_394_129_979_035_6, 1e-12),
+                "s = {s:e}: F = {}",
+                r.statistic
+            );
+            assert_eq!(r.df, 2.0);
+            assert!(
+                rel(r.p_value, 0.081_461_355_208_934_58, 1e-10),
+                "s = {s:e}: p = {}",
+                r.p_value
+            );
+            for (center, w, p) in lev_refs
+            {
+                let r = levene_test(&groups, center)
+                    .unwrap_or_else(|| panic!("s = {s:e}, {center:?}: None"));
+                assert!(
+                    rel(r.statistic, w, 1e-12),
+                    "s = {s:e}, {center:?}: W = {}",
+                    r.statistic
+                );
+                assert!(
+                    rel(r.p_value, p, 1e-10),
+                    "s = {s:e}, {center:?}: p = {}",
+                    r.p_value
+                );
+            }
+            // Constant groups with different means: F = ∞ and p = 0 at every
+            // scale (an underflowing between-group sum gave 0/0 = NaN).
+            let (lo, hi) = (scale(&[1.0, 1.0]), scale(&[2.0, 2.0]));
+            let r = one_way_anova(&[&lo, &hi]).unwrap();
+            assert_eq!(r.statistic, f64::INFINITY, "s = {s:e}");
+            assert_eq!(r.p_value, 0.0, "s = {s:e}");
+        }
     }
 
     #[test]
