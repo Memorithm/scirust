@@ -619,7 +619,8 @@ pub struct StudentT {
     nu: f64,
 }
 impl StudentT {
-    /// `ν` degrees of freedom (`ν > 0`).
+    /// `ν` degrees of freedom (`ν > 0`); `ν = +∞` is the standard normal
+    /// limit.
     pub fn new(nu: f64) -> Self {
         assert!(nu > 0.0, "StudentT: degrees of freedom must be > 0");
         Self { nu }
@@ -628,6 +629,11 @@ impl StudentT {
 impl Distribution for StudentT {
     fn pdf(&self, t: f64) -> f64 {
         let nu = self.nu;
+        if nu == f64::INFINITY
+        {
+            // The standard normal limit (the form below is `∞ − ∞` there).
+            return (-0.5 * t * t).exp() / (2.0 * PI).sqrt();
+        }
         // Γ((ν+1)/2) / (√(νπ)·Γ(ν/2)) = 1 / (√ν·B(ν/2, ½)). `ln_beta` keeps
         // this exact for huge ν, where the ln Γ difference used to cancel
         // (ν = 1e15 gave pdf(0) ≈ 0.159 instead of 1/√(2π) ≈ 0.399).
@@ -648,13 +654,33 @@ impl Distribution for StudentT {
     /// where the incomplete beta would itself switch to its `1 − …` side, the
     /// complementary form `½ − ½·I_{t²/(ν+t²)}(½, ν/2)` is used instead, so
     /// that `x = ν/(ν+t²)` rounding to `1` for tiny `|t|` loses nothing.
+    ///
+    /// For large `ν` (`ν ≥ 1e3`) and `t² ≲ 0.28·ν`, where `x` lies within
+    /// `≈ 0.22` of `1` and both forms above lose the digits of `1 − x`, the
+    /// tail comes from an expansion in incomplete gamma functions instead
+    /// (see `student_t_tail_large_nu`). `ν = +∞` gives the standard normal
+    /// tail.
     fn sf(&self, t: f64) -> f64 {
         if t.is_nan()
         {
             return f64::NAN;
         }
         let nu = self.nu;
+        if nu == f64::INFINITY
+        {
+            return 0.5 * erfc(t / std::f64::consts::SQRT_2);
+        }
         let t2 = t * t;
+        if nu >= STUDENT_T_LARGE_NU_MIN
+        {
+            // `w = −ln x`, formed from `t²/ν` without rounding `x` to 1.
+            let w = (t2 / nu).ln_1p();
+            if w <= STUDENT_T_LARGE_NU_W_MAX
+            {
+                let tail = student_t_tail_large_nu(nu, w);
+                return if t >= 0.0 { tail } else { 1.0 - tail };
+            }
+        }
         let x = nu / (nu + t2);
         // Mass of one tail beyond |t|, P(T > |t|). The switch point is the
         // one `regularized_incomplete_beta(ν/2, ½, x)` uses internally, so
@@ -701,12 +727,99 @@ impl Distribution for StudentT {
     fn variance(&self) -> f64 {
         if self.nu > 2.0
         {
-            self.nu / (self.nu - 2.0)
+            // `1 + 2/(ν − 2)` rather than `ν/(ν − 2)`, which is `∞/∞` at `ν = ∞`.
+            1.0 + 2.0 / (self.nu - 2.0)
         }
         else
         {
             f64::INFINITY
         }
+    }
+}
+
+// Smallest `ν` for which `StudentT::sf` uses `student_t_tail_large_nu`.
+const STUDENT_T_LARGE_NU_MIN: f64 = 1e3;
+// Largest `w = ln(1 + t²/ν)` for which it does (`x = e^(−w) ≥ 0.78`).
+const STUDENT_T_LARGE_NU_W_MAX: f64 = 0.25;
+// Below this `u`, `student_t_tail_large_nu` sums `P(2k + ½, u)` for the
+// centre mass instead of `Q(2k + ½, u)` for the tail.
+const STUDENT_T_LARGE_NU_CENTRE_U: f64 = 0.25;
+// `c_k = g_k·Γ(2k + ½)/Γ(½)`, with `g_k` the coefficient of `v^(2k)` in
+// `√((v/2)/sinh(v/2))` (exact dyadic rationals: 1, −1/64, 21/8192,
+// −671/524288, 180323/2²⁷, −20898423/2³³, 7426362705/2⁴⁰).
+const STUDENT_T_LARGE_NU_COEFFS: [f64; 7] = [
+    1.0,
+    -0.015_625,
+    0.002_563_476_562_5,
+    -0.001_279_830_932_617_187_5,
+    0.001_343_511_044_979_095_5,
+    -0.002_432_896_639_220_416_5,
+    0.006_754_237_533_641_572,
+];
+
+/// One-sided Student-t tail `P(T > t) = ½·I_x(ν/2, ½)` for large `ν`, given
+/// `w = −ln x = ln(1 + t²/ν)` (with `w ≤ STUDENT_T_LARGE_NU_W_MAX`).
+///
+/// [`regularized_incomplete_beta`] only receives `x = ν/(ν + t²)`, which
+/// rounds towards `1` for large `ν`: the digits of `1 − x ≈ t²/ν` are lost,
+/// with a relative error of about `ε·ν/t²` (on either side of its internal
+/// switch point). `StudentT::new(1e16).cdf(1.96)` came out as `0.9836`
+/// instead of `0.9750`, and `ν = 1e17` gave a cdf of `1.76` (a negative sf).
+///
+/// Here `s = e^(−v)` in `I_x(a, ½) = ∫₀ˣ s^(a−1)(1 − s)^(−½) ds / B(a, ½)`
+/// gives, with `T = a − ¼` and `u = T·w`,
+///
+/// `I_x(a, ½) = Γ(a + ½)/(Γ(a)·√T) · Σ_k c_k·T^(−2k)·Q(2k + ½, u)`,
+///
+/// where `c_k = g_k·Γ(2k + ½)/Γ(½)` and `Σ g_k v^(2k) = √((v/2)/sinh(v/2))`
+/// (an expansion of the type used by BGRAT in TOMS 708, Didonato & Morris
+/// 1992). Relative to the first term, the `k`-th one is of the order of
+/// `|g_k|·(w + 2k/T)^(2k)` (`|g_k| ≲ (2π)^(−2k)`), so for `w ≤ ¼` and
+/// `T ≳ 500` the seven terms used reach `f64` precision, and neither `w` nor
+/// `u` involves a cancellation. At `t = 0` every `Q` is `1` and the
+/// expansion equals `I_1 = 1`, so near the centre (`u` small) the same sum
+/// with `P = 1 − Q` gives the mass `P(|T| ≤ t)` and `½ − tail` keeps its
+/// relative precision for tiny `t`.
+fn student_t_tail_large_nu(nu: f64, w: f64) -> f64 {
+    let a = 0.5 * nu;
+    let big_t = a - 0.25;
+    let s = a + 0.5;
+    // ln[Γ(a + ½)/(Γ(a)·√T)] from Stirling's series: the `ln Γ` values
+    // themselves would cancel to about `ε·a·ln a`.
+    let ln_power = -(a - 0.5) * (-0.5 / s).ln_1p() - 0.5 + 0.5 * (0.75 / big_t).ln_1p();
+    let ln_ratio = ln_power + stirling_error(s) - stirling_error(a);
+    let ratio = ln_ratio.exp();
+    let u = big_t * w;
+    let inv_t2 = 1.0 / (big_t * big_t);
+    let centre = u < STUDENT_T_LARGE_NU_CENTRE_U;
+    let mut sum = 0.0;
+    let mut scale = 1.0;
+    for (k, c) in STUDENT_T_LARGE_NU_COEFFS.iter().enumerate()
+    {
+        let shape = 2.0 * k as f64 + 0.5;
+        let g = if centre
+        {
+            regularized_gamma_p(shape, u)
+        }
+        else
+        {
+            regularized_gamma_q(shape, u)
+        };
+        let term = c * scale * g;
+        sum += term;
+        if term.abs() <= 0.25 * f64::EPSILON * sum.abs()
+        {
+            break;
+        }
+        scale *= inv_t2;
+    }
+    if centre
+    {
+        0.5 - 0.5 * ratio * sum
+    }
+    else
+    {
+        0.5 * ratio * sum
     }
 }
 
