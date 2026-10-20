@@ -71,7 +71,9 @@ pub fn batch_time_first_order(conversion: f64, rate_constant: f64) -> f64 {
         rate_constant.is_finite() && rate_constant > 0.0,
         "la constante de vitesse doit être finie et strictement positive"
     );
-    -(1.0 - conversion).ln() / rate_constant
+    // −log1p(−X) : `1 − X` arrondi perd la précision relative quand X → 0
+    // (et rend −0 pour X < ε/2).
+    -(-conversion).ln_1p() / rate_constant
 }
 
 /// Temps requis en réacteur batch pour une réaction d'**ordre 2** (réactif
@@ -169,6 +171,29 @@ mod tests {
         assert_relative_eq!(batch_cycle_time(40.0, 900.0), 940.0, epsilon = 1e-9);
         // Temps mort nul : le cycle se réduit au temps de réaction.
         assert_relative_eq!(batch_cycle_time(40.0, 0.0), 40.0, epsilon = 1e-9);
+    }
+
+    #[test]
+    fn first_order_time_keeps_precision_for_small_conversion() {
+        // t = −ln(1 − X)/k = −log1p(−X)/k. Références mpmath : X = 1e-10 →
+        // k·t = 1.00000000005e-10 ; X = 1e-12 → 1.0000000000005e-12. La forme
+        // −ln(1 − X) donnait 1.0000000828e-10 (écart relatif 8.3e-8),
+        // 9.99977878e-13 (2.2e-5) et −0 pour X = 1e-17.
+        assert_relative_eq!(
+            batch_time_first_order(1.0e-10, 0.5),
+            2.000_000_000_1e-10,
+            epsilon = 0.0,
+            max_relative = 1e-13
+        );
+        assert_relative_eq!(
+            batch_time_first_order(1.0e-12, 1.0),
+            1.000_000_000_000_5e-12,
+            epsilon = 0.0,
+            max_relative = 1e-13
+        );
+        let t = batch_time_first_order(1.0e-17, 1.0);
+        assert!(t.is_sign_positive());
+        assert_relative_eq!(t, 1.0e-17, epsilon = 0.0, max_relative = 1e-13);
     }
 
     #[test]

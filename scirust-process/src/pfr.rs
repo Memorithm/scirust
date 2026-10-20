@@ -45,7 +45,9 @@ pub fn pfr_first_order_conversion(rate_constant: f64, space_time: f64) -> f64 {
         space_time.is_finite() && space_time >= 0.0,
         "le temps de passage doit être fini et positif ou nul (s)"
     );
-    1.0 - (-rate_constant * space_time).exp()
+    // −expm1(−Da) : la soustraction 1 − exp(−Da) perd la précision relative
+    // quand Da → 0 (et rend 0 pour Da < ε/2).
+    -(-rate_constant * space_time).exp_m1()
 }
 
 /// Temps de passage **requis** pour atteindre une conversion donnée en ordre 1
@@ -66,7 +68,9 @@ pub fn pfr_space_time_first_order(conversion: f64, rate_constant: f64) -> f64 {
         rate_constant > 0.0,
         "la constante cinétique doit être strictement positive (1/s)"
     );
-    -(1.0 - conversion).ln() / rate_constant
+    // −log1p(−X) : `1 − X` arrondi perd la précision relative quand X → 0
+    // (et rend −0 pour X < ε/2).
+    -(-conversion).ln_1p() / rate_constant
 }
 
 /// Volume utile d'un PFR pour une réaction d'**ordre 1** à densité constante
@@ -184,6 +188,43 @@ mod tests {
         let tau_half = pfr_second_order_space_time(0.5, 2.0, 1.0);
         let tau_three_quarters = pfr_second_order_space_time(0.75, 2.0, 1.0);
         assert_relative_eq!(tau_three_quarters, 3.0 * tau_half, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn first_order_conversion_and_space_time_keep_precision_for_small_da() {
+        // Da = k·τ ≪ 1 : références mpmath −expm1(−Da) et −log1p(−X).
+        // Da = 1e-10 → X = 9.9999999995e-11 (la forme 1 − exp(−Da) donnait
+        // 1.0000000827e-10, écart relatif 8.3e-8) ; X = 1e-10 → Da =
+        // 1.00000000005e-10 (−ln(1 − X) donnait 1.0000000828e-10).
+        assert_relative_eq!(
+            pfr_first_order_conversion(1.0e-4, 1.0e-6),
+            9.999_999_999_5e-11,
+            epsilon = 0.0,
+            max_relative = 1e-13
+        );
+        assert_relative_eq!(
+            pfr_space_time_first_order(1.0e-10, 1.0),
+            1.000_000_000_05e-10,
+            epsilon = 0.0,
+            max_relative = 1e-13
+        );
+        // X = 1e-17 < ε/2 : 1 − X s'arrondit à 1 et l'ancienne forme rendait
+        // τ = −0 au lieu de 1e-17 s.
+        assert_relative_eq!(
+            pfr_space_time_first_order(1.0e-17, 1.0),
+            1.0e-17,
+            epsilon = 0.0,
+            max_relative = 1e-13
+        );
+        // Réciprocité τ → X → τ conservée à faible Da.
+        let tau = 2.0e-9_f64;
+        let x = pfr_first_order_conversion(0.05, tau);
+        assert_relative_eq!(
+            pfr_space_time_first_order(x, 0.05),
+            tau,
+            epsilon = 0.0,
+            max_relative = 1e-13
+        );
     }
 
     #[test]
