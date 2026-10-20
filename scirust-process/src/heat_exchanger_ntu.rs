@@ -107,14 +107,18 @@ pub fn ntu_effectiveness_counterflow(ntu: f64, capacity_ratio: f64) -> f64 {
         capacity_ratio.is_finite() && (0.0..=1.0).contains(&capacity_ratio),
         "le rapport de capacités Cr doit être compris dans [0, 1] (sans dimension)"
     );
-    if (capacity_ratio - 1.0).abs() < 1e-9
+    if capacity_ratio >= 1.0
     {
         ntu / (1.0 + ntu)
     }
     else
     {
-        let exponent = (-ntu * (1.0 - capacity_ratio)).exp();
-        (1.0 - exponent) / (1.0 - capacity_ratio * exponent)
+        // Forme équivalente sans annulation : avec m = expm1(−NTU·(1 − Cr)) < 0,
+        // 1 − exp(…) = −m et 1 − Cr·exp(…) = (1 − Cr) − Cr·m (deux termes ≥ 0).
+        // Reste précise quand NTU·(1 − Cr) → 0 et rejoint NTU/(1 + NTU) en Cr → 1.
+        let one_minus_cr = 1.0 - capacity_ratio;
+        let m = (-ntu * one_minus_cr).exp_m1();
+        -m / (one_minus_cr - capacity_ratio * m)
     }
 }
 
@@ -137,8 +141,8 @@ pub fn ntu_effectiveness_parallel(ntu: f64, capacity_ratio: f64) -> f64 {
         capacity_ratio.is_finite() && (0.0..=1.0).contains(&capacity_ratio),
         "le rapport de capacités Cr doit être compris dans [0, 1] (sans dimension)"
     );
-    let exponent = (-ntu * (1.0 + capacity_ratio)).exp();
-    (1.0 - exponent) / (1.0 + capacity_ratio)
+    // −expm1(x) = 1 − exp(x) sans annulation quand NTU·(1 + Cr) → 0.
+    -(-ntu * (1.0 + capacity_ratio)).exp_m1() / (1.0 + capacity_ratio)
 }
 
 /// Flux thermique échangé `Q = ε·Cmin·(Th,in − Tc,in)` `W` — la puissance réelle
@@ -261,6 +265,69 @@ mod tests {
         let q1 = ntu_duty(0.2, 1500.0, 380.0, 300.0);
         let q3 = ntu_duty(0.6, 1500.0, 380.0, 300.0);
         assert_relative_eq!(q3, 3.0 * q1, epsilon = 1e-9);
+    }
+
+    #[test]
+    fn counterflow_keeps_precision_for_small_ntu_times_one_minus_cr() {
+        // Régression : 1 − exp(−NTU·(1 − Cr)) perdait sa précision quand
+        // NTU·(1 − Cr) → 0 (soustraction de deux nombres voisins de 1).
+        // Références calculées en précision étendue (mpmath, 50 chiffres) :
+        // NTU = 1e−6, Cr = 1 − 1,01e−9 → ε = 9,99999000001000e−7
+        // (l'ancienne forme donnait 9,893e−7, écart relatif ≈ 1,1 %).
+        let cr = 1.0 - 1.01e-9;
+        assert_relative_eq!(
+            ntu_effectiveness_counterflow(1.0e-6, cr),
+            9.999_990_000_010_005e-7,
+            epsilon = 0.0,
+            max_relative = 1e-12
+        );
+        // NTU = 1e−6, Cr = 1 − 2e−9 → ε = 9,99999000001001e−7 (ancien : 9,992e−7).
+        assert_relative_eq!(
+            ntu_effectiveness_counterflow(1.0e-6, 1.0 - 2.0e-9),
+            9.999_990_000_010_01e-7,
+            epsilon = 0.0,
+            max_relative = 1e-12
+        );
+        // Cr = 0, NTU = 1e−12 → ε = −expm1(−1e−12) = 9,999999999995e−13
+        // (ancien : 9,99978e−13, écart relatif ≈ 2,2e−5).
+        assert_relative_eq!(
+            ntu_effectiveness_counterflow(1.0e-12, 0.0),
+            9.999_999_999_995e-13,
+            epsilon = 0.0,
+            max_relative = 1e-12
+        );
+    }
+
+    #[test]
+    fn counterflow_is_continuous_across_balanced_limit() {
+        // Juste sous Cr = 1, la forme générale doit rejoindre la limite
+        // NTU/(1 + NTU) sans saut.
+        for &ntu in &[1.0e-6, 0.5, 3.0, 1.0e3]
+        {
+            let balanced = ntu_effectiveness_counterflow(ntu, 1.0);
+            let near = ntu_effectiveness_counterflow(ntu, 1.0 - f64::EPSILON);
+            assert_relative_eq!(near, balanced, epsilon = 0.0, max_relative = 1e-12);
+        }
+    }
+
+    #[test]
+    fn parallel_keeps_precision_for_small_ntu() {
+        // Régression : même perte de précision en co-courant pour NTU·(1 + Cr) → 0.
+        // NTU = 1e−12, Cr = 0 → ε = 9,999999999995e−13 (ancien : 9,99978e−13).
+        assert_relative_eq!(
+            ntu_effectiveness_parallel(1.0e-12, 0.0),
+            9.999_999_999_995e-13,
+            epsilon = 0.0,
+            max_relative = 1e-12
+        );
+        // NTU = 1e−10, Cr = 1 → ε = −expm1(−2e−10)/2 = 9,999999999e−11
+        // (ancien : 1,0000000827e−10, écart relatif ≈ 8,3e−8).
+        assert_relative_eq!(
+            ntu_effectiveness_parallel(1.0e-10, 1.0),
+            9.999_999_999e-11,
+            epsilon = 0.0,
+            max_relative = 1e-12
+        );
     }
 
     #[test]
