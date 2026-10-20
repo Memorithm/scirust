@@ -78,14 +78,51 @@ pub fn cateff_effectiveness_slab(thiele_modulus: f64) -> f64 {
 ///
 /// `thiele_modulus` (φ) module de Thiele `sans dimension`.
 ///
+/// Pour `φ < 0.5`, la différence `coth(φ) − 1/φ ≈ φ/3` se perd par annulation
+/// entre deux termes voisins de `1/φ` (erreur relative 4e-8 à `φ = 1e-4`, η > 1
+/// vers `φ ≈ 1e-5`, nul pour `φ ≤ 1e-8`) ; η y est donc évalué par son
+/// développement en série `η = 3 Σₙ≥₁ 2²ⁿ B₂ₙ φ²ⁿ⁻² / (2n)!
+/// = 1 − φ²/15 + 2φ⁴/315 − …` (nombres de Bernoulli `B₂ₙ`), tronqué à 12
+/// termes (reste < 1e-19 pour `φ < 0.5`).
+///
 /// Panique si `φ ≤ 0`.
 pub fn cateff_effectiveness_sphere(thiele_modulus: f64) -> f64 {
     assert!(
         thiele_modulus > 0.0,
         "φ > 0 requis (module de Thiele) pour le facteur d'efficacité"
     );
+    if thiele_modulus < SPHERE_SERIES_SWITCH
+    {
+        // Horner en φ² sur les coefficients 3·2²ⁿ·B₂ₙ/(2n)!.
+        let x2 = thiele_modulus * thiele_modulus;
+        return SPHERE_SERIES
+            .iter()
+            .rev()
+            .fold(0.0, |acc, &c| acc.mul_add(x2, c));
+    }
     (3.0 / thiele_modulus) * (1.0 / thiele_modulus.tanh() - 1.0 / thiele_modulus)
 }
+
+/// Seuil sous lequel [`cateff_effectiveness_sphere`] passe à la série : au-delà,
+/// la forme fermée ne perd qu'un facteur ≈ 3/φ² ≤ 12 ulp par annulation.
+const SPHERE_SERIES_SWITCH: f64 = 0.5;
+
+/// Coefficients `3·2²ⁿ·B₂ₙ/(2n)!`, `n = 1..=12`, du développement
+/// `η_sphère(φ) = Σ cₙ φ²⁽ⁿ⁻¹⁾` (1, −1/15, 2/315, −1/1575, …).
+const SPHERE_SERIES: [f64; 12] = [
+    1.0,
+    -0.066_666_666_666_666_67,
+    0.006_349_206_349_206_349,
+    -0.000_634_920_634_920_634_9,
+    6.413_339_746_673_08e-5,
+    -6.493_212_842_419_191e-6,
+    6.577_784_355_562_133e-7,
+    -6.664_382_636_993_903e-8,
+    6.752_353_955_042_697_5e-9,
+    -6.841_545_361_377_655e-10,
+    6.931_929_779_700_787e-11,
+    -7.023_512_045_947_465_5e-12,
+];
 
 /// Vitesse observée sur le grain `r_obs = η · r_int` (mol·m⁻³·s⁻¹), vitesse
 /// intrinsèque pondérée par le facteur d'efficacité.
@@ -148,6 +185,52 @@ mod tests {
         let eta_sphere = cateff_effectiveness_sphere(1.0e-3_f64);
         assert_relative_eq!(eta_slab, 1.0, max_relative = 1e-3);
         assert_relative_eq!(eta_sphere, 1.0, max_relative = 1e-3);
+    }
+
+    #[test]
+    fn sphere_effectiveness_keeps_full_precision_for_small_thiele() {
+        // Références mpmath (50 chiffres, arrondies en f64) de η = (3/φ)·(coth φ − 1/φ).
+        // Avant correction, la forme fermée donnait η(1e-4) = 0.99999995655,
+        // η(1e-5) = 1.00000034, η(3e-8) = 1.49 et η(1e-8) = 0.
+        let cases = [
+            (1.0e-9, 1.0),
+            (1.0e-8, 1.0),
+            (3.0e-8, 0.999_999_999_999_999_9),
+            (1.0e-7, 0.999_999_999_999_999_3),
+            (1.0e-6, 0.999_999_999_999_933_4),
+            (1.0e-5, 0.999_999_999_993_333_3),
+            (1.0e-4, 0.999_999_999_333_333_4),
+            (1.0e-2, 0.999_993_333_396_824_7),
+            (0.1, 0.999_333_967_619_688_3),
+            (0.3, 0.994_050_969_884_082_6),
+            (0.5, 0.983_720_482_431_917_1),
+            (0.7, 0.968_786_602_419_432_2),
+            (1.0, 0.939_105_856_497_993_9),
+            (2.0, 0.805_972_081_091_322_1),
+            (10.0, 0.270_000_001_236_692_16),
+        ];
+        for (phi, want) in cases
+        {
+            let eta = cateff_effectiveness_sphere(phi);
+            assert_relative_eq!(eta, want, max_relative = 1e-14);
+            assert!(eta <= 1.0, "η({phi}) = {eta} > 1");
+        }
+        // Continuité au changement de formule (φ = 0.5).
+        let below = cateff_effectiveness_sphere(0.5 - 1e-12);
+        let above = cateff_effectiveness_sphere(0.5);
+        assert_relative_eq!(below, above, max_relative = 1e-13);
+    }
+
+    #[test]
+    fn observed_rate_accepts_sphere_effectiveness_for_small_thiele() {
+        // η(φ = 1e-5) valait 1.00000034 > 1 et faisait paniquer
+        // cateff_observed_rate ; η = 1 − φ²/15 + … (référence mpmath).
+        let eta = cateff_effectiveness_sphere(1.0e-5_f64);
+        assert_relative_eq!(
+            cateff_observed_rate(eta, 7.5_f64),
+            7.5 * 0.999_999_999_993_333_3,
+            max_relative = 1e-14
+        );
     }
 
     #[test]
