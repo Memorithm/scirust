@@ -107,13 +107,13 @@ fn pow2(k: i32) -> f64 {
 
 /// `v · 2^k`, exact whenever the result is a normal number. Two steps keep
 /// each factor representable (`k` ranges over `[−1023, 1074]` here).
-fn mul_pow2(v: f64, k: i32) -> f64 {
+pub(crate) fn mul_pow2(v: f64, k: i32) -> f64 {
     let half = k / 2;
     v * pow2(half) * pow2(k - half)
 }
 
 /// The exponent `e` with `2^e ≤ m < 2^(e+1)`, for finite `m > 0`.
-fn binary_exponent(m: f64) -> i32 {
+pub(crate) fn binary_exponent(m: f64) -> i32 {
     let biased = ((m.to_bits() >> 52) & 0x7ff) as i32;
     if biased == 0
     {
