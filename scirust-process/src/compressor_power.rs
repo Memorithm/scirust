@@ -76,11 +76,21 @@ pub fn cmp_isentropic_work(
         "Π ≥ 1 requis (rapport de pression d'une compression)"
     );
     assert!(gamma > 1.0, "γ > 1 requis (rapport des chaleurs massiques)");
-    let exponent = (gamma - 1.0) / gamma;
-    gas_constant_specific
-        * inlet_temperature
-        * (gamma / (gamma - 1.0))
-        * (pressure_ratio.powf(exponent) - 1.0)
+    gas_constant_specific * inlet_temperature * reduced_compression_work(pressure_ratio, gamma)
+}
+
+/// Facteur sans dimension `[k/(k−1)] · (Π^((k−1)/k) − 1)` commun aux travaux
+/// isentropique (`k = γ`) et polytropique (`k = n`).
+///
+/// Évalué sous la forme `expm1(e · ln Π) / e` avec `e = (k−1)/k`, et non par
+/// `Π^e − 1` : la soustraction `Π^e − 1` annule presque tous les chiffres
+/// significatifs quand `e · ln Π` est petit (exposant `k → 1⁺` ou rapport
+/// `Π → 1⁺`), erreur ensuite amplifiée par le grand facteur `k/(k−1)`. La forme
+/// `expm1` reste précise dans ces deux régimes et tend continûment vers la
+/// limite isotherme `ln Π` quand `k → 1⁺`.
+fn reduced_compression_work(pressure_ratio: f64, exponent_k: f64) -> f64 {
+    let e = (exponent_k - 1.0) / exponent_k;
+    (e * pressure_ratio.ln()).exp_m1() / e
 }
 
 /// Travail massique **polytropique** d'un compresseur de gaz parfait
@@ -116,11 +126,9 @@ pub fn cmp_polytropic_work(
         polytropic_exponent > 1.0,
         "n > 1 requis (exposant polytropique)"
     );
-    let exponent = (polytropic_exponent - 1.0) / polytropic_exponent;
     gas_constant_specific
         * inlet_temperature
-        * (polytropic_exponent / (polytropic_exponent - 1.0))
-        * (pressure_ratio.powf(exponent) - 1.0)
+        * reduced_compression_work(pressure_ratio, polytropic_exponent)
 }
 
 /// Température de refoulement **isentropique** d'un gaz parfait
@@ -256,6 +264,37 @@ mod tests {
         let p_low = cmp_power(2.0_f64, 150_000.0_f64, 0.4_f64);
         assert_relative_eq!(p_high, 375_000.0, max_relative = 1e-12);
         assert_relative_eq!(p_low, 2.0 * p_high, max_relative = 1e-12);
+    }
+
+    #[test]
+    fn isentropic_work_accurate_for_ratio_near_one() {
+        // Π = 1 + 1e-9 (soufflante quasi sans compression), air γ = 1.4.
+        // Référence en précision étendue (mpmath, 50 chiffres) de
+        //   r·T1·[γ/(γ−1)]·(Π^((γ−1)/γ) − 1) = 8.610000709319594e-5 J/kg,
+        // soit ≈ r·T1·(Π − 1) · (1 − (Π−1)/(2γ)) au premier ordre.
+        // La forme Π^e − 1 perdait ≈ 7 chiffres (erreur relative ≈ 1e-7).
+        let w = cmp_isentropic_work(287.0_f64, 300.0_f64, 1.0_f64 + 1e-9, 1.4_f64);
+        assert_relative_eq!(w, 8.610000709319594e-5, max_relative = 1e-12);
+    }
+
+    #[test]
+    fn polytropic_work_tends_to_isothermal_as_n_tends_to_one() {
+        // n → 1⁺ : w_p → r·T1·ln Π (compression isotherme).
+        // r = 287, T1 = 300, Π = 4 ⇒ r·T1·ln 4 = 119359.94449242258 J/kg.
+        // Pour n = 1 + 1e-12 l'écart à la limite vaut ≈ r·T1·(ln Π)²·1e-12/2
+        // ≈ 8e-8 J/kg, soit ≈ 7e-13 en relatif. La forme Π^e − 1 donnait
+        // 119362.433 J/kg (erreur relative ≈ 2e-5) et, pour n = 1 + 2⁻⁵²,
+        // 86100.0 J/kg (≈ 28 % d'erreur).
+        let isothermal = 287.0_f64 * 300.0 * 4.0_f64.ln();
+        let w = cmp_polytropic_work(287.0_f64, 300.0_f64, 4.0_f64, 1.0_f64 + 1e-12);
+        assert_relative_eq!(w, isothermal, max_relative = 1e-11);
+        let w_eps = cmp_polytropic_work(287.0_f64, 300.0_f64, 4.0_f64, 1.0_f64 + f64::EPSILON);
+        assert_relative_eq!(w_eps, isothermal, max_relative = 1e-12);
+        // Ratio proche de 1 ET exposant proche de 1 : l'ancienne forme
+        // renvoyait exactement 0 au lieu de r·T1·ln Π ≈ 8.61e-5 J/kg.
+        let pr = 1.0_f64 + 1e-9;
+        let w_small = cmp_polytropic_work(287.0_f64, 300.0_f64, pr, 1.0_f64 + 1e-9);
+        assert_relative_eq!(w_small, 287.0 * 300.0 * pr.ln(), max_relative = 1e-9);
     }
 
     #[test]
