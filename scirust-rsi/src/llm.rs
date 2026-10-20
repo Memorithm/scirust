@@ -449,19 +449,20 @@ pub mod anthropic {
                 body["system"] = serde_json::Value::String(sys.clone());
             }
 
-            let agent = ureq::AgentBuilder::new()
-                .timeout(std::time::Duration::from_secs(self.timeout_secs))
-                .build();
+            let agent: ureq::Agent = ureq::Agent::config_builder()
+                .timeout_global(Some(std::time::Duration::from_secs(self.timeout_secs)))
+                .build()
+                .into();
 
-            let resp = agent
+            let mut resp = agent
                 .post(API_URL)
-                .set("x-api-key", &self.api_key)
-                .set("anthropic-version", API_VERSION)
-                .set("content-type", "application/json")
+                .header("x-api-key", &self.api_key)
+                .header("anthropic-version", API_VERSION)
+                .header("content-type", "application/json")
                 .send_json(body)
                 .ok()?;
 
-            let json: serde_json::Value = resp.into_json().ok()?;
+            let json: serde_json::Value = resp.body_mut().read_json().ok()?;
             // content is an array of blocks; return the first text block.
             json.get("content")?
                 .as_array()?
