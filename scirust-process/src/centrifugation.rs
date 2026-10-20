@@ -8,8 +8,8 @@
 //!   g_c = ω²·r / g                                              `sans dimension`
 //! vitesse de migration radiale (régime de Stokes)
 //!   u_r = d²·Δρ·ω²·r / (18·μ)                                   `m·s⁻¹`
-//! facteur Sigma d'une centrifugeuse tubulaire (forme retenue)
-//!   Σ   = V·ω²·(r_o + r_i) / (2·g·|ln(r_o − r_i)|)              `m²`
+//! facteur Sigma d'une centrifugeuse tubulaire
+//!   Σ   = V·ω² / (g·ln(r_o / r_i))                              `m²`
 //! diamètre de coupure à 50 %
 //!   d_c = √( 18·μ·Q / (2·Δρ·g·Σ) )                              `m`
 //! ```
@@ -35,9 +35,11 @@
 //! pour le facteur de séparation, ou une accélération de référence choisie). Le
 //! **facteur Sigma** est un indice de **mise à l'échelle géométrique** permettant
 //! de comparer deux machines à performance de séparation égale (`Q₁/Σ₁ = Q₂/Σ₂`) ;
-//! la forme retenue ci-dessus est celle **imposée par l'appelant** et n'est pas
-//! substituée à une autre corrélation de bol. Aucune propriété d'état ni
-//! corrélation de transport n'est fabriquée par ce module.
+//! la forme retenue est celle du bol tubulaire (cylindre creux de liquide en
+//! écoulement piston axial), `Σ = V·ω²/(g·ln(r_o/r_i))`, qui tend vers
+//! `V·ω²·(r_o + r_i)/(2·g·(r_o − r_i))` pour une couche liquide mince. Les autres
+//! géométries de bol (assiettes, décanteuse à vis) ne sont pas traitées. Aucune
+//! propriété d'état ni corrélation de transport n'est fabriquée par ce module.
 
 /// Facteur de séparation centrifuge `g_c = ω²·r / g` (sans dimension), soit le
 /// nombre de fois la pesanteur ressenti par une particule dans le champ centrifuge.
@@ -85,21 +87,25 @@ pub fn centf_terminal_velocity(
         / (18.0 * viscosity)
 }
 
-/// Facteur Sigma d'une centrifugeuse tubulaire (forme retenue)
-/// `Σ = V·ω²·(r_o + r_i) / (2·g·|ln(r_o − r_i)|)` (m²), aire d'un décanteur
-/// gravitaire équivalent servant à la mise à l'échelle géométrique.
+/// Facteur Sigma d'une centrifugeuse tubulaire `Σ = V·ω² / (g·ln(r_o / r_i))`
+/// (m²), aire d'un décanteur gravitaire équivalent servant à la mise à
+/// l'échelle géométrique.
 ///
 /// `volume` (V) volume de liquide retenu dans le bol `m³`, `gravity` (g)
 /// accélération de référence `m·s⁻²`, `angular_velocity` (ω) vitesse angulaire
 /// `rad·s⁻¹`, `outer_radius` (r_o) rayon externe `m`, `inner_radius` (r_i) rayon
 /// interne `m`.
 ///
-/// Le logarithme est borné par `max(|ln(r_o − r_i)|, 1e-9)` afin d'éviter une
-/// division par zéro lorsque `r_o − r_i` approche 1.
+/// Le logarithme porte sur le **rapport** des rayons, si bien que le résultat
+/// ne dépend pas de l'unité de longueur choisie (à condition que `V`, `g` et
+/// les rayons soient exprimés dans un même système). Il est évalué comme
+/// `ln_1p((r_o − r_i)/r_i)`, strictement positif pour `r_o > r_i`, ce qui
+/// conserve la précision pour une couche liquide mince ; dans cette limite
+/// `Σ → V·ω²·(r_o + r_i)/(2·g·(r_o − r_i))`.
 ///
 /// Panique si `V < 0`, si `g ≤ 0`, si `r_i ≤ 0`, ou si `r_o ≤ r_i` (le rayon
-/// externe doit dépasser strictement le rayon interne, et `r_o − r_i` doit rester
-/// positif pour que le logarithme soit défini).
+/// externe doit dépasser strictement le rayon interne pour que `ln(r_o/r_i)`
+/// soit strictement positif).
 pub fn centf_sigma_factor(
     volume: f64,
     gravity: f64,
@@ -114,9 +120,10 @@ pub fn centf_sigma_factor(
         outer_radius > inner_radius,
         "r_o > r_i requis (rayon externe strictement supérieur au rayon interne)"
     );
-    let log_term = (outer_radius - inner_radius).ln().abs().max(1e-9);
-    volume * angular_velocity * angular_velocity * (outer_radius + inner_radius)
-        / (2.0 * gravity * log_term)
+    // ln(r_o/r_i) = ln_1p((r_o − r_i)/r_i) : argument > 0 pour r_o > r_i, donc
+    // logarithme > 0, sans annulation lorsque la couche liquide est mince.
+    let log_ratio = ((outer_radius - inner_radius) / inner_radius).ln_1p();
+    volume * angular_velocity * angular_velocity / (gravity * log_ratio)
 }
 
 /// Diamètre de coupure à 50 % `d_c = √( 18·μ·Q / (2·Δρ·g·Σ) )` (m) : diamètre de
@@ -193,12 +200,47 @@ mod tests {
     #[test]
     fn sigma_factor_numeric_case() {
         // V = 0.002 m³, g = 9.81, ω = 50 rad/s, r_o = 0.12 m, r_i = 0.02 m ⇒
-        //   r_o − r_i = 0.10, |ln(0.10)| = 2.302585
-        //   num = 0.002 · 2500 · 0.14 = 5 · 0.14 = 0.7
-        //   den = 2 · 9.81 · 2.302585 = 19.62 · 2.302585 ≈ 45.17672
-        //   Σ = 0.7 / 45.17672 ≈ 0.0154948 m².
+        //   ln(r_o/r_i) = ln 6 = 1.791759469
+        //   num = 0.002 · 2500 = 5
+        //   den = 9.81 · 1.791759469 = 17.57716039
+        //   Σ = 5 / 17.57716039 = 0.2844600543 m² (mpmath, 40 chiffres).
         let sigma = centf_sigma_factor(0.002_f64, 9.81_f64, 50.0_f64, 0.12_f64, 0.02_f64);
-        assert_relative_eq!(sigma, 0.0154948, max_relative = 1e-3);
+        assert_relative_eq!(sigma, 0.284_460_054_307_465_5, max_relative = 1e-12);
+    }
+
+    #[test]
+    fn sigma_factor_is_independent_of_length_unit() {
+        // Régression : l'ancienne forme prenait `ln(r_o − r_i)`, logarithme d'une
+        // longueur, si bien que le résultat changeait avec l'unité. Passer de m à
+        // mm multiplie V par 1e9, g et les rayons par 1e3 : Σ (aire) doit être
+        // multiplié par 1e6 exactement (mpmath : 284460.0543074655 mm²).
+        let sigma_m = centf_sigma_factor(0.002_f64, 9.81_f64, 50.0_f64, 0.12_f64, 0.02_f64);
+        let sigma_mm = centf_sigma_factor(2.0e6_f64, 9810.0_f64, 50.0_f64, 120.0_f64, 20.0_f64);
+        assert_relative_eq!(sigma_mm, 1.0e6 * sigma_m, max_relative = 1e-12);
+        assert_relative_eq!(sigma_mm, 284_460.054_307_465_5, max_relative = 1e-12);
+    }
+
+    #[test]
+    fn sigma_factor_has_no_singularity_at_unit_layer_thickness() {
+        // Régression : avec `ln(r_o − r_i)`, une épaisseur de couche r_o − r_i = 1
+        // (m) annulait le logarithme et le plancher 1e-9 renvoyait Σ ≈ 1e9 fois
+        // trop grand. Bol r_o = 1.5 m, r_i = 0.5 m : ln 3 = 1.098612289 ⇒
+        //   Σ = 0.5 · 30² / (9.81 · 1.098612289) = 41.75409296 m² (mpmath).
+        let sigma = centf_sigma_factor(0.5_f64, 9.81_f64, 30.0_f64, 1.5_f64, 0.5_f64);
+        assert_relative_eq!(sigma, 41.754_092_964_533_825, max_relative = 1e-12);
+    }
+
+    #[test]
+    fn sigma_factor_thin_layer_limit() {
+        // Couche mince : ln(r_o/r_i) ≈ 2(r_o − r_i)/(r_o + r_i) ⇒
+        //   Σ → V·ω²·(r_o + r_i)/(2·g·(r_o − r_i)).
+        // r_o = 0.1 + 1e-9 m, r_i = 0.1 m : écart relatif entre les deux formes
+        // O(((r_o − r_i)/r_i)²) ≈ 1e-16, et ln_1p garde la précision.
+        let (v, g, omega, r_i) = (0.002_f64, 9.81_f64, 50.0_f64, 0.1_f64);
+        let r_o = r_i + 1.0e-9;
+        let sigma = centf_sigma_factor(v, g, omega, r_o, r_i);
+        let thin = v * omega * omega * (r_o + r_i) / (2.0 * g * (r_o - r_i));
+        assert_relative_eq!(sigma, thin, max_relative = 1e-9);
     }
 
     #[test]
