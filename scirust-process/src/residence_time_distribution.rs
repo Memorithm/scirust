@@ -71,7 +71,8 @@ pub fn rtd_exit_age_cstr(time: f64, mean_residence_time: f64) -> f64 {
 ///
 /// `time` `t` temps depuis l'injection `s`, `mean_residence_time` `τ` temps de
 /// séjour moyen `s`. `F(t)` croît de `0` (à `t = 0`) vers `1` (à `t → ∞`) et vérifie
-/// `F(t) = 1 − τ·E(t)` : c'est la primitive de [`rtd_exit_age_cstr`].
+/// `F(t) = 1 − τ·E(t)` : c'est la primitive de [`rtd_exit_age_cstr`]. Évaluée
+/// comme `−expm1(−t/τ)`, elle garde sa précision relative pour `t ≪ τ`.
 ///
 /// Panique si `time` est négatif ou non fini, ou si `mean_residence_time` n'est
 /// pas strictement positif (division).
@@ -84,7 +85,9 @@ pub fn rtd_cumulative_cstr(time: f64, mean_residence_time: f64) -> f64 {
         mean_residence_time > 0.0,
         "le temps de séjour moyen doit être strictement positif (s)"
     );
-    1.0 - (-time / mean_residence_time).exp()
+    // −expm1(−t/τ) : la soustraction 1 − exp(−t/τ) perd la précision relative
+    // quand t/τ → 0 (et rend 0 pour t/τ < ε/2).
+    -(-time / mean_residence_time).exp_m1()
 }
 
 /// Nombre de réacteurs parfaitement agités **en série équivalent**
@@ -151,6 +154,45 @@ mod tests {
             0.632_120_558_828_557_7,
             epsilon = 1e-3
         );
+    }
+
+    #[test]
+    fn cumulative_keeps_precision_for_small_time() {
+        // Pour t/τ ≪ 1, F(t) = 1 − exp(−t/τ) = −expm1(−t/τ) ≈ t/τ − (t/τ)²/2.
+        // Références mpmath : t/τ = 1e-10 → 9.9999999995e-11 ; t/τ = 1e-12 →
+        // 9.999999999995e-13 ; t/τ = 5e-10 → 4.99999999875e-10. La forme
+        // `1 − exp(−t/τ)` donnait 1.0000000827e-10 (écart relatif 8.3e-8),
+        // 9.99977878e-13 (2.2e-5) et 0 pour t/τ = 1e-17.
+        assert_relative_eq!(
+            rtd_cumulative_cstr(1.0e-10, 1.0),
+            9.999_999_999_5e-11,
+            epsilon = 0.0,
+            max_relative = 1e-13
+        );
+        assert_relative_eq!(
+            rtd_cumulative_cstr(1.0e-12, 1.0),
+            9.999_999_999_995e-13,
+            epsilon = 0.0,
+            max_relative = 1e-13
+        );
+        assert_relative_eq!(
+            rtd_cumulative_cstr(2.0e-9, 4.0),
+            4.999_999_998_75e-10,
+            epsilon = 0.0,
+            max_relative = 1e-13
+        );
+        // t/τ = 1e-17 < ε/2 : exp(−t/τ) s'arrondit à 1 et l'ancienne forme
+        // rendait F = 0 alors qu'une fraction 1e-17 du traceur est sortie.
+        assert_relative_eq!(
+            rtd_cumulative_cstr(1.0e-17, 1.0),
+            1.0e-17,
+            epsilon = 0.0,
+            max_relative = 1e-13
+        );
+        // F(0) = +0 exactement (pas de −0).
+        let f0 = rtd_cumulative_cstr(0.0, 3.0);
+        assert_eq!(f0, 0.0);
+        assert!(f0.is_sign_positive());
     }
 
     #[test]
