@@ -50,7 +50,9 @@ pub fn absorp_factor(liquid_flow: f64, gas_flow: f64, equilibrium_slope: f64) ->
 /// **Kremser**) `φ_A = (A^(N+1) − A) / (A^(N+1) − 1)`, valable pour `A ≠ 1`.
 ///
 /// `absorption_factor` (A) sans dimension ; `theoretical_stages` (N) nombre
-/// d'étages théoriques. Pour `A > 1`, `φ_A → 1` quand `N → ∞`.
+/// d'étages théoriques. Pour `A > 1`, `φ_A → 1` quand `N → ∞` ; pour `A < 1`,
+/// `φ_A → A`. Le résultat reste fini pour tout `N` (même évaluation que
+/// [`crate::krem_fraction_absorbed`], sans former `A^(N+1)`).
 ///
 /// Panique si `absorption_factor <= 0`, si `absorption_factor ≈ 1` (formule
 /// singulière) ou si `theoretical_stages == 0`.
@@ -61,8 +63,7 @@ pub fn absorp_kremser_fraction_absorbed(absorption_factor: f64, theoretical_stag
         "A ≠ 1 requis (formule de Kremser singulière en A = 1)"
     );
     assert!(theoretical_stages >= 1, "N ≥ 1 étage théorique requis");
-    let power = absorption_factor.powi(theoretical_stages as i32 + 1);
-    (power - absorption_factor) / (power - 1.0)
+    crate::kremser_stages::kremser_fraction_stable(absorption_factor, f64::from(theoretical_stages))
 }
 
 /// Débit molaire de liquide **minimal** `Lₘ = G·(y_in − y_out) / (y_in/m − x_in)`
@@ -182,5 +183,24 @@ mod tests {
     fn kremser_panics_at_unit_factor() {
         // A = 1 rend la formule de Kremser singulière (0/0) ⇒ panique.
         let _ = absorp_kremser_fraction_absorbed(1.0_f64, 3);
+    }
+
+    #[test]
+    fn kremser_stays_finite_for_large_stage_counts() {
+        // A^(N+1) dépasse f64::MAX : la fraction exacte vaut 1 (A > 1) ou A (A < 1).
+        for &(a, n) in &[(2.0_f64, 1100_u32), (1.0e6, 60), (2.0, u32::MAX)]
+        {
+            let phi = absorp_kremser_fraction_absorbed(a, n);
+            assert!(
+                phi.is_finite(),
+                "φ_A fini attendu pour A = {a}, N = {n}, obtenu {phi}"
+            );
+            assert_relative_eq!(phi, 1.0, max_relative = 1e-15);
+        }
+        assert_relative_eq!(
+            absorp_kremser_fraction_absorbed(0.5_f64, u32::MAX),
+            0.5,
+            max_relative = 1e-15
+        );
     }
 }
