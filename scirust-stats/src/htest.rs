@@ -6,6 +6,7 @@
 use crate::describe::{mean, median, variance};
 use crate::discrete::DiscreteDistribution;
 use crate::dist::{ChiSquared, Distribution, FisherF, StudentT};
+use crate::nonparam::{binary_exponent, mul_pow2};
 
 /// Outcome of a hypothesis test.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -53,9 +54,51 @@ fn t_p_value(t: f64, df: f64, tail: Tail) -> f64 {
     }
 }
 
+/// Exponent `k` such that `2^k` brings the largest absolute deviation of the
+/// `(sample, sample mean)` pairs into `[1, 2)`; `0` when that deviation is
+/// zero or non-finite (constant, `NaN` or infinite samples), which leaves
+/// those cases to ordinary floating-point semantics.
+fn deviation_exponent(samples: &[(&[f64], f64)]) -> i32 {
+    let largest = samples
+        .iter()
+        .flat_map(|&(data, m)| data.iter().map(move |&x| (x - m).abs()))
+        .fold(0.0_f64, f64::max);
+    if largest > 0.0 && largest.is_finite()
+    {
+        -binary_exponent(largest)
+    }
+    else
+    {
+        0
+    }
+}
+
+/// `variance(data) · 4^k`, from deviations scaled by `2^k` before squaring.
+///
+/// Scaling by a power of two is exact, so where the unscaled squares neither
+/// overflow nor underflow this is exactly `4^k` times [`variance`]; elsewhere
+/// it keeps the digits that the unscaled squares lose.
+fn scaled_variance(data: &[f64], m: f64, k: i32) -> f64 {
+    data.iter()
+        .map(|&x| {
+            let d = mul_pow2(x - m, k);
+            d * d
+        })
+        .sum::<f64>()
+        / (data.len() as f64 - 1.0)
+}
+
 /// One-sample t-test of `H₀: mean(data) = mu0`.
 ///
 /// Returns `None` if fewer than two samples (variance undefined).
+///
+/// The statistic is invariant under a common positive rescaling of `data`
+/// and `mu0`, and the computation keeps that property: the deviations are
+/// scaled by a power of two before they are squared, so the sample variance
+/// does not overflow for a spread above about `1e154` (which gave `t = 0`,
+/// `p = 1`) or underflow below about `1e-154` (which gave `t = ±∞`, `p = 0`,
+/// or `NaN`). The mean itself is still subject to the overflow limits of
+/// [`mean`].
 pub fn t_test_one_sample(data: &[f64], mu0: f64, tail: Tail) -> Option<TestResult> {
     let n = data.len();
     if n < 2
@@ -63,9 +106,11 @@ pub fn t_test_one_sample(data: &[f64], mu0: f64, tail: Tail) -> Option<TestResul
         return None;
     }
     let m = mean(data);
-    let s = variance(data).sqrt();
+    // `s` and the numerator both carry the factor `2^k`, which cancels in `t`.
+    let k = deviation_exponent(&[(data, m)]);
+    let s = scaled_variance(data, m, k).sqrt();
     let df = n as f64 - 1.0;
-    let t = (m - mu0) / (s / (n as f64).sqrt());
+    let t = mul_pow2(m - mu0, k) / (s / (n as f64).sqrt());
     Some(TestResult {
         statistic: t,
         df,
@@ -85,6 +130,13 @@ pub fn t_test_one_sample(data: &[f64], mu0: f64, tail: Tail) -> Option<TestResul
 /// `t = NaN` (equal constants) gives `NaN`. A `NaN` sample gives a `NaN`
 /// p-value in both variants.
 ///
+/// The statistic and the Welch dof are invariant under a common positive
+/// rescaling of `a` and `b`. Both samples' deviations are scaled by one power
+/// of two before they are squared, so the variances do not overflow for a
+/// spread above about `1e154` (which gave `t = 0`, `p = 1`, and a `NaN` Welch
+/// dof) or underflow below about `1e-154` (which gave `t = ±∞`, `p = 0`, or
+/// `NaN`). The means are still subject to the overflow limits of [`mean`].
+///
 /// ```
 /// use scirust_stats::prelude::*;
 /// let r = t_test_two_sample(&[1.0, 1.0, 1.0], &[2.0, 2.0], false, Tail::TwoSided).unwrap();
@@ -99,14 +151,19 @@ pub fn t_test_two_sample(a: &[f64], b: &[f64], equal_var: bool, tail: Tail) -> O
         return None;
     }
     let (m1, m2) = (mean(a), mean(b));
-    let (v1, v2) = (variance(a), variance(b));
+    // Both variances carry the factor `4^k`, so `se` carries `2^k`, which
+    // the scaled mean difference cancels in `t`; the Welch dof below only
+    // uses ratios of the `wᵢ`.
+    let k = deviation_exponent(&[(a, m1), (b, m2)]);
+    let (v1, v2) = (scaled_variance(a, m1, k), scaled_variance(b, m2, k));
+    let diff = mul_pow2(m1 - m2, k);
     let (n1f, n2f) = (n1 as f64, n2 as f64);
 
     let (t, df) = if equal_var
     {
         let sp2 = ((n1f - 1.0) * v1 + (n2f - 1.0) * v2) / (n1f + n2f - 2.0);
         let se = (sp2 * (1.0 / n1f + 1.0 / n2f)).sqrt();
-        ((m1 - m2) / se, n1f + n2f - 2.0)
+        (diff / se, n1f + n2f - 2.0)
     }
     else
     {
@@ -128,7 +185,7 @@ pub fn t_test_two_sample(a: &[f64], b: &[f64], equal_var: bool, tail: Tail) -> O
         {
             f64::NAN
         };
-        ((m1 - m2) / se, df)
+        (diff / se, df)
     };
     Some(TestResult {
         statistic: t,
@@ -660,6 +717,54 @@ mod tests {
         let r = t_test_two_sample(&lo, &b, false, Tail::TwoSided).unwrap();
         assert!(close(r.df, 3.0, 1e-12), "df = {}", r.df);
         assert!(r.p_value > 0.0 && r.p_value < 1.0);
+    }
+
+    #[test]
+    fn t_tests_do_not_depend_on_the_magnitude_of_the_data() {
+        // Regression: the sample variances were formed from raw squared
+        // deviations, which overflow for a spread above about 1e154 (t became
+        // 0, p = 1, and the Welch dof NaN) and underflow below about 1e-154
+        // (t = ±∞ with p = 0, or 0/0 = NaN; percent-level errors in the
+        // subnormal range just above). t is invariant under a common positive
+        // rescaling. Reference values at unit scale: SciPy 1.18
+        // `ttest_ind` / `ttest_1samp`, cross-checked with mpmath at 60 digits.
+        let a = [1.0, 1.1, 0.9];
+        let b = [2.0, 2.1, 1.9];
+        let c = [1.05, 0.95, 1.0];
+        let (t_ab, p_ab) = (-12.247_448_713_915_883, 2.552_167_494_419_273e-4);
+        let (t_one, p_one) = (17.320_508_075_688_767, 3.316_758_722_356_862e-3);
+        let rel = |x: f64, y: f64| (x - y).abs() <= 1e-12 * y.abs();
+        // Powers of two keep the rescaled samples exact.
+        for s in [
+            2f64.powi(-700),
+            2f64.powi(-530),
+            1.0,
+            2f64.powi(530),
+            2f64.powi(700),
+        ]
+        {
+            let sa: Vec<f64> = a.iter().map(|v| v * s).collect();
+            let sb: Vec<f64> = b.iter().map(|v| v * s).collect();
+            let sc: Vec<f64> = c.iter().map(|v| v * s).collect();
+            for equal_var in [true, false]
+            {
+                let r = t_test_two_sample(&sa, &sb, equal_var, Tail::TwoSided).unwrap();
+                assert!(rel(r.statistic, t_ab), "s = {s:e}: t = {}", r.statistic);
+                assert!(rel(r.df, 4.0), "s = {s:e}: df = {}", r.df);
+                assert!(rel(r.p_value, p_ab), "s = {s:e}: p = {}", r.p_value);
+                // Overlapping samples with equal means: t ≈ 0, p ≈ 1, not a
+                // spurious p = 0 or NaN.
+                let r = t_test_two_sample(&sa, &sc, equal_var, Tail::TwoSided).unwrap();
+                assert!(r.statistic.abs() < 1e-12, "s = {s:e}: t = {}", r.statistic);
+                assert!(r.p_value > 1.0 - 1e-12, "s = {s:e}: p = {}", r.p_value);
+            }
+            let r = t_test_one_sample(&sa, 0.0, Tail::TwoSided).unwrap();
+            assert!(rel(r.statistic, t_one), "s = {s:e}: t = {}", r.statistic);
+            assert!(rel(r.p_value, p_one), "s = {s:e}: p = {}", r.p_value);
+            let r = t_test_one_sample(&sa, s, Tail::TwoSided).unwrap();
+            assert!(r.statistic.abs() < 1e-12, "s = {s:e}: t = {}", r.statistic);
+            assert!(r.p_value > 1.0 - 1e-12, "s = {s:e}: p = {}", r.p_value);
+        }
     }
 
     #[test]
