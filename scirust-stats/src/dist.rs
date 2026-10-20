@@ -26,6 +26,8 @@ pub trait Distribution {
     /// Cumulative distribution `P(X ≤ x)`.
     fn cdf(&self, x: f64) -> f64;
     /// Inverse CDF (quantile / percent-point) for `p ∈ (0, 1)`.
+    ///
+    /// A `NaN` `p` gives `NaN` for every distribution in this module.
     fn quantile(&self, p: f64) -> f64;
     /// Distribution mean (may be `NaN`/`∞` where undefined).
     fn mean(&self) -> f64;
@@ -170,6 +172,12 @@ fn invert_cdf(cdf: impl Fn(f64) -> f64, p: f64, mut lo: f64, mut hi: f64) -> f64
 /// `FisherF::new(1.0, 1.0).quantile(1.0 - 1e-8)` came back ≈11 % low and
 /// `ChiSquared::new(1.0).quantile(1.0 - 1e-15)` ≈0.17 % low. The negated
 /// survival function `−sf` is increasing, so [`invert_cdf`] applies as is.
+///
+/// A `NaN` `p` gives `NaN`. It passes the `p ≤ 0` / `p ≥ 1` guards of the
+/// callers, and every comparison against it in the bisection is false, so it
+/// used to come back as a finite value set by the initial bracket alone
+/// (`StudentT::new(2.0).quantile(NaN)` ≈ −100, `Beta::new(2.0, 3.0)
+/// .quantile(NaN)` = 1).
 fn invert_two_tailed(
     cdf: impl Fn(f64) -> f64,
     sf: impl Fn(f64) -> f64,
@@ -177,6 +185,10 @@ fn invert_two_tailed(
     lo: f64,
     hi: f64,
 ) -> f64 {
+    if p.is_nan()
+    {
+        return f64::NAN;
+    }
     if p > 0.5
     {
         invert_cdf(|x| -sf(x), -(1.0 - p), lo, hi)
@@ -1285,6 +1297,30 @@ mod tests {
         // Upper side: F(0.001, 0.001) keeps sf(f64::MAX) ≈ 0.35 (mpmath), so
         // its 0.7 quantile is beyond f64 too (it used to return ≈1.76e16).
         assert_eq!(FisherF::new(0.001, 0.001).quantile(0.7), f64::INFINITY);
+    }
+
+    #[test]
+    fn quantile_of_nan_probability_is_nan() {
+        // Regression: the bisection-based quantiles returned a finite value
+        // for `p = NaN` (Gamma ≈ 18.97, χ² ≈ 26, Student-t ≈ −100, F ≈ 100,
+        // Beta = 1), while the closed-form ones already returned NaN.
+        let nan = f64::NAN;
+        let dists: [(&str, &dyn Distribution); 8] = [
+            ("normal", &Normal::standard()),
+            ("exponential", &Exponential::new(1.0)),
+            ("uniform", &Uniform::new(0.0, 1.0)),
+            ("gamma", &Gamma::new(2.0, 1.0)),
+            ("chi2", &ChiSquared::new(2.0)),
+            ("student_t", &StudentT::new(2.0)),
+            ("fisher_f", &FisherF::new(2.0, 3.0)),
+            ("beta", &Beta::new(2.0, 3.0)),
+        ];
+        for (name, d) in dists
+        {
+            assert!(d.quantile(nan).is_nan(), "{name}: {}", d.quantile(nan));
+            // Ordinary probabilities are unaffected (median round trip).
+            assert!(close(d.cdf(d.quantile(0.5)), 0.5, 1e-9), "{name}");
+        }
     }
 
     #[test]
