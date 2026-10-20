@@ -90,6 +90,10 @@ pub fn extract_single_stage_raffinate_fraction(extraction_factor: f64) -> f64 {
 /// `extraction_factor_per_stage` (Eₛ) sans dimension ; `stages` (N) nombre
 /// d'étages théoriques.
 ///
+/// Évaluée sous la forme `exp(−N · ln(1 + Eₛ))`, avec `N` converti sans perte
+/// en `f64` : le résultat reste dans `[0, 1]` pour tout `N` de type `u32`, y
+/// compris `N > i32::MAX`.
+///
 /// Panique si `extraction_factor_per_stage < 0` ou si `stages == 0`.
 pub fn extract_crosscurrent_raffinate_fraction(
     extraction_factor_per_stage: f64,
@@ -97,7 +101,7 @@ pub fn extract_crosscurrent_raffinate_fraction(
 ) -> f64 {
     assert!(extraction_factor_per_stage >= 0.0, "Eₛ ≥ 0 requis");
     assert!(stages >= 1, "N ≥ 1 étage requis");
-    (1.0 / (1.0 + extraction_factor_per_stage)).powi(stages as i32)
+    (-f64::from(stages) * extraction_factor_per_stage.ln_1p()).exp()
 }
 
 /// Fraction de soluté restant dans le raffinat après `N` étages à
@@ -106,6 +110,11 @@ pub fn extract_crosscurrent_raffinate_fraction(
 ///
 /// `extraction_factor` (E) sans dimension ; `stages` (N) nombre d'étages
 /// théoriques. Pour `E > 1`, `φ_cc → 0` quand `N → ∞`.
+///
+/// Le dénominateur est évalué sous la forme `E^(N+1) − 1 =
+/// expm1((N+1) · ln E)`, avec `N + 1` calculé en `f64` : pas de dépassement
+/// d'entier pour `N` proche de `u32::MAX`, et le résultat tend vers `0`
+/// (`E > 1`) ou vers `1 − E` (`E < 1`) quand `N` est grand.
 ///
 /// Panique si `extraction_factor <= 0`, si `extraction_factor ≈ 1` (formule
 /// singulière) ou si `stages == 0`.
@@ -116,7 +125,9 @@ pub fn extract_countercurrent_raffinate_fraction(extraction_factor: f64, stages:
         "E ≠ 1 requis (formule à contre-courant singulière en E = 1)"
     );
     assert!(stages >= 1, "N ≥ 1 étage requis");
-    (extraction_factor - 1.0) / (extraction_factor.powi(stages as i32 + 1) - 1.0)
+    let excess = extraction_factor - 1.0;
+    let exponent = f64::from(stages) + 1.0;
+    excess / (exponent * excess.ln_1p()).exp_m1()
 }
 
 #[cfg(test)]
@@ -202,6 +213,49 @@ mod tests {
         let phi = extract_countercurrent_raffinate_fraction(2.0_f64, 60);
         assert!(phi > 0.0, "la fraction restante demeure > 0");
         assert_relative_eq!(phi, 0.0, epsilon = 1e-9);
+    }
+
+    #[test]
+    fn crosscurrent_large_stage_counts_stay_in_unit_interval() {
+        // N > i32::MAX : φ_c = (1 + Eₛ)^(−N) = exp(−N·ln(1 + Eₛ)).
+        // Eₛ = 1e-10, N = 3·10⁹ ⇒ φ_c = exp(−0.3) ≈ 0.7408.
+        let phi = extract_crosscurrent_raffinate_fraction(1.0e-10_f64, 3_000_000_000);
+        let expected = (-3_000_000_000.0_f64 * 1.0e-10_f64.ln_1p()).exp();
+        assert_relative_eq!(phi, expected, max_relative = 1e-9);
+        // Eₛ = 2, N = u32::MAX ⇒ φ_c = 3^(−N), sous-dépassement vers 0.
+        let phi = extract_crosscurrent_raffinate_fraction(2.0_f64, u32::MAX);
+        assert!((0.0..=1.0).contains(&phi), "φ_c = {phi} hors de [0, 1]");
+        assert_relative_eq!(phi, 0.0, epsilon = 1e-300);
+        // Eₛ = 0 (pas de solvant) ⇒ tout le soluté reste, quel que soit N.
+        assert_relative_eq!(
+            extract_crosscurrent_raffinate_fraction(0.0_f64, u32::MAX),
+            1.0,
+            max_relative = 1e-12
+        );
+    }
+
+    #[test]
+    fn countercurrent_large_stage_counts_stay_in_unit_interval() {
+        // E = 1 + 2·10⁻⁹, N = 3·10⁹ ⇒ (N+1)·ln E ≈ 6 et
+        // φ_cc = (E − 1)/(e^6 − 1) ≈ 4.97·10⁻¹².
+        let e = 1.0_f64 + 2.0e-9;
+        let phi = extract_countercurrent_raffinate_fraction(e, 3_000_000_000);
+        let expected = (e - 1.0) / (3_000_000_001.0_f64 * (e - 1.0).ln_1p()).exp_m1();
+        assert!(phi > 0.0, "φ_cc = {phi} doit rester > 0");
+        assert_relative_eq!(phi, expected, max_relative = 1e-9);
+        // E < 1 : φ_cc → 1 − E quand N → ∞.
+        assert_relative_eq!(
+            extract_countercurrent_raffinate_fraction(0.5_f64, u32::MAX),
+            0.5,
+            max_relative = 1e-12
+        );
+        // E > 1 : φ_cc → 0 quand N → ∞ (y compris N = i32::MAX et u32::MAX).
+        for stages in [i32::MAX as u32, u32::MAX]
+        {
+            let phi = extract_countercurrent_raffinate_fraction(2.0_f64, stages);
+            assert!((0.0..=1.0).contains(&phi), "φ_cc = {phi} hors de [0, 1]");
+            assert_relative_eq!(phi, 0.0, epsilon = 1e-300);
+        }
     }
 
     #[test]
