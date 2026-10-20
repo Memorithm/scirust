@@ -73,7 +73,10 @@ pub fn krem_stripping_factor(absorption_factor: f64) -> f64 {
 /// l'opérante). La fraction est rapportée au maximum absorbable `y_in − y*`.
 ///
 /// `absorption_factor` (A) sans dimension ; `stages` (N) nombre d'étages
-/// théoriques réel (≥ 0). Pour `A > 1`, `φ_A → 1` quand `N → ∞`.
+/// théoriques réel (≥ 0). Pour `A > 1`, `φ_A → 1` quand `N → ∞` ; pour
+/// `A < 1`, `φ_A → A`. Le calcul n'élève jamais `A` à la puissance `N + 1`
+/// (forme en `A^(−N)` pour `A > 1`), ce qui le garde fini lorsque `A^(N+1)`
+/// dépasserait `f64::MAX`.
 ///
 /// Panique si `absorption_factor <= 0` ou `stages < 0`.
 pub fn krem_fraction_absorbed(absorption_factor: f64, stages: f64) -> f64 {
@@ -85,8 +88,28 @@ pub fn krem_fraction_absorbed(absorption_factor: f64, stages: f64) -> f64 {
     }
     else
     {
-        let power = absorption_factor.powf(stages + 1.0);
-        (power - absorption_factor) / (power - 1.0)
+        kremser_fraction_stable(absorption_factor, stages)
+    }
+}
+
+/// Évaluation de `(A^(N+1) − A) / (A^(N+1) − 1)` sans former `A^(N+1)`, qui
+/// déborde en `+inf` dès que `A^(N+1) > f64::MAX` (p. ex. `A = 2`, `N ≥ 1023` ;
+/// `A = 10⁶`, `N ≥ 51`), ce qui rendait `inf/inf = NaN`.
+///
+/// Pour `A > 1`, numérateur et dénominateur sont divisés par `A^(N+1)` :
+/// `φ_A = (1 − A^(−N)) / (1 − A^(−(N+1)))` ; pour `A < 1`,
+/// `φ_A = A·(1 − A^N) / (1 − A^(N+1))`. Les deux formes s'écrivent avec
+/// `expm1` d'exposants négatifs, donc sans débordement et sans annulation près
+/// de `A = 1`. Hypothèses : `A > 0`, `A ≠ 1`, `N ≥ 0` (vérifiées par l'appelant).
+pub(crate) fn kremser_fraction_stable(absorption_factor: f64, stages: f64) -> f64 {
+    let ln_a = absorption_factor.ln();
+    if ln_a > 0.0
+    {
+        (-stages * ln_a).exp_m1() / (-(stages + 1.0) * ln_a).exp_m1()
+    }
+    else
+    {
+        absorption_factor * (stages * ln_a).exp_m1() / ((stages + 1.0) * ln_a).exp_m1()
     }
 }
 
@@ -259,5 +282,60 @@ mod tests {
     fn stages_required_panics_at_unit_factor() {
         // A = 1 rend ln A = 0 : la forme logarithmique est singulière ⇒ panique.
         let _ = krem_stages_required(1.0_f64, 0.1_f64, 0.01_f64, 0.0_f64);
+    }
+
+    #[test]
+    fn fraction_absorbed_stays_finite_when_a_pow_n_overflows() {
+        // A^(N+1) dépasse f64::MAX (≈ 1.8e308) : 2^1101, 1.5^2001, 1e6^61. La
+        // fraction exacte (mpmath, 50 chiffres) vaut 1 à 1e-300 près pour A > 1.
+        for &(a, n) in &[
+            (2.0_f64, 1100.0_f64),
+            (1.5, 2000.0),
+            (1.0e6, 60.0),
+            (1.0e6, 51.0),
+        ]
+        {
+            let phi = krem_fraction_absorbed(a, n);
+            assert!(
+                phi.is_finite(),
+                "φ_A fini attendu pour A = {a}, N = {n}, obtenu {phi}"
+            );
+            assert_relative_eq!(phi, 1.0, max_relative = 1e-15);
+        }
+        // A < 1 : limite φ_A → A, déjà finie, inchangée.
+        assert_relative_eq!(
+            krem_fraction_absorbed(0.5_f64, 1100.0_f64),
+            0.5,
+            max_relative = 1e-15
+        );
+        // N infini : limites analytiques 1 (A > 1) et A (A < 1).
+        assert_relative_eq!(
+            krem_fraction_absorbed(2.0_f64, f64::INFINITY),
+            1.0,
+            max_relative = 1e-15
+        );
+        assert_relative_eq!(
+            krem_fraction_absorbed(0.5_f64, f64::INFINITY),
+            0.5,
+            max_relative = 1e-15
+        );
+    }
+
+    #[test]
+    fn fraction_absorbed_matches_mpmath_reference_values() {
+        // Références mpmath (50 chiffres) de (A^(N+1) − A)/(A^(N+1) − 1), A et N
+        // pris comme les doubles exacts ci-dessous.
+        let cases = [
+            (1.4_f64, 5.0_f64, 0.938_739_904_336_234_6_f64),
+            (0.7, 6.0, 0.673_076_438_978_573),
+            (1.2, 2.5, 0.776_018_065_886_998_4),
+            (0.8, 10.5, 0.783_355_011_573_978),
+            (1.000_001, 10_000.0, 0.999_900_509_115_590_2),
+            (0.999_999, 10_000.0, 0.999_899_509_215_579_4),
+        ];
+        for &(a, n, expected) in &cases
+        {
+            assert_relative_eq!(krem_fraction_absorbed(a, n), expected, max_relative = 1e-9);
+        }
     }
 }
