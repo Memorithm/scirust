@@ -45,7 +45,7 @@
 
 use core::fmt;
 
-use crate::describe::{mean, median, quantile};
+use crate::describe::{mean, median, pow2_floor, quantile};
 use crate::rng::SplitMix64;
 
 /// Normal-consistency scaling factor for the MAD: `1 / Φ⁻¹(3/4)`, the multiplier
@@ -257,6 +257,18 @@ pub fn interquartile_range(values: &[f64]) -> Result<f64, RobustStatsError> {
 /// returned. With non-dyadic weights the exact-equality branch is, as always,
 /// subject to floating-point representation.
 ///
+/// Only the weight ratios matter. The weights are rescaled by a power of two
+/// before summing, so finite weights whose total exceeds `f64::MAX` and
+/// subnormal weights give the same result as proportional weights in the
+/// ordinary range, and the exact-half midpoint of two large values does not
+/// overflow.
+///
+/// ```
+/// use scirust_stats::robust::weighted_median;
+/// assert_eq!(weighted_median(&[1.0, 3.0], &[f64::MAX, f64::MAX]), Ok(2.0));
+/// assert_eq!(weighted_median(&[f64::MAX, f64::MAX], &[1.0, 1.0]), Ok(f64::MAX));
+/// ```
+///
 /// # Errors
 ///
 /// - [`RobustStatsError::EmptyInput`] for an empty slice.
@@ -301,19 +313,29 @@ pub fn weighted_median(values: &[f64], weights: &[f64]) -> Result<f64, RobustSta
     let mut order: Vec<usize> = (0..values.len()).collect();
     order.sort_by(|&a, &b| values[a].total_cmp(&values[b]).then(a.cmp(&b)));
 
-    // Total accumulated in the same order the running sum uses below, so the two
-    // are bit-identical and the exact-half comparison is meaningful.
-    let total: f64 = order.iter().map(|&i| weights[i]).sum();
-    if total <= 0.0
+    let max_weight = weights.iter().fold(0.0_f64, |acc, &w| acc.max(w));
+    if max_weight == 0.0
     {
         return Err(RobustStatsError::ZeroTotalWeight);
     }
+    // Rescale the weights by a power of two so the largest lies in [1, 2).
+    // The weighted median only depends on weight ratios, and a power-of-two
+    // rescaling is exact, so in the ordinary range the running sums below are
+    // bit-identical to the unscaled ones. It keeps the total finite when the
+    // finite weights sum past `f64::MAX`, and keeps `total / 2` exact when the
+    // weights are subnormal.
+    let scale = pow2_floor(max_weight);
+    let scaled = |i: usize| weights[i] / scale;
+
+    // Total accumulated in the same order the running sum uses below, so the two
+    // are bit-identical and the exact-half comparison is meaningful.
+    let total: f64 = order.iter().map(|&i| scaled(i)).sum();
     let half = total / 2.0;
 
     let mut cumulative = 0.0_f64;
     for position in 0..order.len()
     {
-        cumulative += weights[order[position]];
+        cumulative += scaled(order[position]);
         if cumulative > half
         {
             return Ok(values[order[position]]);
@@ -322,8 +344,9 @@ pub fn weighted_median(values: &[f64], weights: &[f64]) -> Result<f64, RobustSta
         {
             // `total > half`, so positive weight remains and `position + 1` is a
             // valid sorted index: average this element with the next one.
+            // `midpoint` does not overflow for two large same-sign values.
             let next = order[position + 1];
-            return Ok((values[order[position]] + values[next]) / 2.0);
+            return Ok(values[order[position]].midpoint(values[next]));
         }
     }
 
@@ -479,20 +502,23 @@ fn seeded_permutation(n: usize, seed: u64) -> Vec<usize> {
 /// The mean of each contiguous block of `order`, gathering values through the
 /// `order` index map. Block sizes are as even as possible: the first
 /// `n mod block_count` blocks take one extra element. Every block is non-empty
-/// because `block_count ≤ n` is enforced by the caller. Each block mean uses the
-/// same `sum / count` convention as [`crate::describe::mean`].
+/// because `block_count ≤ n` is enforced by the caller. Each block mean is
+/// [`crate::describe::mean`], so a block of finite values whose plain sum
+/// overflows still has a finite mean.
 fn block_means(values: &[f64], order: &[usize], block_count: usize) -> Vec<f64> {
     let n = order.len();
     let base = n / block_count;
     let remainder = n % block_count;
     let mut means = Vec::with_capacity(block_count);
+    let mut block_values = Vec::with_capacity(base + 1);
     let mut start = 0;
     for block in 0..block_count
     {
         let size = base + usize::from(block < remainder);
         let end = start + size;
-        let sum: f64 = order[start..end].iter().map(|&i| values[i]).sum();
-        means.push(sum / size as f64);
+        block_values.clear();
+        block_values.extend(order[start..end].iter().map(|&i| values[i]));
+        means.push(mean(&block_values));
         start = end;
     }
     means
@@ -575,6 +601,58 @@ mod tests {
         let values = [1.0, 2.0, 3.0, 1.0e12];
         let weights = [1.0, 1.0, 1.0, 0.0];
         assert_close(weighted_median(&values, &weights).unwrap(), 2.0, 1e-12);
+    }
+
+    #[test]
+    fn weighted_median_survives_weight_sum_overflow() {
+        // Each weight is finite but their sum overflows; the weights are
+        // equal, so the exact-half rule averages the two values.
+        let values = [1.0, 3.0];
+        let weights = [f64::MAX, f64::MAX];
+        assert_eq!(weighted_median(&values, &weights).unwrap(), 2.0);
+        // Uneven huge weights: 3.0 carries more than half of the total.
+        let weights = [f64::MAX / 4.0, f64::MAX, f64::MAX / 2.0];
+        let values = [1.0, 3.0, 5.0];
+        assert_eq!(weighted_median(&values, &weights).unwrap(), 3.0);
+    }
+
+    #[test]
+    fn weighted_median_subnormal_weights_use_exact_half() {
+        // Three equal subnormal weights: the middle value has cumulative
+        // weight 2/3 > 1/2, so it is the unique weighted median.
+        let tiny = f64::from_bits(1);
+        let values = [1.0, 2.0, 3.0];
+        let weights = [tiny; 3];
+        assert_eq!(weighted_median(&values, &weights).unwrap(), 2.0);
+        // Scale invariance of the weights: same answer as unit weights.
+        assert_eq!(weighted_median(&values, &[1.0; 3]).unwrap(), 2.0);
+    }
+
+    #[test]
+    fn weighted_median_midpoint_does_not_overflow() {
+        let values = [f64::MAX, f64::MAX];
+        assert_eq!(weighted_median(&values, &[1.0, 1.0]).unwrap(), f64::MAX);
+        let values = [-f64::MAX, -f64::MAX];
+        assert_eq!(weighted_median(&values, &[1.0, 1.0]).unwrap(), -f64::MAX);
+    }
+
+    #[test]
+    fn median_of_means_block_mean_does_not_overflow() {
+        let values = [f64::MAX, f64::MAX, f64::MAX, f64::MAX];
+        let config = MedianOfMeansConfig {
+            block_count: 2,
+            seed: 0,
+            partition: MedianOfMeansPartition::Contiguous,
+        };
+        assert_eq!(median_of_means(&values, config).unwrap(), f64::MAX);
+        let values = [f64::MAX, f64::MAX / 2.0, 1.0];
+        let config = MedianOfMeansConfig {
+            block_count: 1,
+            ..config
+        };
+        let got = median_of_means(&values, config).unwrap();
+        assert!(got.is_finite());
+        assert_close(got / (f64::MAX / 2.0), 1.0, 1e-15);
     }
 
     #[test]
