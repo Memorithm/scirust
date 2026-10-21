@@ -66,10 +66,13 @@ impl FittedDistribution {
         {
             FittedDistribution::Normal { mean, sd } => mean + sd * inv_normal_cdf(p),
             FittedDistribution::Lognormal { mu, sigma } => (mu + sigma * inv_normal_cdf(p)).exp(),
-            FittedDistribution::Rayleigh { sigma } => sigma * (-2.0 * (1.0 - p).ln()).sqrt(),
+            // `−ln(1 − p)` is evaluated as `−ln1p(−p)`: forming `1 − p` first
+            // rounds away the relative accuracy of small `p` (and returns 0
+            // for `p` below ~1.1e-16).
+            FittedDistribution::Rayleigh { sigma } => sigma * (-2.0 * (-p).ln_1p()).sqrt(),
             FittedDistribution::Weibull { shape, scale } =>
             {
-                scale * (-(1.0 - p).ln()).powf(1.0 / shape)
+                scale * (-(-p).ln_1p()).powf(1.0 / shape)
             },
         }
     }
@@ -98,7 +101,8 @@ impl FittedDistribution {
                 }
                 else
                 {
-                    1.0 - (-x * x / (2.0 * sigma * sigma)).exp()
+                    // `1 − e^{−t}` as `−expm1(−t)`: no cancellation for small `t`.
+                    -(-x * x / (2.0 * sigma * sigma)).exp_m1()
                 }
             },
             FittedDistribution::Weibull { shape, scale } =>
@@ -109,7 +113,7 @@ impl FittedDistribution {
                 }
                 else
                 {
-                    1.0 - (-(x / scale).powf(shape)).exp()
+                    -(-(x / scale).powf(shape)).exp_m1()
                 }
             },
         }
@@ -346,6 +350,33 @@ mod tests {
             {
                 assert_relative_eq!(d.cdf(d.quantile(p)), p, epsilon = 1e-9);
             }
+        }
+    }
+
+    #[test]
+    fn rayleigh_and_weibull_keep_relative_accuracy_in_the_lower_tail() {
+        // Reference values from the closed forms written without cancellation:
+        // Weibull F(x) = −expm1(−(x/λ)^k), Q(p) = λ·(−ln1p(−p))^{1/k};
+        // Rayleigh is Weibull with k = 2, λ = σ√2. For t = (x/λ)^k ≪ 1,
+        // F(x) = t − t²/2 + …, so F ≈ t to well within 1e-12 relative here.
+        let w = FittedDistribution::Weibull {
+            shape: 2.0,
+            scale: 1.0,
+        };
+        for &t in &[1e-10_f64, 1e-14, 1e-18, 1e-30]
+        {
+            let x = t.sqrt();
+            assert_relative_eq!(w.cdf(x), t * (1.0 - 0.5 * t), max_relative = 1e-12);
+            assert_relative_eq!(w.quantile(t), x * (1.0 + 0.25 * t), max_relative = 1e-12);
+            assert_relative_eq!(w.cdf(w.quantile(t)), t, max_relative = 1e-12);
+        }
+        let r = FittedDistribution::Rayleigh { sigma: 3.0 };
+        for &p in &[1e-9_f64, 1e-13, 1e-17, 1e-25]
+        {
+            // Q(p) = σ·√(2p)·(1 + p/4 + …) for small p.
+            let want = 3.0 * (2.0 * p).sqrt() * (1.0 + 0.25 * p);
+            assert_relative_eq!(r.quantile(p), want, max_relative = 1e-12);
+            assert_relative_eq!(r.cdf(r.quantile(p)), p, max_relative = 1e-12);
         }
     }
 
