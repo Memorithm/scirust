@@ -17,7 +17,7 @@
 //!   `Cp`/`Cpk` on skewed data (reduces to the classical indices for a normal
 //!   process).
 
-use crate::special::{inv_normal_cdf, normal_cdf};
+use crate::special::{inv_normal_cdf, normal_cdf, normal_sf};
 use serde::{Deserialize, Serialize};
 
 /// Cornish–Fisher standardised deviate `w(z)` for skewness `s` and excess
@@ -132,7 +132,7 @@ pub fn nonnormal_ppm(mean: f64, sd: f64, skew: f64, ex_kurtosis: f64, lsl: f64, 
     let z_lo = cf_inverse_z((lsl - mean) / sd, skew, ex_kurtosis);
     let z_hi = cf_inverse_z((usl - mean) / sd, skew, ex_kurtosis);
     let below = normal_cdf(z_lo);
-    let above = 1.0 - normal_cdf(z_hi);
+    let above = normal_sf(z_hi);
     ((below + above).clamp(0.0, 1.0)) * 1e6
 }
 
@@ -258,5 +258,20 @@ mod tests {
             let z = cf_inverse_z(t, 0.6, 1.5);
             assert_relative_eq!(cf_w(z, 0.6, 1.5), t, epsilon = 1e-10);
         }
+    }
+
+    #[test]
+    fn upper_tail_keeps_relative_precision_far_from_the_mean() {
+        // Regression: the upper tail was `1 − Φ(z)`, which loses relative
+        // precision past z ≈ 5 and is exactly 0 past z ≈ 8.3. Reference values
+        // (mpmath, 40 digits): 10⁶·Q(7) = 1.279812543885835e-6,
+        // 10⁶·Q(9) = 1.128588405953841e-13; the lower limit at −40σ adds ~0.
+        let p7 = nonnormal_ppm(0.0, 1.0, 0.0, 0.0, -40.0, 7.0);
+        assert_relative_eq!(p7, 1.279_812_543_885_835e-6, max_relative = 1e-9);
+        let p9 = nonnormal_ppm(0.0, 1.0, 0.0, 0.0, -40.0, 9.0);
+        assert_relative_eq!(p9, 1.128_588_405_953_841e-13, max_relative = 1e-9);
+        // Both tails are now treated symmetrically.
+        let mirrored = nonnormal_ppm(0.0, 1.0, 0.0, 0.0, -9.0, 40.0);
+        assert_relative_eq!(p9, mirrored, max_relative = 1e-12);
     }
 }

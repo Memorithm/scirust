@@ -131,8 +131,10 @@ pub fn sigma_level(mean: f64, sigma: f64, lsl: f64, usl: f64) -> f64 {
     {
         return f64::INFINITY;
     }
-    // z such that P(Z > z) = frac  ⇒  z = Φ⁻¹(1 − frac).
-    crate::special::inv_normal_cdf(1.0 - frac)
+    // z such that P(Z > z) = frac  ⇒  z = Φ⁻¹(1 − frac) = −Φ⁻¹(frac). The
+    // symmetric form avoids `1 − frac`, which rounds to 1 (z = +∞) for
+    // fractions below ~1.1e-16 and loses relative precision above that.
+    -crate::special::inv_normal_cdf(frac)
 }
 
 /// A one-call capability/inertia summary of a sample against a bilateral
@@ -316,5 +318,24 @@ mod tests {
         assert_relative_eq!(1.33 - lo, hi - 1.33, epsilon = 1e-12);
         let (lo2, hi2) = cpk_confidence_interval(1.33, 500, 0.95).unwrap();
         assert!((hi2 - lo2) < (hi - lo));
+    }
+
+    #[test]
+    fn sigma_level_stays_finite_and_accurate_for_tiny_defect_fractions() {
+        // Regression: z was Φ⁻¹(1 − frac); `1 − frac` rounds to 1 (z = +∞)
+        // once frac < ~1.1e-16 and loses relative precision above that.
+        // References (mpmath, 40 digits), centred N(0, 1):
+        //   spec ±7: frac = 2·Q(7) = 2.5596e-12 ⇒ z = 6.902229884567638;
+        //   spec ±9: frac = 2·Q(9) = 2.2572e-19 ⇒ z = 8.923584422574227.
+        let z7 = sigma_level(0.0, 1.0, -7.0, 7.0);
+        assert_relative_eq!(z7, 6.902_229_884_567_638, max_relative = 1e-9);
+        let z9 = sigma_level(0.0, 1.0, -9.0, 9.0);
+        assert!(z9.is_finite(), "sigma_level(±9σ) = {z9}");
+        assert_relative_eq!(z9, 8.923_584_422_574_227, max_relative = 1e-9);
+        // Deepest representable tails stay finite (frac ≈ 5.8e-316 at ±38σ).
+        let z38 = sigma_level(0.0, 1.0, -38.0, 38.0);
+        assert!(z38.is_finite() && z38 > 37.0, "sigma_level(±38σ) = {z38}");
+        // A truly defect-free (σ = 0, centred) process still returns +∞.
+        assert_eq!(sigma_level(0.0, 0.0, -1.0, 1.0), f64::INFINITY);
     }
 }
