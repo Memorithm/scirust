@@ -861,4 +861,91 @@ mod tests {
             assert!(close_rel(a.eval(x), 1.7e308, 1.7e308, 1e-14));
         }
     }
+
+    #[test]
+    fn nearest_nan_query_returns_nan() {
+        // Before the fix a NaN query returned an arbitrary node value (the
+        // binary search fell through to some segment), or the only value for
+        // a single node, silently hiding the NaN.
+        let nn = NearestNeighbor::new(&[0.0, 1.0, 2.0, 3.0], &[1.0, 5.0, 2.0, 7.0]).unwrap();
+        assert!(nn.eval(f64::NAN).is_nan());
+        let one = NearestNeighbor::new(&[1.0], &[4.0]).unwrap();
+        assert!(one.eval(f64::NAN).is_nan());
+        let out = nn.eval_all(&[0.4, f64::NAN, 2.6]);
+        assert_eq!(out[0], 1.0);
+        assert!(out[1].is_nan());
+        assert_eq!(out[2], 7.0);
+    }
+
+    #[test]
+    fn nearest_picks_the_truly_closer_node_next_to_the_midpoint() {
+        // Before the fix the rounded distances `x - a` and `b - x` compared
+        // equal for these queries, so the tie rule picked the left node even
+        // though the query is strictly closer to the right one (checked with
+        // exact rational arithmetic).
+        let cases = [
+            (-3.3553304373906823, 6.762933338820778, 1.7038014507150483),
+            (
+                -1.940272889035886e307,
+                2.9427930497515997e307,
+                5.0126008035785685e306,
+            ),
+            (
+                -1.4768950551505576e308,
+                5.748735064597779e307,
+                -4.510107743453898e307,
+            ),
+        ];
+        for (a, b, x) in cases
+        {
+            assert_eq!(x - a, b - x, "distances should round to the same value");
+            let nn = NearestNeighbor::new(&[a, b], &[0.0, 1.0]).unwrap();
+            assert_eq!(nn.eval(x), 1.0, "a={a:e} b={b:e} x={x:e}");
+        }
+    }
+
+    #[test]
+    fn nearest_decides_exactly_around_midpoints_at_every_scale() {
+        // Exact midpoints go left; one ulp on either side goes to that side.
+        // Before the fix spans beyond f64::MAX overflowed the distances to
+        // infinity and spans with large magnitudes rounded them to ties.
+        let m = f64::MAX;
+        let spans = [
+            (0.0, 1.0),
+            (-1.0, 3.0),
+            (1e16, 1e16 + 4.0),
+            (-m, m),
+            (-m, 0.5 * m),
+            (0.25 * m, m),
+            (0.0, 4.0 * f64::from_bits(1)),
+        ];
+        for (a, b) in spans
+        {
+            let nn = NearestNeighbor::new(&[a, b], &[-1.0, 1.0]).unwrap();
+            let mid = 0.5 * a + 0.5 * b;
+            assert_eq!(nn.eval(mid), -1.0, "midpoint of [{a:e}, {b:e}]");
+            assert_eq!(
+                nn.eval(mid.next_up()),
+                1.0,
+                "above midpoint of [{a:e}, {b:e}]"
+            );
+            assert_eq!(
+                nn.eval(mid.next_down()),
+                -1.0,
+                "below midpoint of [{a:e}, {b:e}]"
+            );
+            assert_eq!(nn.eval(a), -1.0);
+            assert_eq!(nn.eval(b), 1.0);
+        }
+        // A span whose midpoint 2^52 + 0.5 is not representable: its two
+        // neighbours go to their own sides.
+        let two53 = 9007199254740992.0;
+        let nn = NearestNeighbor::new(&[1.0, two53], &[-1.0, 1.0]).unwrap();
+        assert_eq!(nn.eval(two53 / 2.0), -1.0);
+        assert_eq!(nn.eval(two53 / 2.0 + 1.0), 1.0);
+        // Infinite queries still extrapolate to the nearest endpoint.
+        let nn = NearestNeighbor::new(&[-m, m], &[-1.0, 1.0]).unwrap();
+        assert_eq!(nn.eval(f64::INFINITY), 1.0);
+        assert_eq!(nn.eval(f64::NEG_INFINITY), -1.0);
+    }
 }
