@@ -22,7 +22,7 @@
 // | [`hann`] | `0.5 − 0.5·cos(θ)` | étroit | modérée (~31 dB) |
 // | [`hamming`] | `0.54 − 0.46·cos(θ)` | étroit | meilleure au premier lobe (~43 dB) |
 // | [`blackman`] | `0.42 − 0.5·cos(θ) + 0.08·cos(2θ)` | plus large | excellente (~58 dB) |
-// | [`blackman_harris`] | `0.36 − 0.49·cos(θ) + 0.14·cos(2θ) − 0.01·cos(3θ)` | plus large encore | quasi optimale (~92 dB) |
+// | [`blackman_harris`] | `0.36 − 0.49·cos(θ) + 0.14·cos(2θ) − 0.01·cos(3θ)` | plus large encore | ~74 dB (coefficients arrondis, voir ci-dessous ; ~92 dB avec ceux de Harris) |
 // | [`kaiser`] | `I₀(β·√(1−r²)) / I₀(β)`, `r = 2n/len − 1` | réglable (`β`) | réglable (`β`) |
 //
 // Les constantes (`0.54`, `0.46`, `0.42`, `0.08`, `0.36`, `0.49`, `0.14`,
@@ -33,6 +33,11 @@
 // etc., toujours de somme `1`) : les coefficients théoriques ont un
 // dénominateur de `100000`, hors de la plage représentable par les formats
 // virgule fixe les plus étroits testés ici (ex. `Q8_24`, entiers `≤ 127`).
+// Cet arrondi a un coût mesurable : le lobe secondaire le plus haut remonte
+// d'environ −92 dB (coefficients de Harris 1978) à environ −74 dB. La fenêtre
+// fournie reste meilleure que [`blackman`] (~58 dB), mais elle n'atteint pas
+// la réjection « quasi optimale » de la Blackman-Harris d'origine ; le test
+// `window_peak_sidelobe_levels_match_the_documented_table` fixe ces valeurs.
 //
 // ## Fenêtre de Kaiser : un paramètre, un compromis réglable
 //
@@ -92,7 +97,12 @@ pub fn blackman_coeff<T: RealScalar>(n: usize, len: usize) -> T {
 }
 
 /// Coefficient `n` (sur `len`) de la fenêtre de Blackman-Harris (4 termes)
-/// périodique.
+/// périodique, avec les coefficients arrondis au centième
+/// (`0.36, 0.49, 0.14, 0.01`).
+///
+/// Lobe secondaire le plus haut : environ −74 dB, et non les −92 dB de la
+/// Blackman-Harris d'origine (`0.35875, 0.48829, 0.14128, 0.01168`), à cause
+/// de cet arrondi (voir la documentation du module).
 #[inline]
 #[must_use]
 pub fn blackman_harris_coeff<T: RealScalar>(n: usize, len: usize) -> T {
@@ -199,7 +209,9 @@ pub fn blackman<T: RealScalar>(len: usize) -> Vec<T> {
     w
 }
 
-/// Fenêtre de Blackman-Harris (4 termes) périodique de longueur `len`.
+/// Fenêtre de Blackman-Harris (4 termes) périodique de longueur `len`, à
+/// coefficients arrondis (lobe secondaire le plus haut ≈ −74 dB, voir
+/// [`blackman_harris_coeff`]).
 #[must_use]
 pub fn blackman_harris<T: RealScalar>(len: usize) -> Vec<T> {
     let mut w = vec![T::zero(); len];
