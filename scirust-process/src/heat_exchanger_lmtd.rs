@@ -35,8 +35,9 @@
 //! ni aucune propriété d'état n'est calculé par ce module.
 
 /// Différence de température logarithmique moyenne (DTLM)
-/// `DTLM = (ΔT₁ − ΔT₂)/ln(ΔT₁/ΔT₂)` (K), ramenée à `ΔT₁` lorsque les deux
-/// écarts sont égaux (limite continue, forme indéterminée levée).
+/// `DTLM = (ΔT₁ − ΔT₂)/ln(ΔT₁/ΔT₂)` (K), ramenée à la moyenne arithmétique
+/// des deux écarts lorsqu'ils sont égaux à `1e-12` près en relatif (limite
+/// continue, forme indéterminée levée ; `ΔT₁` exactement s'ils sont égaux).
 ///
 /// `delta_t_1` (ΔT₁) et `delta_t_2` (ΔT₂) écarts de température aux deux
 /// extrémités de l'échangeur `K`, strictement positifs (même sens de transfert).
@@ -51,13 +52,37 @@ pub fn lmtd_log_mean(delta_t_1: f64, delta_t_2: f64) -> f64 {
         delta_t_2 > 0.0,
         "ΔT₂ > 0 requis (écart de température à l'extrémité 2)"
     );
-    if (delta_t_1 - delta_t_2).abs() < 1e-9
+    let (hi, lo) = if delta_t_1 >= delta_t_2
     {
-        delta_t_1
+        (delta_t_1, delta_t_2)
     }
     else
     {
-        (delta_t_1 - delta_t_2) / (delta_t_1 / delta_t_2).ln()
+        (delta_t_2, delta_t_1)
+    };
+    let diff = hi - lo;
+    // Seuil relatif (invariant d'échelle) : en deçà, l'écart à la moyenne
+    // arithmétique est d'ordre (ΔT₁ − ΔT₂)²/ΔT, négligeable en f64.
+    if diff <= 1e-12 * hi
+    {
+        return 0.5 * (delta_t_1 + delta_t_2);
+    }
+    diff / log_ratio(hi, lo, diff)
+}
+
+/// `ln(hi/lo)` pour `hi > lo > 0` et `diff = hi − lo`, sans arrondir le
+/// rapport avant le logarithme : `ln_1p(diff/lo)` reste précis lorsque les
+/// deux valeurs sont proches ; si le rapport dépasse f64, on revient à
+/// `ln(hi) − ln(lo)` (les deux termes sont alors bien séparés).
+pub(crate) fn log_ratio(hi: f64, lo: f64, diff: f64) -> f64 {
+    let r = diff / lo;
+    if r.is_finite()
+    {
+        r.ln_1p()
+    }
+    else
+    {
+        hi.ln() - lo.ln()
     }
 }
 
@@ -211,6 +236,45 @@ mod tests {
         // Puissance nulle : la température ne change pas.
         let t_same = lmtd_outlet_temp_from_duty(300.0, 0.0, 2.0, 4180.0);
         assert_relative_eq!(t_same, 300.0, epsilon = 1e-9);
+    }
+
+    #[test]
+    fn log_mean_keeps_precision_for_nearly_equal_end_differences() {
+        // ΔT₂/ΔT₁ − 1 = 3e-11 : écarts très proches mais |ΔT₁ − ΔT₂| = 9e-9 K
+        // au-dessus de l'ancien seuil absolu. Référence (mpmath, 50 chiffres) :
+        // 300.000000004500009254… K.
+        let dt2 = 300.0 * (1.0 + 3e-11);
+        let reference = 300.000_000_004_5;
+        for (a, b) in [(300.0, dt2), (dt2, 300.0)]
+        {
+            let l = lmtd_log_mean(a, b);
+            assert_relative_eq!(l, reference, max_relative = 1e-14);
+        }
+    }
+
+    #[test]
+    fn log_mean_is_scale_invariant_for_small_end_differences() {
+        // ΔT₁ = 1e-10 K, ΔT₂ = 5e-10 K : rapport 5, loin du cas égal.
+        // DTLM = 4e-10/ln 5 = 2.4853397382384473…e-10 K (mpmath), soit
+        // 1e-10 × DTLM(1, 5) ; le résultat ne doit pas dépendre de l'ordre.
+        let reference = 2.485_339_738_238_447_4e-10;
+        for (a, b) in [(1e-10, 5e-10), (5e-10, 1e-10)]
+        {
+            let l = lmtd_log_mean(a, b);
+            assert_relative_eq!(l, reference, max_relative = 1e-14);
+        }
+    }
+
+    #[test]
+    fn log_mean_does_not_overflow_for_widely_separated_end_differences() {
+        // ΔT₁/ΔT₂ = 1e600 dépasse f64 alors que la DTLM est finie :
+        // (1e300 − 1e-300)/ln(1e600) = 7.2382413650541975…e296 (mpmath).
+        let reference = 7.238_241_365_054_197e296;
+        for (a, b) in [(1e300, 1e-300), (1e-300, 1e300)]
+        {
+            let l = lmtd_log_mean(a, b);
+            assert_relative_eq!(l, reference, max_relative = 1e-14);
+        }
     }
 
     #[test]
