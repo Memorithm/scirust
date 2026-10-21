@@ -54,6 +54,34 @@ fn t_p_value(t: f64, df: f64, tail: Tail) -> f64 {
     }
 }
 
+/// Magnitude `2^1022` from which a difference of two values bounded by it,
+/// such as a deviation `x − x̄`, can overflow.
+const HUGE: f64 = f64::from_bits(0x7fd0_0000_0000_0000);
+
+/// Whether any finite value reaches [`HUGE`].
+fn any_huge<'a>(values: impl IntoIterator<Item = &'a f64>) -> bool {
+    values.into_iter().any(|x| x.is_finite() && x.abs() >= HUGE)
+}
+
+/// Every group multiplied by `1/4` when some finite value reaches [`HUGE`]
+/// (or `force` is set); `None` otherwise.
+///
+/// For finite values bounded by `2^1022`, a difference such as `x − x̄` or
+/// `x̄₁ − x̄₂` stays below `2^1023` and cannot overflow. Without this, data near
+/// `f64::MAX` turned those deviations into `±∞`, so the tests below returned
+/// `t = 0`, `F = NaN`, or `None` for finite samples. Every statistic in this
+/// module is invariant under a common positive rescaling, and multiplying by
+/// a power of two is exact except for values below `2^-1020`, which are
+/// negligible next to a value of magnitude `2^1022`.
+fn quartered_if_huge(groups: &[&[f64]], force: bool) -> Option<Vec<Vec<f64>>> {
+    (force || any_huge(groups.iter().flat_map(|g| g.iter()))).then(|| {
+        groups
+            .iter()
+            .map(|g| g.iter().map(|x| x * 0.25).collect())
+            .collect()
+    })
+}
+
 /// Exponent `k` such that `2^k` brings the largest absolute deviation of the
 /// `(sample, sample mean)` pairs into `[1, 2)`; `0` when that deviation is
 /// zero or non-finite (constant, `NaN` or infinite samples), which leaves
@@ -97,14 +125,30 @@ fn scaled_variance(data: &[f64], m: f64, k: i32) -> f64 {
 /// scaled by a power of two before they are squared, so the sample variance
 /// does not overflow for a spread above about `1e154` (which gave `t = 0`,
 /// `p = 1`) or underflow below about `1e-154` (which gave `t = ±∞`, `p = 0`,
-/// or `NaN`). The mean itself is still subject to the overflow limits of
-/// [`mean`].
+/// or `NaN`). When a finite value of `data` or `mu0` reaches `2^1022`, both
+/// are first multiplied by `1/4` (exact), so the deviations and `x̄ − mu0`
+/// cannot overflow for finite inputs near `f64::MAX` (which gave `t = 0`,
+/// `p = 1`).
+///
+/// ```
+/// use scirust_stats::prelude::*;
+/// let m = f64::MAX;
+/// // Same statistic as for `[-1, 1, 1]` against `0`: `t = 0.5`.
+/// let r = t_test_one_sample(&[-m, m, m], 0.0, Tail::TwoSided).unwrap();
+/// assert!((r.statistic - 0.5).abs() < 1e-12);
+/// ```
 pub fn t_test_one_sample(data: &[f64], mu0: f64, tail: Tail) -> Option<TestResult> {
     let n = data.len();
     if n < 2
     {
         return None;
     }
+    let quartered = quartered_if_huge(&[data], any_huge([&mu0]));
+    let (data, mu0) = match &quartered
+    {
+        Some(q) => (q[0].as_slice(), mu0 * 0.25),
+        None => (data, mu0),
+    };
     let m = mean(data);
     // `s` and the numerator both carry the factor `2^k`, which cancels in `t`.
     let k = deviation_exponent(&[(data, m)]);
@@ -135,7 +179,9 @@ pub fn t_test_one_sample(data: &[f64], mu0: f64, tail: Tail) -> Option<TestResul
 /// of two before they are squared, so the variances do not overflow for a
 /// spread above about `1e154` (which gave `t = 0`, `p = 1`, and a `NaN` Welch
 /// dof) or underflow below about `1e-154` (which gave `t = ±∞`, `p = 0`, or
-/// `NaN`). The means are still subject to the overflow limits of [`mean`].
+/// `NaN`). When a finite value reaches `2^1022`, both samples are first
+/// multiplied by `1/4` (exact), so the deviations and `x̄₁ − x̄₂` cannot
+/// overflow for finite inputs near `f64::MAX` (which gave `t = 0`, `p = 1`).
 ///
 /// ```
 /// use scirust_stats::prelude::*;
@@ -150,6 +196,12 @@ pub fn t_test_two_sample(a: &[f64], b: &[f64], equal_var: bool, tail: Tail) -> O
     {
         return None;
     }
+    let quartered = quartered_if_huge(&[a, b], false);
+    let (a, b) = match &quartered
+    {
+        Some(q) => (q[0].as_slice(), q[1].as_slice()),
+        None => (a, b),
+    };
     let (m1, m2) = (mean(a), mean(b));
     // Both variances carry the factor `4^k`, so `se` carries `2^k`, which
     // the scaled mean difference cancels in `t`; the Welch dof below only
@@ -205,8 +257,20 @@ pub fn t_test_two_sample(a: &[f64], b: &[f64], equal_var: bool, tail: Tail) -> O
 /// non-finite, which leaves those cases to ordinary floating-point semantics.
 /// Every group must be non-empty.
 fn scaled_anova_sums_of_squares(groups: &[&[f64]]) -> (f64, f64) {
-    let n_total: usize = groups.iter().map(|g| g.len()).sum();
-    let grand = groups.iter().flat_map(|g| g.iter()).sum::<f64>() / n_total as f64;
+    let quartered = quartered_if_huge(groups, false);
+    let quartered_refs: Vec<&[f64]>;
+    let groups = match &quartered
+    {
+        Some(q) =>
+        {
+            quartered_refs = q.iter().map(Vec::as_slice).collect();
+            quartered_refs.as_slice()
+        },
+        None => groups,
+    };
+    // `mean` keeps the grand mean finite when the plain sum overflows.
+    let pooled: Vec<f64> = groups.iter().flat_map(|g| g.iter().copied()).collect();
+    let grand = mean(&pooled);
     let group_means: Vec<f64> = groups.iter().map(|g| mean(g)).collect();
     let largest = groups
         .iter()
@@ -251,8 +315,10 @@ fn scaled_anova_sums_of_squares(groups: &[&[f64]]) -> (f64, f64) {
 /// data, and the computation keeps that property: the deviations are scaled
 /// by a power of two before they are squared, so the sums of squares do not
 /// overflow for a data spread above about `1e154` or underflow below about
-/// `1e-154` (either gave `F = NaN`). The means are still subject to the
-/// overflow limits of [`mean`].
+/// `1e-154` (either gave `F = NaN`). When a finite value reaches `2^1022`,
+/// the data are first multiplied by `1/4` (exact) and the grand mean is
+/// formed with [`mean`], so finite data near `f64::MAX` no longer make the
+/// grand mean or the deviations overflow (which gave `F = NaN`).
 ///
 /// ```
 /// use scirust_stats::prelude::*;
@@ -315,7 +381,10 @@ pub enum LeveneCenter {
 /// The statistic is invariant under a common positive rescaling of the data.
 /// The sums of squares are formed as in [`one_way_anova`], so a data spread
 /// above about `1e154` or below about `1e-154` no longer makes them overflow
-/// or underflow (which returned `None`).
+/// or underflow (which returned `None`). When a finite value reaches
+/// `2^1022`, the data are first multiplied by `1/4` (exact), so the absolute
+/// deviations from the group centres cannot overflow for finite data near
+/// `f64::MAX` (which also returned `None`).
 ///
 /// ```
 /// use scirust_stats::prelude::*;
@@ -333,6 +402,12 @@ pub fn levene_test(groups: &[&[f64]], center: LeveneCenter) -> Option<TestResult
     {
         return None;
     }
+    let quartered = quartered_if_huge(&groups, false);
+    let groups: Vec<&[f64]> = match &quartered
+    {
+        Some(q) => q.iter().map(Vec::as_slice).collect(),
+        None => groups,
+    };
     let deviations: Vec<Vec<f64>> = groups
         .iter()
         .map(|g| {
@@ -377,8 +452,10 @@ pub fn levene_test(groups: &[&[f64]], center: LeveneCenter) -> Option<TestResult
 /// taken of the scaled variances, so a data spread above about `1e154` or
 /// below about `1e-154` no longer makes the variances overflow or underflow
 /// (which returned `None`), including when the groups' spreads differ by
-/// more than the `f64` range. The means are still subject to the overflow
-/// limits of [`mean`].
+/// more than the `f64` range. When a finite value reaches `2^1022`, the data
+/// are first multiplied by `1/4` (exact), so the deviations from the group
+/// means cannot overflow for finite data near `f64::MAX` (which returned
+/// `None`).
 ///
 /// ```
 /// use scirust_stats::prelude::*;
@@ -393,6 +470,17 @@ pub fn bartlett_test(groups: &[&[f64]]) -> Option<TestResult> {
     {
         return None;
     }
+    let quartered = quartered_if_huge(groups, false);
+    let quartered_refs: Vec<&[f64]>;
+    let groups = match &quartered
+    {
+        Some(q) =>
+        {
+            quartered_refs = q.iter().map(Vec::as_slice).collect();
+            quartered_refs.as_slice()
+        },
+        None => groups,
+    };
     // Per group: dof, the exponent `kᵢ`, and `sᵢ² · 4^kᵢ`, which lies in
     // `[1/(nᵢ − 1), 4nᵢ/(nᵢ − 1))` because the largest scaled deviation is in
     // `[1, 2)`. `ln sᵢ² = ln(sᵢ² · 4^kᵢ) − 2kᵢ ln 2`.
@@ -1236,5 +1324,74 @@ mod tests {
         assert_eq!(r.df, 2.0);
         assert!(close(r.statistic, 22.789434813726768, 1e-10));
         assert!(close(r.p_value, 1.1254782518834628e-05, 1e-9));
+    }
+
+    /// Relative closeness for statistics that should agree up to rounding.
+    fn rel_close(a: f64, b: f64) -> bool {
+        (a - b).abs() <= 1e-12 * b.abs().max(1e-300)
+    }
+
+    // Finite samples near `f64::MAX`: deviations from the mean used to
+    // overflow to ±∞, so the statistics below were 0, NaN, or None.
+    // Each must match the same data at unit scale (scale invariance).
+    const M: f64 = f64::MAX;
+
+    #[test]
+    fn t_test_one_sample_near_f64_max() {
+        let huge = t_test_one_sample(&[-M, M, M], 0.0, Tail::TwoSided).unwrap();
+        let unit = t_test_one_sample(&[-1.0, 1.0, 1.0], 0.0, Tail::TwoSided).unwrap();
+        assert!(rel_close(huge.statistic, unit.statistic), "{huge:?}");
+        assert!(rel_close(huge.p_value, unit.p_value), "{huge:?}");
+        // A huge `mu0` against moderate data: `x̄ − mu0` must not overflow.
+        let r = t_test_one_sample(&[0.5 * M, 0.75 * M, M], -M, Tail::Greater).unwrap();
+        let u = t_test_one_sample(&[0.5, 0.75, 1.0], -1.0, Tail::Greater).unwrap();
+        assert!(rel_close(r.statistic, u.statistic), "{r:?} vs {u:?}");
+    }
+
+    #[test]
+    fn t_test_two_sample_near_f64_max() {
+        let a = [-M, M, M];
+        let b = [M, 0.5 * M, 0.75 * M];
+        let (ua, ub) = ([-1.0, 1.0, 1.0], [1.0, 0.5, 0.75]);
+        for equal_var in [true, false]
+        {
+            let huge = t_test_two_sample(&a, &b, equal_var, Tail::TwoSided).unwrap();
+            let unit = t_test_two_sample(&ua, &ub, equal_var, Tail::TwoSided).unwrap();
+            assert!(rel_close(huge.statistic, unit.statistic), "{huge:?}");
+            assert!(rel_close(huge.df, unit.df), "{huge:?}");
+            assert!(rel_close(huge.p_value, unit.p_value), "{huge:?}");
+        }
+    }
+
+    #[test]
+    fn one_way_anova_near_f64_max() {
+        // The plain sum of all values overflows, so the grand mean was ∞.
+        let huge = one_way_anova(&[&[1.0e308, 1.5e308], &[1.6e308, 1.7e308]]).unwrap();
+        let unit = one_way_anova(&[&[1.0, 1.5], &[1.6, 1.7]]).unwrap();
+        assert!(rel_close(huge.statistic, unit.statistic), "{huge:?}");
+        assert!(rel_close(huge.p_value, unit.p_value), "{huge:?}");
+    }
+
+    #[test]
+    fn levene_and_bartlett_near_f64_max() {
+        let (a, b) = ([-M, M, M, 0.5 * M], [0.1 * M, 0.2 * M, 0.4 * M]);
+        let (ua, ub) = ([-1.0, 1.0, 1.0, 0.5], [0.1, 0.2, 0.4]);
+        for center in [LeveneCenter::Mean, LeveneCenter::Median]
+        {
+            let huge = levene_test(&[&a, &b], center).unwrap();
+            let unit = levene_test(&[&ua, &ub], center).unwrap();
+            assert!(rel_close(huge.statistic, unit.statistic), "{huge:?}");
+        }
+        let huge = bartlett_test(&[&a, &b]).unwrap();
+        let unit = bartlett_test(&[&ua, &ub]).unwrap();
+        assert!(rel_close(huge.statistic, unit.statistic), "{huge:?}");
+    }
+
+    #[test]
+    fn moderate_data_is_not_rescaled() {
+        // Below `2^1022` the inputs are used unchanged, bit for bit.
+        assert!(quartered_if_huge(&[&[1.0e307, -1.0e307]], false).is_none());
+        assert!(quartered_if_huge(&[&[f64::INFINITY, 1.0]], false).is_none());
+        assert!(quartered_if_huge(&[&[HUGE]], false).is_some());
     }
 }
