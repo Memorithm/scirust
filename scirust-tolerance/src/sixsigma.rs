@@ -31,7 +31,7 @@
 //! Pass `shift = 1.5` for the customary short-term sigma level, `shift = 0` for
 //! the honest long-term `Z_bench` (matching [`crate::capability::sigma_level`]).
 
-use crate::special::{inv_normal_cdf, normal_cdf};
+use crate::special::{inv_normal_cdf, normal_cdf, normal_sf};
 use serde::{Deserialize, Serialize};
 
 /// Defects per unit, `defects / units` (0 for a non-positive unit count).
@@ -99,14 +99,33 @@ pub fn yield_from_sigma(sigma: f64, shift: f64) -> f64 {
 }
 
 /// Process sigma level from a DPMO figure, `Φ⁻¹(1 − DPMO/10⁶) + shift`.
+///
+/// Evaluated as `shift − Φ⁻¹(DPMO/10⁶)` (normal symmetry), so the defect
+/// fraction is never subtracted from 1: a `1 − DPMO/10⁶` yield rounds to `1`
+/// (and the level to `+∞`) once `DPMO < ~1.1·10⁻¹⁰`, and loses relative
+/// precision in the defect fraction well before that. `DPMO = 0` returns `+∞`,
+/// `DPMO ≥ 10⁶` returns `−∞`.
 pub fn sigma_from_dpmo(dpmo: f64, shift: f64) -> f64 {
-    sigma_from_yield(1.0 - dpmo.clamp(0.0, 1e6) / 1e6, shift)
+    let fraction = dpmo.clamp(0.0, 1e6) / 1e6;
+    if fraction <= 0.0
+    {
+        return f64::INFINITY;
+    }
+    if fraction >= 1.0
+    {
+        return f64::NEG_INFINITY;
+    }
+    shift - inv_normal_cdf(fraction)
 }
 
 /// DPMO from a process sigma level, `10⁶·(1 − Φ(Z − shift))` — the inverse of
 /// [`sigma_from_dpmo`].
+///
+/// The upper tail is evaluated directly with the normal survival function, so
+/// it keeps its relative precision at high sigma levels (a `1 − Φ` subtraction
+/// returns `0` once `Z − shift > ~8.3`).
 pub fn dpmo_from_sigma(sigma: f64, shift: f64) -> f64 {
-    1e6 * (1.0 - yield_from_sigma(sigma, shift))
+    1e6 * normal_sf(sigma - shift)
 }
 
 /// A rolled-up yield report for a multi-step process.
@@ -218,5 +237,43 @@ mod tests {
             r.rolled_throughput_yield,
             epsilon = 1e-9
         );
+    }
+
+    #[test]
+    fn dpmo_conversions_keep_precision_at_high_sigma_levels() {
+        // Regression: DPMO was 10⁶·(1 − Φ(Z − shift)) and the inverse took
+        // Φ⁻¹(1 − DPMO/10⁶); both subtractions from 1 lose the tail.
+        // References (mpmath, 40 digits):
+        //   10⁶·Q(7.5)  = 3.190891672910896e-8   (Z = 9,  shift 1.5)
+        //   10⁶·Q(10)   = 7.619853024160526e-18  (Z = 10, shift 0)
+        //   Q⁻¹(1e-12)  + 1.5 = 8.534483825301132
+        //   Q⁻¹(1e-18)        = 8.757290348782315
+        assert_relative_eq!(
+            dpmo_from_sigma(9.0, 1.5),
+            3.190_891_672_910_896e-8,
+            max_relative = 1e-9
+        );
+        assert_relative_eq!(
+            dpmo_from_sigma(10.0, 0.0),
+            7.619_853_024_160_526e-18,
+            max_relative = 1e-9
+        );
+        assert_relative_eq!(
+            sigma_from_dpmo(1e-6, 1.5),
+            8.534_483_825_301_132,
+            max_relative = 1e-9
+        );
+        let s = sigma_from_dpmo(1e-12, 0.0);
+        assert!(s.is_finite(), "sigma_from_dpmo(1e-12) = {s}");
+        assert_relative_eq!(s, 8.757_290_348_782_315, max_relative = 1e-9);
+        // Round trip at a high level, and the endpoint conventions.
+        assert_relative_eq!(
+            sigma_from_dpmo(dpmo_from_sigma(9.5, 1.5), 1.5),
+            9.5,
+            max_relative = 1e-9
+        );
+        assert_eq!(sigma_from_dpmo(0.0, 1.5), f64::INFINITY);
+        assert_eq!(sigma_from_dpmo(1e6, 1.5), f64::NEG_INFINITY);
+        assert_eq!(sigma_from_dpmo(2e6, 0.0), f64::NEG_INFINITY);
     }
 }

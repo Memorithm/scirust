@@ -73,7 +73,8 @@ pub fn normal_sf(z: f64) -> f64 {
 }
 
 /// Inverse standard-normal CDF `Φ⁻¹(p)` (Acklam's rational approximation,
-/// refined by one Halley step). Valid on the open interval `(0, 1)`.
+/// refined by one Halley step). Valid on the open interval `(0, 1)`; returns
+/// `−∞` for `p ≤ 0` and `+∞` for `p ≥ 1`.
 pub fn inv_normal_cdf(p: f64) -> f64 {
     if p <= 0.0
     {
@@ -135,10 +136,16 @@ pub fn inv_normal_cdf(p: f64) -> f64 {
         x = -(((((C[0] * q + C[1]) * q + C[2]) * q + C[3]) * q + C[4]) * q + C[5])
             / ((((D[0] * q + D[1]) * q + D[2]) * q + D[3]) * q + 1.0);
     }
-    // One Halley refinement.
+    // One Halley refinement. For |x| > ~37.6 (p below ~1e-308) the factor
+    // e^{x²/2} overflows; the correction is then skipped (Acklam's estimate
+    // alone, ~1e-9 relative) instead of turning into NaN.
     let e = normal_cdf(x) - p;
     let u = e * (2.0 * PI).sqrt() * (x * x / 2.0).exp();
-    x -= u / (1.0 + x * u / 2.0);
+    let step = u / (1.0 + x * u / 2.0);
+    if step.is_finite()
+    {
+        x -= step;
+    }
     x
 }
 
@@ -393,6 +400,19 @@ mod tests {
             close(inv_normal_cdf(p), z, 1e-6);
         }
         close(inv_normal_cdf(0.975), 1.959_963_984_540_054, 1e-6);
+    }
+
+    #[test]
+    fn inv_normal_cdf_is_finite_in_the_deepest_lower_tail() {
+        // Regression: below p ≈ 1e-305 the Halley factor e^{x²/2} overflowed
+        // and the refinement returned NaN. Reference (mpmath):
+        // Φ⁻¹(1e-300) = −37.0470962994; Φ⁻¹(1e-310) = −37.6630603319.
+        for &p in &[1e-300, 1e-305, 1e-308, 1e-310, 1e-315, 1e-320, 5e-324]
+        {
+            let x = inv_normal_cdf(p);
+            assert!(x.is_finite() && x < -37.0, "inv_normal_cdf({p:e}) = {x}");
+        }
+        close_rel(inv_normal_cdf(1e-300), -37.047_096_299_361_2, 1e-8);
     }
 
     #[test]
