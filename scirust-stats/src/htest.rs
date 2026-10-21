@@ -3,7 +3,7 @@
 //! corresponding distribution in [`crate::dist`] — so every p-value traces back
 //! to the audited `scirust-special` numeric base.
 
-use crate::describe::{mean, median, variance};
+use crate::describe::{mean, median};
 use crate::discrete::DiscreteDistribution;
 use crate::dist::{ChiSquared, Distribution, FisherF, StudentT};
 use crate::nonparam::{binary_exponent, mul_pow2};
@@ -371,6 +371,15 @@ pub fn levene_test(groups: &[&[f64]], center: LeveneCenter) -> Option<TestResult
 /// Returns `None` if fewer than two groups are given, any group has fewer than
 /// two observations or zero variance, or any value is non-finite.
 ///
+/// The statistic is invariant under a common positive rescaling of the data,
+/// and the computation keeps that property: each group's deviations are
+/// scaled by a power of two before they are squared, and the logarithms are
+/// taken of the scaled variances, so a data spread above about `1e154` or
+/// below about `1e-154` no longer makes the variances overflow or underflow
+/// (which returned `None`), including when the groups' spreads differ by
+/// more than the `f64` range. The means are still subject to the overflow
+/// limits of [`mean`].
+///
 /// ```
 /// use scirust_stats::prelude::*;
 /// let tight = [10.0, 10.1, 9.9, 10.0, 10.05, 9.95];
@@ -384,31 +393,48 @@ pub fn bartlett_test(groups: &[&[f64]]) -> Option<TestResult> {
     {
         return None;
     }
-    let mut n_total = 0usize;
-    let mut pooled_ss = 0.0;
-    let mut sum_log = 0.0;
-    let mut sum_inv = 0.0;
+    // Per group: dof, the exponent `kᵢ`, and `sᵢ² · 4^kᵢ`, which lies in
+    // `[1/(nᵢ − 1), 4nᵢ/(nᵢ − 1))` because the largest scaled deviation is in
+    // `[1, 2)`. `ln sᵢ² = ln(sᵢ² · 4^kᵢ) − 2kᵢ ln 2`.
+    let mut scaled = Vec::with_capacity(k);
     for g in groups
     {
         if g.len() < 2 || g.iter().any(|v| !v.is_finite())
         {
             return None;
         }
-        let v = variance(g);
+        let m = mean(g);
+        let e = deviation_exponent(&[(g, m)]);
+        let v = scaled_variance(g, m, e);
         if !(v > 0.0 && v.is_finite())
         {
             return None;
         }
-        let dof = (g.len() - 1) as f64;
-        n_total += g.len();
-        pooled_ss += dof * v;
-        sum_log += dof * v.ln();
-        sum_inv += 1.0 / dof;
+        scaled.push(((g.len() - 1) as f64, e, v));
     }
+    let n_total: usize = groups.iter().map(|g| g.len()).sum();
     let df_within = (n_total - k) as f64;
     let df = (k - 1) as f64;
+    // The pooled variance is formed at the scale `4^e_min` of the widest
+    // group; narrower groups are scaled down exactly (contributions below
+    // `2^-1100` of it are negligible and flush to zero).
+    let e_min = scaled.iter().map(|&(_, e, _)| e).min().unwrap_or(0);
+    let mut pooled_ss = 0.0;
+    let mut sum_log = 0.0;
+    let mut sum_inv = 0.0;
+    let mut exponent_sum = 0i64;
+    for &(dof, e, v) in &scaled
+    {
+        pooled_ss += dof * mul_pow2(v, (2 * (e_min - e)).max(-1100));
+        sum_log += dof * v.ln();
+        sum_inv += 1.0 / dof;
+        exponent_sum += (dof as i64) * i64::from(e - e_min);
+    }
     let pooled = pooled_ss / df_within;
-    let numerator = df_within * pooled.ln() - sum_log;
+    // (N − k)·ln s²ₚ − Σ(nᵢ − 1)·ln sᵢ², with the `2 ln 2` terms of the
+    // scale factors collected into one exact integer multiple.
+    let numerator =
+        df_within * pooled.ln() - sum_log + 2.0 * std::f64::consts::LN_2 * exponent_sum as f64;
     let denominator = 1.0 + (sum_inv - 1.0 / df_within) / (3.0 * df);
     // ln is concave, so the numerator is ≥ 0 up to rounding.
     let t = (numerator / denominator).max(0.0);
@@ -1093,6 +1119,58 @@ mod tests {
         let same = bartlett_test(&[&b, &b, &b]).unwrap();
         assert!(same.statistic.abs() < 1e-12);
         assert!(close(same.p_value, 1.0, 1e-9));
+    }
+
+    #[test]
+    fn bartlett_does_not_depend_on_the_magnitude_of_the_data() {
+        // Regression: the group variances were formed from raw squared
+        // deviations, which overflow for a data spread above about 1e154
+        // (`None`) and underflow below about 1e-154 (`None`, or lost digits
+        // in the subnormal range). Bartlett's statistic is invariant under a
+        // common positive rescaling. Reference values at unit scale: SciPy
+        // 1.18 `bartlett`, cross-checked with mpmath at 50 digits.
+        let a = [1.0, 2.0, 3.0, 4.5];
+        let b = [2.0, 3.5, 5.0, 6.0, 4.0];
+        let c = [0.5, 8.5, 2.5, -3.0];
+        let rel = |x: f64, y: f64, tol: f64| (x - y).abs() <= tol * y.abs();
+        // Powers of two keep the rescaled samples exact.
+        for s in [
+            2f64.powi(-1000),
+            2f64.powi(-700),
+            2f64.powi(-530),
+            1.0,
+            2f64.powi(530),
+            2f64.powi(700),
+            2f64.powi(1000),
+        ]
+        {
+            let scale = |g: &[f64]| g.iter().map(|v| v * s).collect::<Vec<f64>>();
+            let (sa, sb, sc) = (scale(&a), scale(&b), scale(&c));
+            let r = bartlett_test(&[&sa, &sb, &sc]).unwrap_or_else(|| panic!("s = {s:e}: None"));
+            assert!(
+                rel(r.statistic, 5.541_126_102_273_377, 1e-12),
+                "s = {s:e}: T = {}",
+                r.statistic
+            );
+            assert_eq!(r.df, 2.0);
+            assert!(
+                rel(r.p_value, 0.062_626_732_760_052_54, 1e-10),
+                "s = {s:e}: p = {}",
+                r.p_value
+            );
+        }
+        // Groups whose spreads differ by a factor 2^1200 (mpmath:
+        // T = 7304.36476658898459974, p ≈ 7.5e-1587, which underflows).
+        let s = 2f64.powi(600);
+        let wide: Vec<f64> = a.iter().map(|v| v * s).collect();
+        let narrow: Vec<f64> = c.iter().map(|v| v / s).collect();
+        let r = bartlett_test(&[&wide, &b, &narrow]).expect("mixed spreads: None");
+        assert!(
+            rel(r.statistic, 7_304.364_766_588_985, 1e-12),
+            "T = {}",
+            r.statistic
+        );
+        assert_eq!(r.p_value, 0.0);
     }
 
     /// Reference values from SciPy 1.18.1 (`levene(center=...)`, `bartlett`),
