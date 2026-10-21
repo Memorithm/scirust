@@ -16,7 +16,9 @@ const MAX_BRACKET_DOUBLINGS: usize = 200;
 /// lambda_du, T1, beta) <= target_pfd`.
 ///
 /// `PFDavg` is monotonically increasing in `T1` for every architecture in
-/// [`crate::voting::Architecture`], so bisection always converges once a
+/// [`crate::voting::Architecture`] over the input domain that
+/// [`Architecture::pfd_avg`] enforces (`beta` in `[0, 1]`; a negative `beta`
+/// would make the 1oo2/2oo3/1oo3 forms dip below zero first), so bisection always converges once a
 /// bracket is found; a closed form exists for 1oo1/2oo2 (linear in `T1`) but
 /// not for the quadratic/cubic 1oo2/2oo3/1oo3 forms, so a numerical root is
 /// used uniformly rather than special-casing each architecture.
@@ -31,11 +33,13 @@ pub fn max_proof_test_interval(
     beta: f64,
     target_pfd: f64,
 ) -> SisResult<f64> {
-    if target_pfd <= 0.0
+    // NaN used to slip past a plain `<= 0.0` check and reach the bisection
+    // with an all-NaN objective, which returned a meaningless T1.
+    if target_pfd.is_nan() || target_pfd <= 0.0
     {
         return Err(SisError::InvalidInput("target_pfd must be > 0".to_string()));
     }
-    if lambda_du <= 0.0
+    if lambda_du.is_nan() || lambda_du <= 0.0
     {
         return Err(SisError::InvalidInput("lambda_du must be > 0".to_string()));
     }
@@ -78,6 +82,31 @@ pub fn max_proof_test_interval(
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
+
+    #[test]
+    fn rejects_nan_target_and_out_of_domain_beta() {
+        for target in [f64::NAN, 0.0, -1e-3]
+        {
+            assert!(
+                matches!(
+                    max_proof_test_interval(Architecture::OO1, 1e-6, 0.0, target),
+                    Err(SisError::InvalidInput(_))
+                ),
+                "target {target}"
+            );
+        }
+        assert!(matches!(
+            max_proof_test_interval(Architecture::OO1, f64::NAN, 0.0, 1e-3),
+            Err(SisError::InvalidInput(_))
+        ));
+        // beta = -0.1 used to be accepted and produced a T1 longer than the
+        // beta = 0 answer, because the negative common-cause term offsets the
+        // independent one.
+        assert!(matches!(
+            max_proof_test_interval(Architecture::OO2, 1e-6, -0.1, 1e-3),
+            Err(SisError::InvalidInput(_))
+        ));
+    }
 
     #[test]
     fn inverts_1oo1_closed_form() {

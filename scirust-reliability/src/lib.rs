@@ -61,7 +61,8 @@ use serde::{Deserialize, Serialize};
 /// stronger safety claim.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Sil {
-    /// Below SIL 1 (PFDavg ≥ 0.1).
+    /// Below SIL 1 (PFDavg ≥ 0.1), or no claim at all for a value that is
+    /// not a probability (negative or NaN; see [`sil_from_pfd`]).
     None,
     Sil1,
     Sil2,
@@ -70,9 +71,22 @@ pub enum Sil {
 }
 
 /// IEC 61508 low-demand SIL band for an average Probability of Failure on Demand.
+///
+/// Bands are lower-inclusive: `[1e-5, 1e-4)` is SIL 4 (values below `1e-5`,
+/// including `0`, are capped there), `[1e-4, 1e-3)` SIL 3, `[1e-3, 1e-2)`
+/// SIL 2, `[1e-2, 1e-1)` SIL 1, and `≥ 0.1` is [`Sil::None`].
+///
+/// A value that is not a probability — negative or NaN — makes no safety
+/// claim and maps to [`Sil::None`]. A negative figure is what the closed
+/// forms in this crate return for out-of-domain inputs (a negative
+/// `lambda_du` or `t1`, or `beta < 0`), so banding it as SIL 4 would turn an
+/// input error into the strongest possible claim.
 pub fn sil_from_pfd(pfd: f64) -> Sil {
-    // PFDavg < 1e-4 is SIL 4 (the region below 1e-5 is capped there).
-    if pfd < 1e-4
+    if pfd.is_nan() || pfd < 0.0
+    {
+        Sil::None
+    }
+    else if pfd < 1e-4
     {
         Sil::Sil4
     }
@@ -431,6 +445,21 @@ mod tests {
         assert_eq!(sil_from_pfd(5e-3), Sil::Sil2);
         assert_eq!(sil_from_pfd(5e-2), Sil::Sil1);
         assert_eq!(sil_from_pfd(0.5), Sil::None);
+    }
+
+    #[test]
+    fn sil_from_pfd_makes_no_claim_for_a_negative_or_nan_pfd() {
+        // A negative PFD used to fall into the `< 1e-4` branch: SIL 4.
+        assert_eq!(sil_from_pfd(-4.38e-3), Sil::None);
+        assert_eq!(sil_from_pfd(pfd_1oo1(-1e-6, 8760.0)), Sil::None);
+        assert_eq!(sil_from_pfd(pfd_1oo2(1e-6, 8760.0, -0.1)), Sil::None);
+        assert_eq!(sil_from_pfd(-f64::MIN_POSITIVE), Sil::None);
+        assert_eq!(sil_from_pfd(f64::NEG_INFINITY), Sil::None);
+        assert_eq!(sil_from_pfd(f64::NAN), Sil::None);
+        // Zero (lambda_du = 0) and the signed zero are valid and stay SIL 4.
+        assert_eq!(sil_from_pfd(0.0), Sil::Sil4);
+        assert_eq!(sil_from_pfd(-0.0), Sil::Sil4);
+        assert_eq!(sil_from_pfd(f64::INFINITY), Sil::None);
     }
 
     #[test]

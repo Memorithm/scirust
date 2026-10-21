@@ -142,6 +142,33 @@ mod tests {
     }
 
     #[test]
+    fn invalid_subsystem_inputs_are_an_error_not_a_sil4_claim() {
+        // A negative failure rate made the 1oo1 term -4.38e-3, so the loop
+        // total went negative and `achieved_sil` reported SIL 4.
+        let mut sif = typical_loop();
+        sif.add_subsystem(Subsystem::new(
+            "Typo (negative rate)",
+            Architecture::OO1,
+            -1e-6,
+            0.0,
+            8760.0,
+        ));
+        assert!(sif.total_pfd_avg().is_err());
+        assert!(sif.achieved_sil().is_err());
+        assert!(sif.breakdown().is_err());
+
+        let mut sif = SifLoop::new("negative beta");
+        sif.add_subsystem(Subsystem::new(
+            "Final Elements (1oo2 XV)",
+            Architecture::OO2,
+            1e-6,
+            -0.1,
+            8760.0,
+        ));
+        assert!(sif.achieved_sil().is_err());
+    }
+
+    #[test]
     fn empty_loop_has_zero_pfd_and_sil4() {
         let sif = SifLoop::new("empty");
         assert_eq!(sif.total_pfd_avg().unwrap(), 0.0);
