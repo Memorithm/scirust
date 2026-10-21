@@ -86,7 +86,16 @@ pub fn masstr_log_mean_driving_force(driving_force_1: f64, driving_force_2: f64)
         (driving_force_1 - driving_force_2).abs() > 1.0e-12 * driving_force_1,
         "ΔC₁ ≠ ΔC₂ requis (formule singulière ; sinon ΔC_lm = ΔC commune)"
     );
-    (driving_force_1 - driving_force_2) / (driving_force_1 / driving_force_2).ln()
+    let (hi, lo) = if driving_force_1 >= driving_force_2
+    {
+        (driving_force_1, driving_force_2)
+    }
+    else
+    {
+        (driving_force_2, driving_force_1)
+    };
+    let diff = hi - lo;
+    diff / crate::heat_exchanger_lmtd::log_ratio(hi, lo, diff)
 }
 
 /// Nombre de **Sherwood** `Sh = k_c · L / D` (sans dimension), rapport du
@@ -177,6 +186,31 @@ mod tests {
             lm >= geo && lm <= arith,
             "ΔC_lm entre moyennes géo. et arith."
         );
+    }
+
+    #[test]
+    fn log_mean_driving_force_keeps_precision_for_close_driving_forces() {
+        // ΔC₂/ΔC₁ − 1 = 1e-11, juste au-delà du seuil de singularité (1e-12).
+        // Référence (mpmath, 50 chiffres) : 2.0000000000100000008… mol·m⁻³.
+        let c2 = 2.0_f64 * (1.0 + 1e-11);
+        let reference = 2.000_000_000_01_f64;
+        for (a, b) in [(2.0_f64, c2), (c2, 2.0_f64)]
+        {
+            let lm = masstr_log_mean_driving_force(a, b);
+            assert_relative_eq!(lm, reference, max_relative = 1e-14);
+        }
+    }
+
+    #[test]
+    fn log_mean_driving_force_does_not_overflow_for_widely_separated_forces() {
+        // ΔC₁/ΔC₂ = 1e600 dépasse f64 alors que ΔC_lm est fini :
+        // (1e300 − 1e-300)/ln(1e600) = 7.2382413650541975…e296 (mpmath).
+        let reference = 7.238_241_365_054_197e296_f64;
+        for (a, b) in [(1e300_f64, 1e-300_f64), (1e-300_f64, 1e300_f64)]
+        {
+            let lm = masstr_log_mean_driving_force(a, b);
+            assert_relative_eq!(lm, reference, max_relative = 1e-14);
+        }
     }
 
     #[test]
