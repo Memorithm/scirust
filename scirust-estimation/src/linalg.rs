@@ -134,17 +134,24 @@ impl Mat {
     }
 
     /// Inverse via Gauss–Jordan elimination with partial pivoting; `None` if
-    /// singular (pivot below `n · eps · max|a_ij|`, relative to the matrix's
-    /// own scale — Golub & Van Loan, *Matrix Computations*, §3.4.6 — rather
-    /// than a fixed absolute constant, so a regular matrix at a small
-    /// physical scale isn't declared singular. This inverse feeds the
-    /// Kalman/EKF update, where a false singularity would otherwise abort
-    /// state estimation for any state space in small physical units.
+    /// singular: no pivot candidate of a column stands above
+    /// `n · eps · scale`, where `scale` is the sum of the magnitudes of the
+    /// terms that produced that candidate during elimination (Golub & Van
+    /// Loan, *Matrix Computations*, §3.4.6).
+    ///
+    /// The test is local to each pivot rather than a fixed absolute constant
+    /// (a regular matrix at a small physical scale was declared singular) or
+    /// a fraction of the matrix's global `max|a_ij|` (a regular matrix whose
+    /// rows are in very different units, e.g. `diag(1e17, 1)`, was declared
+    /// singular). This inverse feeds the Kalman/EKF update, where a false
+    /// singularity would otherwise abort state estimation.
     pub fn inverse(&self) -> Option<Mat> {
         assert_eq!(self.rows, self.cols, "inverse needs square matrix");
         let n = self.rows;
-        let max_abs = self.data.iter().fold(0.0f64, |acc, &v| acc.max(v.abs()));
-        let piv_tol = (n as f64) * f64::EPSILON * max_abs.max(1e-300);
+        let piv_tol = |scale: f64| (n as f64) * f64::EPSILON * scale;
+        // mag[i * n + j]: running sum of the magnitudes of the terms that went
+        // into the left-hand entry (i, j) during elimination.
+        let mut mag: Vec<f64> = self.data.iter().map(|v| v.abs()).collect();
         // Augment [A | I].
         let mut a = vec![0.0; n * 2 * n];
         for i in 0..n
@@ -158,18 +165,20 @@ impl Mat {
         for col in 0..n
         {
             // Partial pivot: largest |value| in this column at/under the diagonal.
-            let mut piv = col;
-            let mut best = a[col * 2 * n + col].abs();
-            for r in (col + 1)..n
+            // Candidates indistinguishable from their own rounding error
+            // are skipped.
+            let mut piv = usize::MAX;
+            let mut best = 0.0;
+            for r in col..n
             {
                 let v = a[r * 2 * n + col].abs();
-                if v > best
+                if v > best && v > piv_tol(mag[r * n + col])
                 {
                     best = v;
                     piv = r;
                 }
             }
-            if best < piv_tol
+            if piv == usize::MAX
             {
                 return None;
             }
@@ -179,11 +188,19 @@ impl Mat {
                 {
                     a.swap(col * 2 * n + k, piv * 2 * n + k);
                 }
+                for k in 0..n
+                {
+                    mag.swap(col * n + k, piv * n + k);
+                }
             }
             let pivot = a[col * 2 * n + col];
             for k in 0..2 * n
             {
                 a[col * 2 * n + k] /= pivot;
+            }
+            for k in 0..n
+            {
+                mag[col * n + k] /= pivot.abs();
             }
             for r in 0..n
             {
@@ -195,6 +212,10 @@ impl Mat {
                         for k in 0..2 * n
                         {
                             a[r * 2 * n + k] -= factor * a[col * 2 * n + k];
+                        }
+                        for k in 0..n
+                        {
+                            mag[r * n + k] += (factor * mag[col * n + k]).abs();
                         }
                     }
                 }
@@ -273,6 +294,44 @@ mod tests {
     fn singular_matrix_has_no_inverse() {
         let a = Mat::new(2, 2, vec![1.0, 2.0, 2.0, 4.0]);
         assert!(a.inverse().is_none());
+    }
+
+    #[test]
+    fn inverse_with_rows_of_very_different_scales() {
+        // Regression test: the pivot threshold was `n · eps · max|a_ij|`,
+        // global to the whole matrix. Multiplying one row of the matrix of
+        // `inverse_round_trips_to_identity` by 1e17 (one equation in much
+        // larger units) leaves it well-conditioned after row scaling, but the
+        // later pivots (O(1)) fell below the global threshold (~133) and
+        // `inverse` returned `None`. Same for `diag(1e17, 1)`.
+        let cases = [
+            Mat::new(3, 3, vec![2e17, 1e17, 1e17, 1.0, 3.0, 2.0, 1.0, 0.0, 0.0]),
+            Mat::new(2, 2, vec![1e17, 0.0, 0.0, 1.0]),
+        ];
+        for a in cases
+        {
+            let inv = a
+                .inverse()
+                .expect("a row-scaled regular matrix must not be reported singular");
+            let prod = inv.matmul(&a);
+            let id = Mat::identity(a.rows);
+            for (p, q) in prod.data.iter().zip(&id.data)
+            {
+                assert!((p - q).abs() < 1e-10, "{p} != {q}");
+            }
+        }
+    }
+
+    #[test]
+    fn dependent_rows_have_no_inverse_at_any_scale() {
+        for data in [
+            vec![1e17, 2e17, 1.0, 2.0],
+            vec![0.1, 0.3, 0.3, 0.9],
+            vec![0.0; 4],
+        ]
+        {
+            assert!(Mat::new(2, 2, data.clone()).inverse().is_none(), "{data:?}");
+        }
     }
 
     #[test]
