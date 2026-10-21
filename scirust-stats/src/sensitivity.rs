@@ -100,11 +100,7 @@ pub fn morris_effects(
     {
         let mu = checked_mean(&values)?;
         let mu_star = checked_mean(&values.iter().map(|x| x.abs()).collect::<Vec<_>>())?;
-        let sigma = (values
-            .iter()
-            .map(|x| ((x - mu) / ((trajectories - 1) as f64).sqrt()).powi(2))
-            .sum::<f64>())
-        .sqrt();
+        let sigma = sample_std_dev_about(&values, mu);
         if !sigma.is_finite()
         {
             return Err(ResearchStatsError::NonFinite);
@@ -114,6 +110,37 @@ pub fn morris_effects(
         result.sigma.push(sigma);
     }
     Ok(result)
+}
+
+/// Sample standard deviation (ddof = 1) of `values` about their mean `mu`.
+///
+/// The deviations are divided by their largest magnitude before squaring, so
+/// the sum of squares neither overflows for deviations above about `1e154`
+/// (which would reject finite effects as non-finite) nor underflows to zero
+/// below about `1e-154` (which would report `sigma = 0` for effects that
+/// differ). If a deviation itself overflows (effects of opposite sign near
+/// `f64::MAX`), half-deviations are used and the result is doubled; a standard
+/// deviation beyond `f64::MAX` is still returned as infinite.
+fn sample_std_dev_about(values: &[f64], mu: f64) -> f64 {
+    let dof = (values.len() - 1) as f64;
+    let mut factor = 1.0;
+    let mut deviations: Vec<f64> = values.iter().map(|x| x - mu).collect();
+    if deviations.iter().any(|d| !d.is_finite())
+    {
+        factor = 2.0;
+        deviations = values.iter().map(|x| x / 2.0 - mu / 2.0).collect();
+    }
+    let largest = deviations.iter().fold(0.0_f64, |m, d| m.max(d.abs()));
+    if largest == 0.0
+    {
+        return 0.0;
+    }
+    let scaled_sum = deviations
+        .iter()
+        .map(|d| (d / largest).powi(2))
+        .sum::<f64>();
+    // `largest · sqrt(...)` first: `factor · largest` alone can overflow.
+    largest * (scaled_sum / dof).sqrt() * factor
 }
 
 /// Saltelli 2010 first-order and total-order sample estimates.
@@ -251,6 +278,63 @@ mod tests {
         {
             assert!(morris_effects(&x, &[0.0; 6]).is_err());
         }
+    }
+
+    /// One-factor trajectories `x: 0 → 1`, so each effect is `y₁ − y₀`.
+    fn one_factor(effects: &[f64]) -> Result<MorrisSummary, ResearchStatsError> {
+        let x: Vec<Vec<f64>> = effects
+            .iter()
+            .flat_map(|_| [vec![0.0], vec![1.0]])
+            .collect();
+        let y: Vec<f64> = effects
+            .iter()
+            .flat_map(|&e| if e >= 0.0 { [0.0, e] } else { [-e, 0.0] })
+            .collect();
+        morris_effects(&x, &y)
+    }
+
+    fn assert_close(actual: f64, expected: f64) {
+        assert!(
+            (actual - expected).abs() <= 1e-14 * expected.abs(),
+            "{actual} vs {expected}"
+        );
+    }
+
+    #[test]
+    fn morris_sigma_stays_finite_for_large_effects() {
+        // Effects 1e200 and 3e200: sample sd sqrt(2)·1e200. Squaring the raw
+        // deviations overflowed and the call returned NonFinite.
+        let r = one_factor(&[1e200, 3e200]).unwrap();
+        assert_eq!(r.mu, vec![2e200]);
+        assert_close(r.sigma[0], 2f64.sqrt() * 1e200);
+    }
+
+    #[test]
+    fn morris_sigma_survives_overflowing_deviation() {
+        // Effects [a, a, a, a, -a] with a = 0.7·MAX: mean 0.6a, the last
+        // deviation (1.6a) exceeds f64::MAX, but the sample sd is
+        // sqrt(0.8)·a ≈ 0.63·MAX and representable.
+        let a = 0.7 * f64::MAX;
+        let r = one_factor(&[a, a, a, a, -a]).unwrap();
+        assert_close(r.mu[0], 0.6 * a);
+        assert_close(r.sigma[0], 0.8f64.sqrt() * a);
+    }
+
+    #[test]
+    fn morris_sigma_does_not_underflow_for_tiny_distinct_effects() {
+        // Effects 1e-170 and 3e-170 differ, so sigma is sqrt(2)·1e-170;
+        // squaring raw deviations underflowed and reported sigma = 0.
+        let r = one_factor(&[1e-170, 3e-170]).unwrap();
+        assert_close(r.sigma[0], 2f64.sqrt() * 1e-170);
+        // Identical effects still give exactly zero.
+        assert_eq!(one_factor(&[1e-170, 1e-170]).unwrap().sigma, vec![0.0]);
+    }
+
+    #[test]
+    fn morris_sigma_unchanged_at_ordinary_scale() {
+        // Effects 1, 2, 3, 4: sample sd sqrt(5/3) (NumPy std ddof=1).
+        let r = one_factor(&[1.0, 2.0, 3.0, 4.0]).unwrap();
+        assert_close(r.sigma[0], (5.0f64 / 3.0).sqrt());
     }
 
     #[test]
