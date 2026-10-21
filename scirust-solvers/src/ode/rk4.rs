@@ -12,6 +12,20 @@ use crate::{SolverError, SolverResult};
 
 /// Intègre `dy/dt = f(t, y)` de `t0` à `t_end` par pas `h`.
 /// Renvoie `Vec<(t, y)>` avec tous les points de discrétisation.
+///
+/// Les instants de sortie sont `t0 + k·h`, calculés à partir de l'indice de
+/// pas (l'arrondi ne s'accumule pas), et le dernier vaut exactement `t_end`.
+/// Lorsque `(t_end - t0) / h` est à `1e-9` (relatif) d'un entier, ce nombre
+/// de pas égaux est utilisé, sans pas résiduel minuscule ; sinon le dernier
+/// pas est raccourci. `t_end == t0` renvoie le seul point initial.
+///
+/// # Errors
+///
+/// [`SolverError::InvalidInput`] si `t0`/`t_end` ne sont pas finis,
+/// `t_end < t0`, `h` n'est pas fini et strictement positif, si `h` est
+/// inférieur à la résolution flottante de `t` sur `[t0, t_end]` (`t + h`
+/// s'arrondirait en `t`), ou si la trajectoire demandée est trop grande ;
+/// [`SolverError::NanDetected`] si l'état ou une dérivée devient non fini.
 pub fn rk4_fixed<F>(
     f: F,
     t0: f64,
@@ -49,14 +63,40 @@ where
             "integration interval is too large".into(),
         ));
     }
-    let nsteps_f = (span / h).ceil();
+    // `t + h` must actually advance the clock at the magnitude of `t0` /
+    // `t_end`; otherwise every step would be a zero step at a frozen `t`.
+    let t_mag = t0.abs().max(t_end.abs());
+    if span > 0.0 && t_mag + h == t_mag
+    {
+        return Err(below_resolution(h, t_mag));
+    }
+    // `span / h` rounded up, except that a quotient within a relative 1e-9 of
+    // an integer is rounded to it: `h = 0.1` on `[0, 1]` is ten equal steps.
+    let q = span / h;
+    let nsteps_f = if (q - q.round()).abs() <= 1e-9 * q.max(1.0)
+    {
+        q.round()
+    }
+    else
+    {
+        q.ceil()
+    };
     if !nsteps_f.is_finite() || nsteps_f > (usize::MAX - 1) as f64
     {
         return Err(SolverError::InvalidInput(
             "requested fixed-step trajectory is too large".into(),
         ));
     }
-    let nsteps = nsteps_f as usize;
+    // At least one step whenever the span is non-empty (a span far shorter
+    // than `h` would otherwise round to zero steps).
+    let nsteps = if span > 0.0
+    {
+        (nsteps_f as usize).max(1)
+    }
+    else
+    {
+        0
+    };
     let capacity = nsteps.checked_add(1).ok_or_else(|| {
         SolverError::InvalidInput("requested fixed-step trajectory is too large".into())
     })?;
@@ -76,10 +116,19 @@ where
 
     for step in 0..nsteps
     {
-        let h_act = if t + h > t_end { t_end - t } else { h };
+        // Grid time from the step index; the last one is exactly `t_end`.
+        let t_next = if step + 1 >= nsteps
+        {
+            t_end
+        }
+        else
+        {
+            (t0 + (step + 1) as f64 * h).min(t_end)
+        };
+        let h_act = t_next - t;
         if h_act <= 0.0
         {
-            break;
+            return Err(below_resolution(h, t));
         }
 
         f(t, &y, &mut k1);
@@ -143,10 +192,16 @@ where
             }
         }
         y.copy_from_slice(&ytmp);
-        t += h_act;
+        t = t_next;
         out.push((t, y.clone()));
     }
     Ok(out)
+}
+
+fn below_resolution(h: f64, t: f64) -> SolverError {
+    SolverError::InvalidInput(format!(
+        "step size h = {h:e} is below the floating-point resolution of t near {t:e}"
+    ))
 }
 
 #[cfg(test)]
@@ -209,5 +264,59 @@ mod tests {
         assert!(rk4_fixed(f, 0.0, 1.0, vec![1.0], f64::INFINITY).is_err());
         assert!(rk4_fixed(f, 1.0, 0.0, vec![1.0], 0.1).is_err());
         assert!(rk4_fixed(f, f64::NAN, 1.0, vec![1.0], 0.1).is_err());
+    }
+
+    /// Regression: the clock was advanced with `t += h`, so rounding piled up
+    /// and the trajectory stopped short of `t_end` (`0.9999999999999999` for
+    /// `h = 0.1` on `[0, 1]`, `2.99999999999978` for `h = 1e-3` on `[0, 3]`).
+    #[test]
+    fn trajectory_ends_exactly_at_t_end_on_an_even_grid() {
+        let f = |_: f64, y: &[f64], dy: &mut [f64]| dy[0] = -y[0];
+        for &(t_end, h, steps) in &[(1.0, 0.1, 10), (3.0, 1e-3, 3000), (5.0, 0.05, 100)]
+        {
+            let out = rk4_fixed(f, 0.0, t_end, vec![1.0], h).unwrap();
+            assert_eq!(out.len(), steps + 1, "t_end={t_end}, h={h}");
+            assert_eq!(out.last().unwrap().0, t_end, "t_end={t_end}, h={h}");
+            for (k, (t, _)) in out.iter().enumerate().take(steps)
+            {
+                assert_eq!(*t, k as f64 * h);
+            }
+        }
+    }
+
+    /// A span that is not a multiple of `h` still ends on `t_end`, with a
+    /// single shortened last step.
+    #[test]
+    fn uneven_span_shortens_only_the_last_step() {
+        let out = rk4_fixed(|_, _, dy| dy[0] = 1.0, 0.0, 1.0, vec![0.0], 0.3).unwrap();
+        let ts: Vec<f64> = out.iter().map(|(t, _)| *t).collect();
+        assert_eq!(ts.len(), 5);
+        assert_eq!(ts[4], 1.0);
+        assert!((ts[4] - ts[3] - 0.1).abs() < 1e-12);
+        assert!((out[4].1[0] - 1.0).abs() < 1e-12);
+    }
+
+    /// Regression: with `h` below the resolution of `t` (`ulp(1e10) ≈ 1.9e-6`),
+    /// `t += h` left `t` frozen at `t0`, so the solver returned ten million
+    /// copies of the initial point ending at `t0`, far from `t_end`.
+    #[test]
+    fn step_below_time_resolution_is_rejected() {
+        let f = |_: f64, _: &[f64], dy: &mut [f64]| dy[0] = 1.0;
+        assert!(matches!(
+            rk4_fixed(f, 1e10, 1e10 + 1.0, vec![0.0], 1e-7),
+            Err(SolverError::InvalidInput(_))
+        ));
+        // An empty span is still fine and returns the initial point.
+        let out = rk4_fixed(f, 1e10, 1e10, vec![0.0], 1e-7).unwrap();
+        assert_eq!(out.len(), 1);
+    }
+
+    /// A span much shorter than `h` is integrated in one step to `t_end`.
+    #[test]
+    fn span_shorter_than_h_takes_one_step() {
+        let out = rk4_fixed(|_, _, dy| dy[0] = 2.0, 0.0, 1e-12, vec![0.0], 1.0).unwrap();
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[1].0, 1e-12);
+        assert!((out[1].1[0] - 2e-12).abs() < 1e-24);
     }
 }

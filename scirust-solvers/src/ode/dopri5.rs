@@ -190,10 +190,18 @@ where
         {
             break;
         }
-        if t + h > t_end
+        // Land exactly on `t_end`, and use the step the clock really takes:
+        // at large `|t|`, `t + h` rounds to a multiple of `ulp(t)`, so the
+        // stages must use `t_new - t` rather than the nominal `h` or the state
+        // is advanced over a different interval than the time.
+        // A step too small to move the clock at all is raised to the next
+        // representable time; the error control then accepts or rejects it.
+        let mut t_new = if t + h >= t_end { t_end } else { t + h };
+        if t_new <= t
         {
-            h = t_end - t;
+            t_new = t.next_up().min(t_end);
         }
+        h = t_new - t;
 
         // k2
         for i in 0..n
@@ -289,10 +297,10 @@ where
         if err_norm <= 1.0
         {
             // Accepté → backup le bon état
-            last_good_t = t + h;
+            last_good_t = t_new;
             last_good_y.copy_from_slice(&ynew);
 
-            t += h;
+            t = t_new;
             std::mem::swap(&mut y, &mut ynew);
             std::mem::swap(&mut k1, &mut k7);
             accepted += 1;
@@ -468,5 +476,55 @@ mod tests {
             (yf - expect).abs() / expect
         );
         assert!(r.accepted > 0);
+    }
+
+    /// Regression: at `t0 = 1e17` (`ulp = 16`) the clock moved by `t + h`
+    /// rounded to a multiple of 16 while the state was advanced by the nominal
+    /// `h`, so `y' = 1` integrated over a 1600-unit span did not return
+    /// `y(t_end) = 1600`.
+    #[test]
+    fn state_and_clock_advance_by_the_same_step_at_large_t() {
+        let t0 = 1e17_f64;
+        let t_end = t0 + 1600.0;
+        let r = dopri5(
+            |_, _, dy| dy[0] = 1.0,
+            t0,
+            t_end,
+            vec![0.0],
+            1e-10,
+            1e-12,
+            100.0,
+        )
+        .unwrap();
+        assert_eq!(*r.t.last().unwrap(), t_end);
+        let yf = r.y.last().unwrap()[0];
+        assert!((yf - 1600.0).abs() < 1e-9, "yf = {yf}");
+        for w in r.t.windows(2)
+        {
+            assert!(w[1] > w[0], "time must strictly increase: {w:?}");
+        }
+    }
+
+    /// A nominal step smaller than the clock resolution (`h_init = 1` at
+    /// `t0 = 1e17`) is raised to a step the clock can represent, and the
+    /// result matches the exact solution. Before, the state was advanced by
+    /// `h` while the clock did not move, which also gave `y(t_end) != 1600`.
+    #[test]
+    fn step_below_time_resolution_is_raised_to_a_representable_step() {
+        let t0 = 1e17_f64;
+        let t_end = t0 + 1600.0;
+        let r = dopri5(
+            |_, _, dy| dy[0] = 1.0,
+            t0,
+            t_end,
+            vec![0.0],
+            1e-10,
+            1e-12,
+            1.0,
+        )
+        .unwrap();
+        assert_eq!(*r.t.last().unwrap(), t_end);
+        let yf = r.y.last().unwrap()[0];
+        assert!((yf - 1600.0).abs() < 1e-9, "yf = {yf}");
     }
 }
