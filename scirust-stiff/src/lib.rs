@@ -471,7 +471,10 @@ where
 /// Fixed-step **backward (implicit) Euler** for `y' = f(t, y)`.
 ///
 /// Integrates from `t0` to `t_end` in steps of `h` (the final step is shortened
-/// so the last output time is exactly `t_end`). Each step solves the implicit
+/// so the last output time is exactly `t_end`). Output times are `t0 + k·h`
+/// computed from the step index, so rounding does not accumulate; when
+/// `(t_end - t0) / h` is within a relative `1e-9` of an integer, that many
+/// equal steps are taken (no sliver step is appended). Each step solves the implicit
 /// stage equation `y_{n+1} = y_n + h·f(t_{n+1}, y_{n+1})` with a modified-Newton
 /// iteration using an internal finite-difference Jacobian and dense LU solve.
 ///
@@ -481,8 +484,9 @@ where
 ///
 /// # Errors
 ///
-/// Returns [`StiffError::BadInput`] for an empty `y0`, non-positive `h`, or
-/// `t_end < t0`; [`StiffError::DimMismatch`] if `f` returns the wrong length;
+/// Returns [`StiffError::BadInput`] for an empty `y0`, non-positive `h`, a
+/// step `h` too small to advance `t` at the magnitude of `t0`/`t_end` (where
+/// `t + h` rounds back to `t`), or `t_end < t0`; [`StiffError::DimMismatch`] if `f` returns the wrong length;
 /// [`StiffError::SingularMatrix`] if the Newton iteration matrix is singular;
 /// and [`StiffError::NewtonDivergence`] if the iteration fails to converge.
 pub fn backward_euler<F>(
@@ -558,27 +562,66 @@ fn integrate_backward_euler<F>(
 where
     F: Fn(f64, &[f64]) -> Vec<f64>,
 {
+    // Step count: `span / h` rounded up, except that a quotient within a
+    // relative 1e-9 of an integer is rounded to it, so `h = 0.1` on `[0, 1]`
+    // gives ten steps rather than a spurious eleventh sliver.
     let span = t_end - t0;
-    let tiny = span.abs() * 1e-12 + f64::MIN_POSITIVE;
-
+    // Reject a step too small to advance the time anywhere on `[t0, t_end]`
+    // up front, rather than after possibly billions of Newton solves.
+    let t_mag = t0.abs().max(t_end.abs());
+    if span > 0.0 && t_mag + h == t_mag
+    {
+        return Err(StiffError::BadInput(format!(
+            "step size h = {h:e} is below the floating-point resolution of t near {t_mag:e}"
+        )));
+    }
+    let q = span / h;
+    let steps = if span <= 0.0
+    {
+        0.0
+    }
+    else if (q - q.round()).abs() <= 1e-9 * q.max(1.0)
+    {
+        q.round().max(1.0)
+    }
+    else
+    {
+        q.ceil()
+    };
+    // Output times are computed from the step index (`t0 + k·h`) instead of
+    // by repeated addition, so rounding does not accumulate, and the last
+    // one is `t_end` exactly.
     let mut t = t0;
     let mut y = y0.to_vec();
     let mut ts = vec![t0];
     let mut ys = vec![y0.to_vec()];
-    let mut step = 0;
-
-    while t < t_end - tiny
+    let mut step = 0usize;
+    while (step as f64) < steps
     {
-        // Shorten the last step so it lands exactly on t_end.
-        let hh = if t + h > t_end { t_end - t } else { h };
-        let t1 = t + hh;
+        let k = step as f64 + 1.0;
+        let t1 = if k >= steps
+        {
+            t_end
+        }
+        else
+        {
+            (t0 + k * h).min(t_end)
+        };
+        let hh = t1 - t;
+        // A step below the floating-point resolution of `t` cannot advance
+        // the time; fail instead of looping forever.
+        if hh <= 0.0
+        {
+            return Err(StiffError::BadInput(format!(
+                "step size h = {h:e} is below the floating-point resolution of t = {t:e}"
+            )));
+        }
         y = newton_step(f, mass, t1, &y, hh, step)?;
         t = t1;
         ts.push(t);
         ys.push(y.clone());
         step += 1;
     }
-
     Ok(Solution { t: ts, y: ys })
 }
 
@@ -649,13 +692,17 @@ where
     let mut h = h0.min(span).max(hmin);
     let mut attempts = 0usize;
 
-    while t < t_end - tiny
+    while t < t_end
     {
-        if h < hmin
+        // `t + h <= t`: the step is below the floating-point resolution of
+        // `t`, so the integration cannot advance.
+        if h < hmin || t + h <= t
         {
             return Err(StiffError::StepUnderflow { t, h });
         }
-        if t + h > t_end
+        // Land exactly on `t_end`: stretch a step that would leave a
+        // remainder below `tiny`, and clamp one that would overshoot.
+        if t + h >= t_end - tiny
         {
             h = t_end - t;
         }
@@ -727,14 +774,15 @@ where
                 facmin
             };
             h *= fac;
-            if h < hmin || h.is_nan()
+            if h < hmin || h.is_nan() || t + h <= t
             {
                 return Err(StiffError::StepUnderflow { t, h });
             }
         };
 
-        // Accept.
-        t += h;
+        // Accept. The final step is pinned to `t_end` (`t + (t_end - t)` can
+        // round an ulp away from it), which also ends the loop.
+        t = if h == t_end - t { t_end } else { t + h };
         y = y_new;
         ts.push(t);
         ys.push(y.clone());
@@ -1060,5 +1108,61 @@ mod tests {
         assert!(j[0][1].abs() < 1e-6);
         assert!((j[1][0] - 4.0).abs() < 1e-6);
         assert!((j[1][1] - 3.0).abs() < 1e-6);
+    }
+
+    // ---- output grid and termination (regressions) ---------------------- //
+
+    #[test]
+    fn backward_euler_last_time_is_exactly_t_end() {
+        // Repeated addition of 0.1 ten times gives 0.9999999999999999, which
+        // the old loop accepted as "close enough" and stopped on.
+        let f = |_t: f64, y: &[f64]| vec![-y[0]];
+        for (t_end, h, n) in [
+            (1.0, 0.1, 10),
+            (0.3, 0.1, 3),
+            (2.3, 0.1, 23),
+            (1.0, 0.01, 100),
+        ]
+        {
+            let sol = backward_euler(f, 0.0, &[1.0], t_end, h).unwrap();
+            assert_eq!(sol.t.len(), n + 1, "t_end = {t_end}, h = {h}");
+            assert_eq!(*sol.t.last().unwrap(), t_end, "h = {h}");
+            assert!(sol.t.windows(2).all(|w| w[1] > w[0]));
+        }
+        // A genuine remainder still gets its own shortened step.
+        let sol = backward_euler(f, 0.0, &[1.0], 1.05, 0.1).unwrap();
+        assert_eq!(sol.t.len(), 12);
+        assert_eq!(*sol.t.last().unwrap(), 1.05);
+        // The DAE driver shares the grid.
+        let sol = backward_euler_dae(&[vec![1.0]], f, 0.0, &[1.0], 1.0, 0.1).unwrap();
+        assert_eq!(*sol.t.last().unwrap(), 1.0);
+    }
+
+    #[test]
+    fn backward_euler_step_below_time_resolution_is_an_error_not_a_hang() {
+        // ulp(1e10) ≈ 1.9e-6, so t + 1e-7 rounds back to t: the old loop
+        // never advanced and spun forever.
+        let f = |_t: f64, y: &[f64]| vec![-y[0]];
+        let r = backward_euler(f, 1e10, &[1.0], 1e10 + 1.0, 1e-7);
+        assert!(matches!(r, Err(StiffError::BadInput(_))), "{r:?}");
+        let r = backward_euler_dae(&[vec![1.0]], f, 1e10, &[1.0], 1e10 + 1.0, 1e-7);
+        assert!(matches!(r, Err(StiffError::BadInput(_))), "{r:?}");
+        // A step that is representable at that magnitude still works.
+        let sol = backward_euler(f, 1e10, &[1.0], 1e10 + 1.0, 0.25).unwrap();
+        assert_eq!(sol.t.len(), 5);
+        assert_eq!(*sol.t.last().unwrap(), 1e10 + 1.0);
+    }
+
+    #[test]
+    fn rosenbrock_last_time_is_exactly_t_end() {
+        // With the old update `t += t_end - t`, these spans ended an ulp
+        // away from t_end (0.025999999999999995 for 0.026).
+        let f = |_t: f64, y: &[f64]| vec![-y[0]];
+        for t_end in [0.026, 0.416, 1.0, 3.7]
+        {
+            let sol = rosenbrock23(f, 0.0, &[1.0], t_end, 1e-3, 1e-6, 1e-3).unwrap();
+            assert_eq!(*sol.t.last().unwrap(), t_end);
+            assert!(sol.t.windows(2).all(|w| w[1] > w[0]));
+        }
     }
 }
