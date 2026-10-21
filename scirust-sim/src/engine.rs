@@ -193,14 +193,52 @@ fn validate_run(dim: usize, y0: &[f64], t0: f64, t_end: f64, h: f64) -> Result<u
             "step size {h} must be finite and positive"
         )));
     }
-    let steps = ((t_end - t0) / h).ceil() as usize;
-    if steps > MAX_STEPS
+    // Reject a step too small to advance the time anywhere on `[t0, t_end]`
+    // up front: `t + h` would round back to `t` and the loop would never end.
+    let t_mag = t0.abs().max(t_end.abs());
+    if t_mag + h == t_mag
+    {
+        return Err(below_resolution(h, t_mag));
+    }
+    // Step count: `span / h` rounded up, except that a quotient within a
+    // relative 1e-9 of an integer is rounded to it, so `h = 0.1` on `[0, 1]`
+    // gives ten steps rather than ten plus a spurious sliver step.
+    let q = (t_end - t0) / h;
+    let steps = if (q - q.round()).abs() <= 1e-9 * q.max(1.0)
+    {
+        q.round()
+    }
+    else
+    {
+        q.ceil()
+    };
+    if steps > MAX_STEPS as f64
     {
         return Err(SimError::BadInput(format!(
             "time span requires {steps} steps, above the {MAX_STEPS} budget"
         )));
     }
-    Ok(steps.max(1))
+    Ok((steps as usize).max(1))
+}
+
+fn below_resolution(h: f64, t: f64) -> SimError {
+    SimError::BadInput(format!(
+        "step size h = {h:e} is below the floating-point resolution of t near {t:e}"
+    ))
+}
+
+/// End time of fixed step `k` (1-based) out of `steps`: `t0 + k·h` from the
+/// step index, so rounding does not accumulate, with the last one pinned to
+/// `t_end` exactly.
+fn grid_time(t0: f64, t_end: f64, h: f64, k: usize, steps: usize) -> f64 {
+    if k >= steps
+    {
+        t_end
+    }
+    else
+    {
+        (t0 + k as f64 * h).min(t_end)
+    }
 }
 
 /// What a step observer tells an integrator to do after an accepted step.
@@ -229,8 +267,13 @@ pub struct ObservedRun {
 /// fixed-step fourth-order Runge–Kutta method.
 ///
 /// Every step of size `h` is recorded; the final step is shortened so the
-/// trajectory lands exactly on `t_end`. Returns [`SimError::BadInput`] on a
-/// malformed request and [`SimError::NonFinite`] if the state blows up.
+/// trajectory lands exactly on `t_end`. Output times are `t0 + k·h` computed
+/// from the step index, so rounding does not accumulate; when
+/// `(t_end - t0) / h` is within a relative `1e-9` of an integer, that many
+/// equal steps are taken (no sliver step is appended). Returns
+/// [`SimError::BadInput`] on a malformed request (including a step `h` too
+/// small to advance `t` at the magnitude of `t0`/`t_end`, where `t + h`
+/// rounds back to `t`) and [`SimError::NonFinite`] if the state blows up.
 ///
 /// RK4's error is `O(h^4)` per unit time, and like every Runge–Kutta method
 /// it preserves *linear* invariants (total population, total mass) to
@@ -288,10 +331,16 @@ where
 
     let mut t = t0;
     let mut completed = true;
-    while t < t_end
+    for k in 1..=steps
     {
-        // Land exactly on t_end; the comparison above guarantees dt > 0.
-        let dt = h.min(t_end - t);
+        // Grid times come from the step index and the last one is exactly
+        // t_end.
+        let t_next = grid_time(t0, t_end, h, k, steps);
+        let dt = t_next - t;
+        if dt <= 0.0
+        {
+            return Err(below_resolution(h, t));
+        }
 
         system.derivatives(t, &y, &mut k1);
         for i in 0..dim
@@ -314,7 +363,7 @@ where
             y[i] += dt / 6.0 * (k1[i] + 2.0 * k2[i] + 2.0 * k3[i] + k4[i]);
         }
 
-        t = if dt < h { t_end } else { t + h };
+        t = t_next;
         if y.iter().any(|c| !c.is_finite())
         {
             return Err(SimError::NonFinite { t });
@@ -470,7 +519,8 @@ fn initial_step<S: System>(
 ///
 /// `rtol` and `atol` must be finite and positive. Returns
 /// [`SimError::StepUnderflow`] when the tolerance cannot be met (approaching a
-/// singularity, or asked tighter than `f64` can resolve),
+/// singularity, asked tighter than `f64` can resolve, or needing a step below
+/// the floating-point resolution of `t` when `|t0|` is large),
 /// [`SimError::NonFinite`] on blow-up, and [`SimError::BadInput`] on a
 /// malformed request.
 ///
@@ -570,7 +620,9 @@ pub fn simulate_adaptive<S: System>(
         {
             h = t_end - t;
         }
-        if h < h_min
+        // `t + h <= t`: the step is below the floating-point resolution of
+        // `t` (large |t0|), so the integration cannot advance.
+        if h < h_min || t + h <= t
         {
             return Err(SimError::StepUnderflow { t });
         }
@@ -672,6 +724,8 @@ pub fn simulate_adaptive<S: System>(
 /// energy error stays bounded over arbitrarily many periods, where explicit
 /// Euler spirals outward (demonstrated in the [`orbital`](crate::orbital)
 /// tests).
+///
+/// Uses the same output grid and input checks as [`simulate`].
 pub fn simulate_second_order<S: SecondOrderSystem>(
     system: &S,
     q0: &[f64],
@@ -738,9 +792,14 @@ where
     let mut acc = vec![0.0; n];
     let mut t = t0;
     let mut completed = true;
-    while t < t_end
+    for k in 1..=steps
     {
-        let dt = h.min(t_end - t);
+        let t_next = grid_time(t0, t_end, h, k, steps);
+        let dt = t_next - t;
+        if dt <= 0.0
+        {
+            return Err(below_resolution(h, t));
+        }
         system.acceleration(t, &q, &v, &mut acc);
         for i in 0..n
         {
@@ -750,7 +809,7 @@ where
         {
             q[i] += dt * v[i];
         }
-        t = if dt < h { t_end } else { t + h };
+        t = t_next;
         if q.iter().chain(v.iter()).any(|c| !c.is_finite())
         {
             return Err(SimError::NonFinite { t });
@@ -1183,5 +1242,76 @@ mod tests {
         assert!(!run.completed);
         assert_eq!(run.trajectory.len(), 2, "initial condition plus one step");
         assert_eq!(run.trajectory.y[0], vec![1.0]);
+    }
+
+    // ---- output grid and termination (regressions) ---------------------- //
+
+    struct Spring;
+    impl SecondOrderSystem for Spring {
+        fn dof(&self) -> usize {
+            1
+        }
+        fn acceleration(&self, _t: f64, q: &[f64], _v: &[f64], acc: &mut [f64]) {
+            acc[0] = -q[0];
+        }
+    }
+
+    #[test]
+    fn fixed_step_grid_has_no_sliver_step() {
+        // Repeated addition of 0.1 ten times gives 0.9999999999999999, so the
+        // old loop took an eleventh step of about 1.1e-16 and recorded both
+        // 0.9999999999999999 and 1.0.
+        for (t_end, h, n) in [
+            (1.0, 0.1, 10),
+            (0.3, 0.1, 3),
+            (2.3, 0.1, 23),
+            (1.0, 0.01, 100),
+        ]
+        {
+            let tr = simulate(&Decay, &[1.0], 0.0, t_end, h).unwrap();
+            assert_eq!(tr.len(), n + 1, "t_end = {t_end}, h = {h}");
+            assert_eq!(tr.last_time(), Some(t_end));
+            assert!(tr.t.windows(2).all(|w| w[1] - w[0] > 0.5 * h));
+            let tr = simulate_second_order(&Spring, &[1.0], &[0.0], 0.0, t_end, h).unwrap();
+            assert_eq!(tr.len(), n + 1, "t_end = {t_end}, h = {h}");
+            assert_eq!(tr.last_time(), Some(t_end));
+        }
+        // A genuine remainder still gets its own shortened step.
+        let tr = simulate(&Decay, &[1.0], 0.0, 1.05, 0.1).unwrap();
+        assert_eq!(tr.len(), 12);
+        assert_eq!(tr.last_time(), Some(1.05));
+        assert!((tr.t[10] - 1.0).abs() < 1e-15);
+    }
+
+    #[test]
+    fn fixed_step_below_time_resolution_is_an_error_not_a_hang() {
+        // ulp(1e10) is about 1.9e-6, so t + 1e-7 rounds back to t: the old
+        // loop never advanced, recording the same time until memory ran out.
+        let r = simulate(&Decay, &[1.0], 1e10, 1e10 + 1.0, 1e-7);
+        assert!(matches!(r, Err(SimError::BadInput(_))), "{r:?}");
+        let r = simulate_observed(&Decay, &[1.0], 1e10, 1e10 + 1.0, 1e-7, |_, _| {
+            StepAction::Continue
+        });
+        assert!(matches!(r, Err(SimError::BadInput(_))), "{r:?}");
+        let r = simulate_second_order(&Spring, &[1.0], &[0.0], 1e10, 1e10 + 1.0, 1e-7);
+        assert!(matches!(r, Err(SimError::BadInput(_))), "{r:?}");
+        // A step that is representable at that magnitude still works.
+        let tr = simulate(&Decay, &[1.0], 1e10, 1e10 + 1.0, 0.25).unwrap();
+        assert_eq!(tr.len(), 5);
+        assert_eq!(tr.last_time(), Some(1e10 + 1.0));
+        assert!((tr.last_state().unwrap()[0] - (-1.0f64).exp()).abs() < 1e-4);
+    }
+
+    #[test]
+    fn adaptive_step_below_time_resolution_underflows_promptly() {
+        // ulp(1e17) = 16: steps the tolerance needs round away, so t never
+        // moved. The old loop burned the whole 10M-step budget (recording
+        // repeated times) and then reported a step-budget BadInput.
+        let r = simulate_adaptive(&Decay, &[1.0], 1e17, 1e17 + 64.0, 1e-9, 1e-12);
+        assert!(matches!(r, Err(SimError::StepUnderflow { .. })), "{r:?}");
+        // Large but resolvable times still integrate to t_end.
+        let tr = simulate_adaptive(&Decay, &[1.0], 1e10, 1e10 + 1.0, 1e-9, 1e-12).unwrap();
+        assert_eq!(tr.last_time(), Some(1e10 + 1.0));
+        assert!(tr.t.windows(2).all(|w| w[1] > w[0]));
     }
 }
