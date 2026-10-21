@@ -158,18 +158,85 @@ impl FittedDistribution {
         }
     }
 
-    /// Total log-likelihood of `data` under this distribution (`−∞` if any point
-    /// has zero density, e.g. a non-positive value under a positive-support law).
+    /// The natural log of the probability density at `x` (`−∞` where the
+    /// density is zero, e.g. outside a positive support).
+    ///
+    /// Evaluated in log space rather than as `pdf(x).ln()`: the density of a
+    /// far-tail point (e.g. a normal at `|z| ≳ 38.6`) underflows to `0` in
+    /// `f64` while its log-density is an ordinary finite number.
+    pub fn log_pdf(&self, x: f64) -> f64 {
+        let half_ln_2pi = 0.5 * std::f64::consts::TAU.ln();
+        match *self
+        {
+            FittedDistribution::Normal { mean, sd } =>
+            {
+                let z = (x - mean) / sd;
+                -0.5 * z * z - sd.ln() - half_ln_2pi
+            },
+            FittedDistribution::Lognormal { mu, sigma } =>
+            {
+                if x <= 0.0
+                {
+                    return f64::NEG_INFINITY;
+                }
+                let lx = x.ln();
+                let z = (lx - mu) / sigma;
+                -0.5 * z * z - lx - sigma.ln() - half_ln_2pi
+            },
+            FittedDistribution::Rayleigh { sigma } =>
+            {
+                if x < 0.0
+                {
+                    return f64::NEG_INFINITY;
+                }
+                // ln(x/σ²) − (x/σ)²/2, with `x/σ` formed first so `x²` cannot
+                // overflow on its own. `x = 0` gives `ln 0 = −∞`, matching pdf 0.
+                let u = x / sigma;
+                u.ln() - sigma.ln() - 0.5 * u * u
+            },
+            FittedDistribution::Weibull { shape, scale } =>
+            {
+                if x < 0.0
+                {
+                    return f64::NEG_INFINITY;
+                }
+                if x == 0.0
+                {
+                    // Same limits as `pdf`: 0 for k > 1, 1/λ for k = 1,
+                    // unbounded for k < 1.
+                    return if shape > 1.0
+                    {
+                        f64::NEG_INFINITY
+                    }
+                    else if shape == 1.0
+                    {
+                        -scale.ln()
+                    }
+                    else
+                    {
+                        f64::INFINITY
+                    };
+                }
+                // ln(k/λ) + (k − 1)·ln r − r^k, r = x/λ.
+                let lr = (x / scale).ln();
+                (shape / scale).ln() + (shape - 1.0) * lr - (shape * lr).exp()
+            },
+        }
+    }
+
+    /// Total log-likelihood of `data` under this distribution, summed from
+    /// [`log_pdf`](Self::log_pdf) (`−∞` if any point has zero or non-finite
+    /// density, e.g. a non-positive value under a positive-support law).
     pub fn log_likelihood(&self, data: &[f64]) -> f64 {
         let mut ll = 0.0;
         for &x in data
         {
-            let d = self.pdf(x);
-            if d <= 0.0 || !d.is_finite()
+            let lp = self.log_pdf(x);
+            if !lp.is_finite()
             {
                 return f64::NEG_INFINITY;
             }
-            ll += d.ln();
+            ll += lp;
         }
         ll
     }
@@ -378,6 +445,73 @@ mod tests {
             assert_relative_eq!(r.quantile(p), want, max_relative = 1e-12);
             assert_relative_eq!(r.cdf(r.quantile(p)), p, max_relative = 1e-12);
         }
+    }
+
+    #[test]
+    fn log_likelihood_stays_finite_for_far_tail_points() {
+        // Reference log-densities from SciPy 1.18 (`norm`/`lognorm`/`rayleigh`/
+        // `weibull_min.logpdf`); each density itself underflows to 0 in f64.
+        let cases = [
+            (
+                FittedDistribution::Normal { mean: 0.0, sd: 1.0 },
+                40.0,
+                -800.918_938_533_204_7,
+            ),
+            (
+                FittedDistribution::Lognormal {
+                    mu: 0.0,
+                    sigma: 0.5,
+                },
+                1e-200,
+                -423_691.557_611_025_7,
+            ),
+            (
+                FittedDistribution::Rayleigh { sigma: 1.0 },
+                50.0,
+                -1_246.087_976_994_571_8,
+            ),
+            (
+                FittedDistribution::Weibull {
+                    shape: 2.0,
+                    scale: 1.0,
+                },
+                30.0,
+                -895.905_655_437_777_9,
+            ),
+        ];
+        for (d, x, want) in cases
+        {
+            assert_eq!(d.pdf(x), 0.0);
+            assert_relative_eq!(d.log_pdf(x), want, max_relative = 1e-12);
+            assert_relative_eq!(d.log_likelihood(&[x]), want, max_relative = 1e-12);
+        }
+        // In the bulk, log_pdf agrees with ln(pdf).
+        for d in cases.map(|c| c.0)
+        {
+            for &x in &[0.3, 1.0, 2.5]
+            {
+                assert_relative_eq!(d.log_pdf(x), d.pdf(x).ln(), max_relative = 1e-12);
+            }
+        }
+    }
+
+    #[test]
+    fn best_fit_keeps_a_family_with_one_far_outlier() {
+        // 2000 points at ±1 plus one gross outlier at 100: only the normal
+        // applies (negative values), and the outlier sits ~40.8 fitted sds out.
+        // Its density underflows, but the log-likelihood is finite
+        // (SciPy: Σ norm.logpdf(x, mean, sd(ddof=1)) = −4631.034600452281).
+        let mut data: Vec<f64> = (0..2000)
+            .map(|i| if i % 2 == 0 { -1.0 } else { 1.0 })
+            .collect();
+        data.push(100.0);
+        let best = best_fit(&data).expect("normal always applies to ≥ 2 points");
+        assert!(matches!(best, FittedDistribution::Normal { .. }));
+        assert_relative_eq!(
+            best.log_likelihood(&data),
+            -4_631.034_600_452_281,
+            max_relative = 1e-10
+        );
     }
 
     #[test]
