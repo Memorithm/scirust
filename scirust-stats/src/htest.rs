@@ -450,20 +450,31 @@ pub fn bartlett_test(groups: &[&[f64]]) -> Option<TestResult> {
 /// `observed` and `expected` counts must be the same non-empty length with all
 /// `expected > 0`. `ddof` is the number of parameters estimated from the data
 /// (subtracted from `k − 1` degrees of freedom; pass 0 for a fully-specified
-/// model). Returns `None` on a shape/positivity violation.
+/// model).
+///
+/// Returns `None` on a shape violation, when an `expected` count is not
+/// strictly positive, when any count is NaN or infinite, or when the residual
+/// degrees of freedom are non-positive.
 pub fn chi_square_gof(observed: &[f64], expected: &[f64], ddof: usize) -> Option<TestResult> {
     if observed.len() != expected.len() || observed.is_empty()
     {
         return None;
     }
-    if expected.iter().any(|&e| e <= 0.0)
+    // `e <= 0.0` is false for NaN, so finiteness is checked explicitly.
+    if expected.iter().any(|&e| !(e > 0.0 && e.is_finite()))
+        || observed.iter().any(|o| !o.is_finite())
     {
         return None;
     }
+    // `d · (d / e)` rather than `d² / e`: the square alone overflows once
+    // |o − e| exceeds ~1.3e154 even when the term itself is representable.
     let chi2: f64 = observed
         .iter()
         .zip(expected.iter())
-        .map(|(&o, &e)| (o - e) * (o - e) / e)
+        .map(|(&o, &e)| {
+            let d = o - e;
+            d * (d / e)
+        })
         .sum();
     let df = observed.len() as f64 - 1.0 - ddof as f64;
     if df <= 0.0
@@ -939,6 +950,36 @@ mod tests {
             assert_eq!(r.statistic, f64::INFINITY, "s = {s:e}");
             assert_eq!(r.p_value, 0.0, "s = {s:e}");
         }
+    }
+
+    #[test]
+    fn chi_square_gof_rejects_non_finite_counts() {
+        let obs = [10.0, 12.0, 8.0];
+        let exp = [10.0, 10.0, 10.0];
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY]
+        {
+            let mut e = exp;
+            e[1] = bad;
+            assert!(chi_square_gof(&obs, &e, 0).is_none(), "expected {bad}");
+            let mut o = obs;
+            o[1] = bad;
+            assert!(chi_square_gof(&o, &exp, 0).is_none(), "observed {bad}");
+        }
+    }
+
+    #[test]
+    fn chi_square_gof_large_counts_do_not_overflow() {
+        // Scaling observed and expected by s scales the statistic by s.
+        let obs = [12.0, 8.0, 10.0];
+        let exp = [10.0, 10.0, 10.0];
+        let base = chi_square_gof(&obs, &exp, 0).unwrap().statistic;
+        let s = 1e300;
+        let o: Vec<f64> = obs.iter().map(|v| v * s).collect();
+        let e: Vec<f64> = exp.iter().map(|v| v * s).collect();
+        let r = chi_square_gof(&o, &e, 0).unwrap();
+        assert!(r.statistic.is_finite());
+        assert!((r.statistic / (base * s) - 1.0).abs() < 1e-12);
+        assert!(r.p_value.is_finite() && r.p_value >= 0.0);
     }
 
     #[test]
