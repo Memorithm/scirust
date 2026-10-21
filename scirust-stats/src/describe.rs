@@ -65,7 +65,7 @@ fn max_abs(data: &[f64]) -> f64 {
 
 /// Largest power of two not above a finite, positive `x`, clamped below at the
 /// smallest normal power of two so that dividing by it never overflows.
-fn pow2_floor(x: f64) -> f64 {
+pub(crate) fn pow2_floor(x: f64) -> f64 {
     if x < f64::MIN_POSITIVE
     {
         return f64::MIN_POSITIVE;
