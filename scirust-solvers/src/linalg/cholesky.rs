@@ -6,13 +6,19 @@ use super::Matrix;
 use crate::{SolverError, SolverResult};
 use tracing::warn;
 
-/// Given the largest-magnitude entry seen so far and the matrix size,
-/// returns the pivot-rejection threshold `n · eps · max|·|` (Golub & Van
-/// Loan, *Matrix Computations*, §3.4.6) — relative to scale rather than a
-/// fixed absolute constant, so a regular matrix at a small physical scale
-/// isn't declared singular/non-SPD.
-fn pivot_tol(n: usize, max_abs: f64) -> f64 {
-    (n as f64) * f64::EPSILON * max_abs.max(1e-300)
+/// Pivot-rejection threshold `n · eps · scale` (Golub & Van Loan, *Matrix
+/// Computations*, §3.4.6), where `scale` is the sum of the magnitudes of the
+/// terms that produced the pivot (`a_jj` and the `l_jk²` subtracted from it).
+/// A squared pivot at or below this cannot be told apart from the rounding
+/// error of its own computation.
+///
+/// The threshold is local to each pivot rather than a fixed absolute constant
+/// (a regular matrix at a small physical scale was declared non-SPD) or a
+/// fraction of the matrix's global `max|a_ij|` (a regular matrix whose
+/// variables are in very different units, e.g. `diag(1e34, 1)`, was declared
+/// non-SPD or singular, since its small-scale pivots fall below it).
+fn pivot_tol(n: usize, scale: f64) -> f64 {
+    (n as f64) * f64::EPSILON * scale
 }
 
 fn check_finite(value: f64) -> Result<(), SolverError> {
@@ -28,11 +34,11 @@ fn check_finite(value: f64) -> Result<(), SolverError> {
 /// Renvoie L (matrice triangulaire inf avec zéros au-dessus).
 pub fn cholesky_decompose(a: Matrix) -> SolverResult<Matrix> {
     let n = a.ensure_square()?;
-    let max_abs = (0..n)
-        .flat_map(|i| (0..n).map(move |j| (i, j)))
-        .fold(0.0f64, |acc, (i, j)| acc.max(a[(i, j)].abs()));
-    let piv_tol = pivot_tol(n, max_abs);
     let mut l = Matrix::zeros(n, n);
+    // negligible[j]: the pivot l_jj is indistinguishable from the rounding
+    // error of its own computation (see `pivot_tol`), so it must not be used
+    // as a divisor.
+    let mut negligible = vec![false; n];
 
     for i in 0..n
     {
@@ -62,6 +68,7 @@ pub fn cholesky_decompose(a: Matrix) -> SolverResult<Matrix> {
                     );
                     return Err(SolverError::NotSpd);
                 }
+                negligible[i] = val <= pivot_tol(n, aij.abs() + s);
                 let root = val.sqrt();
                 check_finite(root)?;
                 l[(i, j)] = root;
@@ -69,7 +76,7 @@ pub fn cholesky_decompose(a: Matrix) -> SolverResult<Matrix> {
             else
             {
                 let ljj = l[(j, j)];
-                if ljj.abs() < piv_tol
+                if negligible[j]
                 {
                     warn!(
                         target: "solver",
@@ -155,11 +162,20 @@ pub fn solve_cholesky(l: &Matrix, b: &[f64]) -> SolverResult<Vec<f64>> {
         check_finite(bi)?;
     }
 
-    // L n'est pas reçue avec la matrice A d'origine ; sa propre diagonale est
-    // la référence d'échelle disponible ici (cf. cholesky_decompose, qui
-    // utilise max|a_ij|).
-    let max_abs = (0..n).fold(0.0f64, |acc, i| acc.max(l[(i, i)].abs()));
-    let piv_tol = pivot_tol(n, max_abs);
+    // L n'est pas reçue avec la matrice A d'origine ; l'échelle de référence
+    // de chaque pivot est celle de sa propre ligne, Σ_k l_ik² (= a_ii pour un
+    // L issu de cholesky_decompose), comme dans cholesky_decompose : un pivot
+    // n'est pas comparé au plus grand l_ii de toute la matrice.
+    let diag_ok: Vec<bool> = (0..n)
+        .map(|i| {
+            // Normalised by the row's largest entry so the squares cannot
+            // overflow; a zero row (or a NaN) leaves the pivot rejected.
+            let m = (0..=i).fold(0.0f64, |acc, k| acc.max(l[(i, k)].abs()));
+            let row_sq: f64 = (0..=i).map(|k| (l[(i, k)] / m).powi(2)).sum();
+            let d = l[(i, i)] / m;
+            m > 0.0 && d * d > pivot_tol(n, row_sq)
+        })
+        .collect();
 
     // L · y = b (substitution avant)
     let mut y = vec![0.0; n];
@@ -171,7 +187,7 @@ pub fn solve_cholesky(l: &Matrix, b: &[f64]) -> SolverResult<Vec<f64>> {
             s -= l[(i, j)] * y[j];
         }
         let diag = l[(i, i)];
-        if diag.abs() < piv_tol
+        if !diag_ok[i]
         {
             return Err(SolverError::Singular {
                 row: i,
@@ -191,7 +207,7 @@ pub fn solve_cholesky(l: &Matrix, b: &[f64]) -> SolverResult<Vec<f64>> {
             s -= l[(j, i)] * x[j];
         }
         let diag = l[(i, i)];
-        if diag.abs() < piv_tol
+        if !diag_ok[i]
         {
             return Err(SolverError::Singular {
                 row: i,
@@ -275,6 +291,67 @@ mod tests {
             assert_relative_eq!(*axi, *bi, epsilon = 1e-9, max_relative = 1e-6);
         }
         Ok(())
+    }
+
+    #[test]
+    fn cholesky_with_variables_of_very_different_scales() -> SolverResult<()> {
+        // Regression test: the pivot threshold was `n · eps · max|·|`, global
+        // to the whole matrix. `A = D·B·D` with `B` the SPD matrix of
+        // `cholesky_solve` and `D = diag(1e17, 1, 1)` (one variable expressed
+        // in units 1e17 times larger) is as well-conditioned as `B` after
+        // diagonal scaling, but its second pivot (1.0) fell below the global
+        // threshold (~2.7e19) and the factorization returned `NotSpd`.
+        let b_mat = [4.0, 12.0, -16.0, 12.0, 37.0, -43.0, -16.0, -43.0, 98.0];
+        let d = [1e17, 1.0, 1.0];
+        let a = Matrix::from_row_major(
+            3,
+            3,
+            (0..9).map(|k| d[k / 3] * b_mat[k] * d[k % 3]).collect(),
+        );
+        let l = cholesky_decompose(a.clone())?;
+        assert_relative_eq!(l[(0, 0)], 2e17, max_relative = 1e-12);
+        assert_relative_eq!(l[(1, 1)], 1.0, max_relative = 1e-9);
+        assert_relative_eq!(l[(2, 2)], 3.0, max_relative = 1e-9);
+        // Solution of `A·x = D·[1, 2, 3]` is `x = D⁻¹·B⁻¹·[1, 2, 3]`.
+        let rhs = [1.0, 2.0, 3.0];
+        let x = solve_cholesky(&l, &[d[0] * rhs[0], rhs[1], rhs[2]])?;
+        let b_dense = Matrix::from_row_major(3, 3, b_mat.to_vec());
+        let y = solve_cholesky(&cholesky_decompose(b_dense)?, &rhs)?;
+        for i in 0..3
+        {
+            assert_relative_eq!(x[i] * d[i], y[i], max_relative = 1e-9);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn solve_cholesky_with_a_badly_scaled_diagonal() -> SolverResult<()> {
+        // Regression test for `A = diag(1e34, 1)`: `cholesky_decompose`
+        // compared `l_00 = 1e17` to `n · eps · max|a_ij|` (~4.4e18, in the
+        // units of `A`, not of `L`) and returned `NotSpd`; `solve_cholesky`
+        // compared each `l_ii` to `n · eps · max_i |l_ii|` (~44) and reported
+        // the second diagonal entry (1.0) singular.
+        let a = Matrix::from_row_major(2, 2, vec![1e34, 0.0, 0.0, 1.0]);
+        let l = cholesky_decompose(a)?;
+        assert_relative_eq!(l[(0, 0)], 1e17, max_relative = 1e-12);
+        let x = solve_cholesky(&l, &[2e34, 3.0])?;
+        assert_relative_eq!(x[0], 2.0, max_relative = 1e-12);
+        assert_relative_eq!(x[1], 3.0, max_relative = 1e-12);
+
+        let l = Matrix::from_row_major(2, 2, vec![1e17, 0.0, 0.0, 1.0]);
+        let x = solve_cholesky(&l, &[2e34, 3.0])?;
+        assert_relative_eq!(x[0], 2.0, max_relative = 1e-12);
+        assert_relative_eq!(x[1], 3.0, max_relative = 1e-12);
+        Ok(())
+    }
+
+    #[test]
+    fn solve_cholesky_still_rejects_a_zero_diagonal() {
+        let l = Matrix::from_row_major(2, 2, vec![1.0, 0.0, 1.0, 0.0]);
+        assert!(matches!(
+            solve_cholesky(&l, &[1.0, 1.0]),
+            Err(SolverError::Singular { row: 1, .. })
+        ));
     }
 
     #[test]

@@ -10,13 +10,21 @@ use super::Matrix;
 use crate::{SolverError, SolverResult};
 use tracing::warn;
 
-/// Given the largest-magnitude entry of the matrix and its size, returns the
-/// pivot-rejection threshold `n · eps · max|a_ij|` (Golub & Van Loan, *Matrix
-/// Computations*, §3.4.6) — relative to the matrix's own scale rather than a
-/// fixed absolute constant, so a regular matrix at a small physical scale
-/// isn't declared singular.
-fn pivot_tol(n: usize, max_abs: f64) -> f64 {
-    (n as f64) * f64::EPSILON * max_abs.max(1e-300)
+/// Pivot-rejection threshold `n · eps · scale` (Golub & Van Loan, *Matrix
+/// Computations*, §3.4.6), where `scale` is the sum of the magnitudes of the
+/// terms that produced the candidate pivot during elimination. A pivot at or
+/// below this cannot be told apart from the rounding error of its own
+/// computation and is treated as numerically zero.
+///
+/// The threshold is local to each pivot rather than a fixed absolute constant
+/// (a regular matrix at a small physical scale was declared singular) or a
+/// fraction of the matrix's global `max|a_ij|` (a regular matrix whose rows
+/// are in very different units, e.g. `diag(1e17, 1)`, was declared singular,
+/// since the pivots of its small-scale rows fall below it). Rescaling a row
+/// or column rescales a candidate and its threshold together, and pivots
+/// that are pure cancellation residue (dependent rows) are still rejected.
+fn pivot_tol(n: usize, scale: f64) -> f64 {
+    (n as f64) * f64::EPSILON * scale
 }
 
 fn check_finite(value: f64) -> Result<(), SolverError> {
@@ -36,42 +44,52 @@ pub struct Lu {
     pub piv: Vec<usize>,
     /// Nombre de swaps effectués (pour le signe du déterminant).
     pub swap_count: usize,
-    /// Seuil de pivot (relatif à l'échelle de la matrice d'origine), reporté
-    /// depuis `lu_decompose` pour que `solve_lu` applique le même critère.
-    piv_tol: f64,
+    /// Seuil de chaque pivot `U[k][k]` (relatif à l'échelle locale de son
+    /// calcul, cf. `pivot_tol`), reporté depuis `lu_decompose` pour que
+    /// `solve_lu` applique le même critère.
+    piv_tol: Vec<f64>,
 }
 
 /// Factorisation LU avec pivot partiel par ligne (Doolittle).
 /// Mute `a` (copie locale) ; renvoie l'objet `Lu`.
 pub fn lu_decompose(mut a: Matrix) -> SolverResult<Lu> {
     let n = a.ensure_square()?;
-    let max_abs = (0..n)
-        .flat_map(|i| (0..n).map(move |j| (i, j)))
-        .fold(0.0f64, |acc, (i, j)| acc.max(a[(i, j)].abs()));
-    let piv_tol = pivot_tol(n, max_abs);
+    // mag[(i, j)]: running sum of the magnitudes of the terms that went into
+    // a[(i, j)] during elimination — the scale against which a candidate
+    // pivot is compared (see `pivot_tol`).
+    let mut mag = Matrix::zeros(n, n);
+    for i in 0..n
+    {
+        for j in 0..n
+        {
+            mag[(i, j)] = a[(i, j)].abs();
+        }
+    }
     let mut piv = (0..n).collect::<Vec<_>>();
+    let mut piv_tol = vec![0.0; n];
     let mut swap_count = 0;
 
     for k in 0..n
     {
-        // Pivot partiel
-        let mut max_idx = k;
-        let mut max_val = a[(k, k)].abs();
-        for i in (k + 1)..n
+        // Pivot partiel : le plus grand candidat qui se distingue de l'erreur
+        // d'arrondi de son propre calcul.
+        let mut max_idx = usize::MAX;
+        let mut max_val = 0.0;
+        for i in k..n
         {
             let v = a[(i, k)].abs();
             check_finite(v)?;
-            if v > max_val
+            if v > max_val && v > pivot_tol(n, mag[(i, k)])
             {
                 max_val = v;
                 max_idx = i;
             }
         }
-        if max_val < piv_tol
+        if max_idx == usize::MAX
         {
             warn!(
                 target: "solver",
-                "LU: singular matrix at column {k}, max pivot candidate = {max_val:.3e}",
+                "LU: singular matrix at column {k}, no pivot candidate above rounding level",
             );
             return Err(SolverError::Singular {
                 row: k,
@@ -81,9 +99,11 @@ pub fn lu_decompose(mut a: Matrix) -> SolverResult<Lu> {
         if max_idx != k
         {
             a.swap_rows(k, max_idx);
+            mag.swap_rows(k, max_idx);
             piv.swap(k, max_idx);
             swap_count += 1;
         }
+        piv_tol[k] = pivot_tol(n, mag[(k, k)]);
 
         // Élimination
         let pivot = a[(k, k)];
@@ -94,9 +114,11 @@ pub fn lu_decompose(mut a: Matrix) -> SolverResult<Lu> {
             a[(i, k)] = factor;
             for j in (k + 1)..n
             {
-                let aij = a[(i, j)] - factor * a[(k, j)];
+                let term = factor * a[(k, j)];
+                let aij = a[(i, j)] - term;
                 check_finite(aij)?;
                 a[(i, j)] = aij;
+                mag[(i, j)] += term.abs();
             }
         }
     }
@@ -152,7 +174,7 @@ pub fn solve_lu(lu: &Lu, b: &[f64]) -> SolverResult<Vec<f64>> {
             s -= lu.lu[(i, j)] * x[j];
         }
         let pivot = lu.lu[(i, i)];
-        if pivot.abs() < lu.piv_tol
+        if pivot.abs() <= lu.piv_tol[i]
         {
             warn!(
                 target: "solver",
@@ -265,6 +287,49 @@ mod tests {
         assert_relative_eq!(x[0], 1.4, epsilon = 1e-9);
         assert_relative_eq!(x[1], 1.2, epsilon = 1e-9);
         Ok(())
+    }
+
+    #[test]
+    fn solve_rows_of_very_different_scales() -> SolverResult<()> {
+        // Regression test: the pivot threshold was `n · eps · max|a_ij|`,
+        // global to the whole matrix. With one equation written at a scale of
+        // 1e17 and the other at 1, the second pivot (2.5) fell below that
+        // threshold (~89) and this well-conditioned system (the rows of
+        // `solve_2x2`'s matrix, the first one multiplied by 1e17) was reported
+        // singular.
+        let a = Matrix::from_row_major(2, 2, vec![2e17, 1e17, 1.0, 3.0]);
+        let b = vec![4e17, 5.0];
+        let x = solve(a, &b)?;
+        assert_relative_eq!(x[0], 1.4, epsilon = 1e-12);
+        assert_relative_eq!(x[1], 1.2, epsilon = 1e-12);
+
+        // Same with a plain badly-scaled diagonal matrix.
+        let d = Matrix::from_row_major(2, 2, vec![1e17, 0.0, 0.0, 1.0]);
+        let lu = lu_decompose(d.clone())?;
+        let x = solve_lu(&lu, &[2e17, 3.0])?;
+        assert_relative_eq!(x[0], 2.0, epsilon = 1e-12);
+        assert_relative_eq!(x[1], 3.0, epsilon = 1e-12);
+        assert_relative_eq!(lu.cond(&d)?, 1e17, max_relative = 1e-12);
+        Ok(())
+    }
+
+    #[test]
+    fn dependent_rows_are_still_singular_at_any_scale() {
+        // The local threshold must still reject pivots that are pure
+        // cancellation residue, whatever the scale of the rows.
+        for a in [
+            vec![1.0, 2.0, 2.0, 4.0],
+            vec![1e17, 2e17, 1.0, 2.0],
+            vec![0.1, 0.3, 0.3, 0.9],
+            vec![0.0, 0.0, 0.0, 0.0],
+        ]
+        {
+            let m = Matrix::from_row_major(2, 2, a.clone());
+            assert!(
+                matches!(lu_decompose(m), Err(SolverError::Singular { .. })),
+                "{a:?} should be reported singular"
+            );
+        }
     }
 
     #[test]
