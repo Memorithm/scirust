@@ -1462,6 +1462,70 @@ fn window_vec_builders_match_coeff() {
     }
 }
 
+/// Niveau (dB, relatif au pic) du lobe secondaire le plus haut d'une fenêtre,
+/// par sa transformée de Fourier à temps discret échantillonnée finement sur
+/// `[0, π]` (référence directe, indépendante de `fft`).
+fn peak_sidelobe_db(w: &[f64]) -> f64 {
+    let oversample = 64;
+    let bins = w.len() * oversample / 2;
+    let mag: Vec<f64> = (0..=bins)
+        .map(|k| {
+            let omega = core::f64::consts::PI * k as f64 / bins as f64;
+            let (mut re, mut im) = (0.0f64, 0.0f64);
+            for (n, &wn) in w.iter().enumerate()
+            {
+                re += wn * (omega * n as f64).cos();
+                im -= wn * (omega * n as f64).sin();
+            }
+            re.hypot(im)
+        })
+        .collect();
+    // Fin du lobe principal : premier minimum local après la composante continue.
+    let mut i = 1;
+    while i + 1 < mag.len() && mag[i + 1] <= mag[i]
+    {
+        i += 1;
+    }
+    let side = mag[i..].iter().copied().fold(0.0f64, f64::max);
+    20.0 * (side / mag[0]).log10()
+}
+
+#[test]
+fn window_peak_sidelobe_levels_match_the_documented_table() {
+    // Valeurs du tableau de `window.rs`. Blackman-Harris y annonçait ~92 dB,
+    // le niveau des coefficients de Harris (0.35875, …) ; ses coefficients
+    // arrondis au centième n'atteignent qu'environ 74 dB.
+    let len = 64;
+    let cases: [(&str, Vec<f64>, f64, f64); 4] = [
+        ("hann", window::hann(len), -32.5, -30.5),
+        ("hamming", window::hamming(len), -43.5, -41.5),
+        ("blackman", window::blackman(len), -59.0, -57.0),
+        (
+            "blackman_harris",
+            window::blackman_harris(len),
+            -75.5,
+            -72.5,
+        ),
+    ];
+    for (name, w, lo, hi) in cases
+    {
+        let psl = peak_sidelobe_db(&w);
+        assert!(
+            (lo..=hi).contains(&psl),
+            "{name}: lobe secondaire le plus haut {psl:.2} dB hors de [{lo}, {hi}]"
+        );
+    }
+    // La référence elle-même retrouve les −92 dB des coefficients de Harris.
+    let harris: Vec<f64> = (0..len)
+        .map(|n| {
+            let th = 2.0 * core::f64::consts::PI * n as f64 / len as f64;
+            0.35875 - 0.48829 * th.cos() + 0.14128 * (2.0 * th).cos() - 0.01168 * (3.0 * th).cos()
+        })
+        .collect();
+    let psl = peak_sidelobe_db(&harris);
+    assert!((-93.0..=-91.0).contains(&psl), "Harris exact : {psl:.2} dB");
+}
+
 // ------------------------------------------------------------------ //
 //  Kaiser (paramètre beta, bessel_i0)                                 //
 // ------------------------------------------------------------------ //
