@@ -80,22 +80,6 @@ pub(crate) fn find_segment(xs: &[f64], x: f64) -> usize {
     lo
 }
 
-/// Evaluate a cubic Hermite segment.
-///
-/// The segment spans a node with value `y0` and slope `d0` at its left end and
-/// value `y1`, slope `d1` at its right end, with width `h`. `dx` is
-/// `x - x_left`; values of `dx` outside `[0, h]` extrapolate the same cubic.
-pub(crate) fn hermite(y0: f64, y1: f64, d0: f64, d1: f64, h: f64, dx: f64) -> f64 {
-    let t = dx / h;
-    let t2 = t * t;
-    let t3 = t2 * t;
-    let h00 = 2.0 * t3 - 3.0 * t2 + 1.0;
-    let h10 = t3 - 2.0 * t2 + t;
-    let h01 = -2.0 * t3 + 3.0 * t2;
-    let h11 = t3 - t2;
-    h00 * y0 + h10 * h * d0 + h01 * y1 + h11 * h * d1
-}
-
 /// Solve a tridiagonal linear system with the Thomas algorithm.
 ///
 /// `a` is the sub-diagonal (`a[0]` unused), `b` the main diagonal, `c` the
@@ -120,54 +104,6 @@ pub(crate) fn thomas(a: &[f64], b: &[f64], c: &[f64], d: &[f64]) -> Vec<f64> {
         x[i] = dp[i] - cp[i] * x[i + 1];
     }
     x
-}
-
-/// First derivative of a cubic Hermite segment (same arguments as [`hermite`]).
-pub(crate) fn hermite_derivative(y0: f64, y1: f64, d0: f64, d1: f64, h: f64, dx: f64) -> f64 {
-    let t = dx / h;
-    let t2 = t * t;
-    let dh00 = 6.0 * t2 - 6.0 * t;
-    let dh10 = 3.0 * t2 - 4.0 * t + 1.0;
-    let dh01 = -6.0 * t2 + 6.0 * t;
-    let dh11 = 3.0 * t2 - 2.0 * t;
-    (dh00 * y0 + dh01 * y1) / h + dh10 * d0 + dh11 * d1
-}
-
-/// Second derivative of a cubic Hermite segment (same arguments as [`hermite`]).
-pub(crate) fn hermite_second_derivative(
-    y0: f64,
-    y1: f64,
-    d0: f64,
-    d1: f64,
-    h: f64,
-    dx: f64,
-) -> f64 {
-    let t = dx / h;
-    let ddh00 = 12.0 * t - 6.0;
-    let ddh10 = 6.0 * t - 4.0;
-    let ddh01 = -12.0 * t + 6.0;
-    let ddh11 = 6.0 * t - 2.0;
-    (ddh00 * y0 + ddh01 * y1) / (h * h) + (ddh10 * d0 + ddh11 * d1) / h
-}
-
-/// Exact integral of a cubic Hermite segment between local offsets `p` and `q`.
-///
-/// `p` and `q` are offsets from the segment's left node (like `dx` in
-/// [`hermite`]); values outside `[0, h]` integrate the extrapolated cubic.
-pub(crate) fn hermite_integral(y0: f64, y1: f64, d0: f64, d1: f64, h: f64, p: f64, q: f64) -> f64 {
-    // Antiderivative of the Hermite basis in the unit variable t = dx / h.
-    let anti = |dx: f64| {
-        let t = dx / h;
-        let t2 = t * t;
-        let t3 = t2 * t;
-        let t4 = t3 * t;
-        let i00 = 0.5 * t4 - t3 + t;
-        let i10 = 0.25 * t4 - (2.0 / 3.0) * t3 + 0.5 * t2;
-        let i01 = -0.5 * t4 + t3;
-        let i11 = 0.25 * t4 - t3 / 3.0;
-        i00 * y0 + i10 * h * d0 + i01 * y1 + i11 * h * d1
-    };
-    h * (anti(q) - anti(p))
 }
 
 /// Integrate a piecewise function over `[a, b]` following the segment layout
@@ -205,4 +141,217 @@ where
         }
     }
     sign * total
+}
+
+/// `floor(log2(v))` for a positive finite `v` (normal or subnormal).
+pub(crate) fn floor_log2(v: f64) -> i32 {
+    let bits = v.to_bits();
+    let biased = ((bits >> 52) & 0x7ff) as i32;
+    if biased == 0
+    {
+        // Subnormal: value = mantissa * 2^-1074.
+        let mantissa = bits & ((1u64 << 52) - 1);
+        63 - mantissa.leading_zeros() as i32 - 1074
+    }
+    else
+    {
+        biased - 1023
+    }
+}
+
+/// `v * 2^e`, applied in steps so that intermediate powers stay normal.
+pub(crate) fn ldexp(mut v: f64, mut e: i32) -> f64 {
+    while e != 0
+    {
+        let step = e.clamp(-1000, 1000);
+        v *= f64::from_bits(((1023 + step) as u64) << 52);
+        e -= step;
+    }
+    v
+}
+
+/// Binary exponent of the largest node spacing, so that every width scaled
+/// by `2^-ex` lies in `(0, 2)`. Widths that overflow (node spans beyond
+/// `f64::MAX`) are measured on halved abscissae.
+pub(crate) fn abscissa_exponent(xs: &[f64]) -> i32 {
+    xs.windows(2)
+        .map(|w| {
+            let h = w[1] - w[0];
+            if h.is_finite()
+            {
+                floor_log2(h)
+            }
+            else
+            {
+                floor_log2(0.5 * w[1] - 0.5 * w[0]) + 1
+            }
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+/// Segment widths scaled by `2^-ex` (see [`abscissa_exponent`]).
+pub(crate) fn scaled_widths(xs: &[f64], ex: i32) -> Vec<f64> {
+    xs.windows(2)
+        .map(|w| {
+            let h = w[1] - w[0];
+            if h.is_finite()
+            {
+                ldexp(h, -ex)
+            }
+            else
+            {
+                ldexp(0.5 * w[1] - 0.5 * w[0], 1 - ex)
+            }
+        })
+        .collect()
+}
+
+/// Binary exponent of the largest ordinate magnitude (`0` for all-zero data),
+/// so that every ordinate scaled by `2^-ey` lies in `(-2, 2)`.
+pub(crate) fn ordinate_exponent(ys: &[f64]) -> i32 {
+    let ymax = ys.iter().fold(0.0_f64, |acc, &y| acc.max(y.abs()));
+    if ymax > 0.0 { floor_log2(ymax) } else { 0 }
+}
+
+/// Normalised offsets `u = (x1 - x) / h` and `t = (x - x0) / h` of `x` in
+/// the segment `[x0, x1]`.
+///
+/// At `x == x0` this gives exactly `(1, 0)` and at `x == x1` exactly
+/// `(0, 1)`. When a difference overflows (node spans or queries beyond
+/// `f64::MAX`), all three differences are taken on halved values instead.
+pub(crate) fn unit_offsets(x0: f64, x1: f64, x: f64) -> (f64, f64) {
+    let (mut a, mut b, mut h) = (x1 - x, x - x0, x1 - x0);
+    if !(a.is_finite() && b.is_finite() && h.is_finite())
+    {
+        a = 0.5 * x1 - 0.5 * x;
+        b = 0.5 * x - 0.5 * x0;
+        h = 0.5 * x1 - 0.5 * x0;
+    }
+    (a / h, b / h)
+}
+
+/// Piecewise cubic Hermite interpolant stored in power-of-two scaled units.
+///
+/// Abscissae are scaled by `2^-ex` (largest width in `[1, 2)`) and ordinates
+/// by `2^-ey` (largest magnitude in `[1, 2)`), so the node slopes, which the
+/// caller computes from the scaled widths and ordinates, stay moderate even
+/// when the slopes in the caller's units (`dy / dx`) would overflow or the
+/// differences `y1 - y0`, `x1 - x0` exceed `f64::MAX`. Results are scaled
+/// back with exact power-of-two factors, so they are finite whenever the true
+/// value is representable.
+#[derive(Debug, Clone)]
+pub(crate) struct HermitePieces {
+    xs: Vec<f64>,
+    ys: Vec<f64>,
+    /// Ordinates scaled by `2^-ey`.
+    yn: Vec<f64>,
+    /// Node slopes in scaled units: `dy/dx = dn * 2^(ey - ex)`.
+    dn: Vec<f64>,
+    /// Segment widths scaled by `2^-ex`.
+    hn: Vec<f64>,
+    ex: i32,
+    ey: i32,
+}
+
+impl HermitePieces {
+    /// Scale validated nodes and compute the node slopes with `slopes`, which
+    /// receives the scaled widths and ordinates and must be scale-covariant
+    /// (scaling every slope by `sy / sx` when ordinates scale by `sy` and
+    /// abscissae by `sx`).
+    pub(crate) fn new(xs: &[f64], ys: &[f64], slopes: impl Fn(&[f64], &[f64]) -> Vec<f64>) -> Self {
+        let ex = abscissa_exponent(xs);
+        let ey = ordinate_exponent(ys);
+        let hn = scaled_widths(xs, ex);
+        let yn: Vec<f64> = ys.iter().map(|&y| ldexp(y, -ey)).collect();
+        let dn = slopes(&hn, &yn);
+        Self {
+            xs: xs.to_vec(),
+            ys: ys.to_vec(),
+            yn,
+            dn,
+            hn,
+            ex,
+            ey,
+        }
+    }
+
+    /// Segment index and normalised offsets `(u, t)` for `x`.
+    fn local(&self, x: f64) -> (usize, f64, f64) {
+        let i = find_segment(&self.xs, x);
+        let (u, t) = unit_offsets(self.xs[i], self.xs[i + 1], x);
+        (i, u, t)
+    }
+
+    /// Value of the interpolant at `x`; exact (bit for bit) at every node.
+    pub(crate) fn eval(&self, x: f64) -> f64 {
+        let (i, u, t) = self.local(x);
+        let (y0, y1) = (self.yn[i], self.yn[i + 1]);
+        let (d0, d1) = (self.dn[i], self.dn[i + 1]);
+        // Hermite cubic rewritten as the linear interpolant plus a correction
+        // that vanishes at both nodes, evaluated in scaled units so that
+        // extrapolated values stay finite whenever they are representable:
+        //   p = u y0 + t y1 + u t [(u - t)(y0 - y1) + h (u d0 - t d1)].
+        // Node queries return the stored ordinate directly (t or u is exactly
+        // 0 there), so scaling round-trips can never perturb them.
+        if t == 0.0
+        {
+            return self.ys[i];
+        }
+        if u == 0.0
+        {
+            return self.ys[i + 1];
+        }
+        let correction = u * t * ((u - t) * (y0 - y1) + self.hn[i] * (u * d0 - t * d1));
+        ldexp(u * y0 + t * y1 + correction, self.ey)
+    }
+
+    /// First derivative of the interpolant at `x`.
+    pub(crate) fn derivative(&self, x: f64) -> f64 {
+        let (i, u, t) = self.local(x);
+        let (y0, y1) = (self.yn[i], self.yn[i + 1]);
+        let (d0, d1) = (self.dn[i], self.dn[i + 1]);
+        let dn = 6.0 * t * u * (y1 - y0) / self.hn[i]
+            + (3.0 * t * t - 4.0 * t + 1.0) * d0
+            + (3.0 * t * t - 2.0 * t) * d1;
+        ldexp(dn, self.ey - self.ex)
+    }
+
+    /// Second derivative of the interpolant at `x` (right-hand piece at
+    /// interior nodes, left-hand piece at the last node).
+    pub(crate) fn second_derivative(&self, x: f64) -> f64 {
+        let (i, _, t) = self.local(x);
+        let (y0, y1) = (self.yn[i], self.yn[i + 1]);
+        let (d0, d1) = (self.dn[i], self.dn[i + 1]);
+        let h = self.hn[i];
+        let ddn = (12.0 * t - 6.0) * (y0 - y1) / (h * h)
+            + ((6.0 * t - 4.0) * d0 + (6.0 * t - 2.0) * d1) / h;
+        ldexp(ddn, self.ey - 2 * self.ex)
+    }
+
+    /// Exact definite integral from `a` to `b` (see [`piecewise_integral`]).
+    ///
+    /// The pieces are summed in scaled units and rescaled once, so partial
+    /// sums cannot overflow when the total is representable.
+    pub(crate) fn integrate(&self, a: f64, b: f64) -> f64 {
+        let scaled = piecewise_integral(&self.xs, a, b, |i, lo, hi| {
+            let (y0, y1) = (self.yn[i], self.yn[i + 1]);
+            let (d0, d1) = (self.dn[i], self.dn[i + 1]);
+            let h = self.hn[i];
+            // Antiderivative of the Hermite basis in the unit variable t.
+            let anti = |x: f64| {
+                let (_, t) = unit_offsets(self.xs[i], self.xs[i + 1], x);
+                let t2 = t * t;
+                let t3 = t2 * t;
+                let t4 = t3 * t;
+                let i00 = 0.5 * t4 - t3 + t;
+                let i10 = 0.25 * t4 - (2.0 / 3.0) * t3 + 0.5 * t2;
+                let i01 = -0.5 * t4 + t3;
+                let i11 = 0.25 * t4 - t3 / 3.0;
+                i00 * y0 + i10 * h * d0 + i01 * y1 + i11 * h * d1
+            };
+            h * (anti(hi) - anti(lo))
+        });
+        ldexp(scaled, self.ex + self.ey)
+    }
 }

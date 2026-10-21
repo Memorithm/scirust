@@ -2,10 +2,7 @@
 
 use crate::error::InterpError;
 use crate::traits::Interpolator;
-use crate::util::{
-    find_segment, hermite, hermite_derivative, hermite_integral, hermite_second_derivative,
-    piecewise_integral, validate_nodes,
-};
+use crate::util::{HermitePieces, validate_nodes};
 
 /// Akima cubic-spline interpolant.
 ///
@@ -18,12 +15,17 @@ use crate::util::{
 /// **Extrapolation** continues the boundary cubic piece: queries outside the
 /// node range are evaluated with the Hermite polynomial of the nearest end
 /// segment.
+///
+/// **Exactness and scale.** [`eval`](Interpolator::eval) returns every node's
+/// ordinate exactly (bit for bit) when queried at that node. Internally the
+/// abscissae and ordinates are rescaled by powers of two before the node
+/// slopes are computed, so the interpolant, its derivatives and its integral
+/// stay finite whenever the true values are representable, including
+/// subnormal node spacings, ordinates near `f64::MAX`, and node spans wider
+/// than `f64::MAX`.
 #[derive(Debug, Clone)]
 pub struct AkimaSpline {
-    xs: Vec<f64>,
-    ys: Vec<f64>,
-    /// Hermite slope at each node.
-    d: Vec<f64>,
+    pieces: HermitePieces,
 }
 
 impl AkimaSpline {
@@ -33,11 +35,8 @@ impl AkimaSpline {
     /// and finite `ys` of matching length; otherwise returns [`InterpError`].
     pub fn new(xs: &[f64], ys: &[f64]) -> Result<Self, InterpError> {
         validate_nodes(xs, ys, 5)?;
-        let d = compute_slopes(xs, ys);
         Ok(Self {
-            xs: xs.to_vec(),
-            ys: ys.to_vec(),
-            d,
+            pieces: HermitePieces::new(xs, ys, compute_slopes),
         })
     }
 
@@ -47,16 +46,7 @@ impl AkimaSpline {
     /// piece outside the node range). The result is continuous across nodes
     /// and equals the stored node slope at each node. A NaN query returns NaN.
     pub fn derivative(&self, x: f64) -> f64 {
-        let i = find_segment(&self.xs, x);
-        let h = self.xs[i + 1] - self.xs[i];
-        hermite_derivative(
-            self.ys[i],
-            self.ys[i + 1],
-            self.d[i],
-            self.d[i + 1],
-            h,
-            x - self.xs[i],
-        )
+        self.pieces.derivative(x)
     }
 
     /// Second derivative of the interpolant at `x`.
@@ -65,16 +55,7 @@ impl AkimaSpline {
     /// interior nodes; at a node the right-hand piece is used (the left-hand
     /// piece at the last node). A NaN query returns NaN.
     pub fn second_derivative(&self, x: f64) -> f64 {
-        let i = find_segment(&self.xs, x);
-        let h = self.xs[i + 1] - self.xs[i];
-        hermite_second_derivative(
-            self.ys[i],
-            self.ys[i + 1],
-            self.d[i],
-            self.d[i + 1],
-            h,
-            x - self.xs[i],
-        )
+        self.pieces.second_derivative(x)
     }
 
     /// Exact definite integral of the interpolant from `a` to `b`.
@@ -84,28 +65,16 @@ impl AkimaSpline {
     /// Reversed bounds flip the sign, equal bounds give `0`, and a non-finite
     /// bound gives NaN.
     pub fn integrate(&self, a: f64, b: f64) -> f64 {
-        piecewise_integral(&self.xs, a, b, |i, lo, hi| {
-            let x0 = self.xs[i];
-            hermite_integral(
-                self.ys[i],
-                self.ys[i + 1],
-                self.d[i],
-                self.d[i + 1],
-                self.xs[i + 1] - x0,
-                lo - x0,
-                hi - x0,
-            )
-        })
+        self.pieces.integrate(a, b)
     }
 }
 
-/// Akima node slopes for the given data.
-fn compute_slopes(xs: &[f64], ys: &[f64]) -> Vec<f64> {
-    let n = xs.len();
+/// Akima node slopes from the segment widths `h` and ordinates `ys` (both
+/// already power-of-two scaled by [`HermitePieces`]).
+fn compute_slopes(h: &[f64], ys: &[f64]) -> Vec<f64> {
+    let n = ys.len();
     // Interval secant slopes m[0..n-1].
-    let m: Vec<f64> = (0..n - 1)
-        .map(|i| (ys[i + 1] - ys[i]) / (xs[i + 1] - xs[i]))
-        .collect();
+    let m: Vec<f64> = (0..n - 1).map(|i| (ys[i + 1] - ys[i]) / h[i]).collect();
 
     // Extend with two phantom slopes at each end (Akima's rule):
     //   s[k] corresponds to secant m_{k-2}, for k in 0..=n+1.
@@ -145,15 +114,6 @@ fn compute_slopes(xs: &[f64], ys: &[f64]) -> Vec<f64> {
 
 impl Interpolator for AkimaSpline {
     fn eval(&self, x: f64) -> f64 {
-        let i = find_segment(&self.xs, x);
-        let h = self.xs[i + 1] - self.xs[i];
-        hermite(
-            self.ys[i],
-            self.ys[i + 1],
-            self.d[i],
-            self.d[i + 1],
-            h,
-            x - self.xs[i],
-        )
+        self.pieces.eval(x)
     }
 }

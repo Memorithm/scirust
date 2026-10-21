@@ -2,7 +2,10 @@
 
 use crate::error::InterpError;
 use crate::traits::Interpolator;
-use crate::util::{find_segment, piecewise_integral, thomas, validate_nodes};
+use crate::util::{
+    abscissa_exponent, find_segment, ldexp, ordinate_exponent, piecewise_integral, scaled_widths,
+    thomas, unit_offsets, validate_nodes,
+};
 
 /// A C² cubic spline through the given nodes.
 ///
@@ -77,38 +80,9 @@ impl CubicSpline {
 
     /// Rescale the validated nodes, solve for the moments and assemble.
     fn build(xs: &[f64], ys: &[f64], bc: BoundaryCondition) -> Self {
-        let ex = xs
-            .windows(2)
-            .map(|w| {
-                let h = w[1] - w[0];
-                if h.is_finite()
-                {
-                    floor_log2(h)
-                }
-                else
-                {
-                    floor_log2(0.5 * w[1] - 0.5 * w[0]) + 1
-                }
-            })
-            .max()
-            .unwrap_or(0);
-        let ymax = ys.iter().fold(0.0_f64, |acc, &y| acc.max(y.abs()));
-        let ey = if ymax > 0.0 { floor_log2(ymax) } else { 0 };
-
-        let hn: Vec<f64> = xs
-            .windows(2)
-            .map(|w| {
-                let h = w[1] - w[0];
-                if h.is_finite()
-                {
-                    ldexp(h, -ex)
-                }
-                else
-                {
-                    ldexp(0.5 * w[1] - 0.5 * w[0], 1 - ex)
-                }
-            })
-            .collect();
+        let ex = abscissa_exponent(xs);
+        let ey = ordinate_exponent(ys);
+        let hn = scaled_widths(xs, ex);
         let yn: Vec<f64> = ys.iter().map(|&y| ldexp(y, -ey)).collect();
         // Clamped end slopes in scaled units (dy/dx scales by 2^(ex - ey)).
         let bc = match bc
@@ -196,50 +170,11 @@ impl CubicSpline {
         (i, u, t)
     }
 
-    /// Normalised offsets `u = (x1 - x) / h` and `t = (x - x0) / h` of `x`
-    /// in segment `i`.
-    ///
-    /// At `x == x0` this gives exactly `(1, 0)` and at `x == x1` exactly
-    /// `(0, 1)`. When a difference overflows (node spans or queries beyond
-    /// `f64::MAX`), all three differences are taken on halved values instead.
+    /// Normalised offsets `(u, t)` of `x` in segment `i` (see
+    /// [`unit_offsets`]).
     fn weights(&self, i: usize, x: f64) -> (f64, f64) {
-        let (x0, x1) = (self.xs[i], self.xs[i + 1]);
-        let (mut a, mut b, mut h) = (x1 - x, x - x0, x1 - x0);
-        if !(a.is_finite() && b.is_finite() && h.is_finite())
-        {
-            a = 0.5 * x1 - 0.5 * x;
-            b = 0.5 * x - 0.5 * x0;
-            h = 0.5 * x1 - 0.5 * x0;
-        }
-        (a / h, b / h)
+        unit_offsets(self.xs[i], self.xs[i + 1], x)
     }
-}
-
-/// `floor(log2(v))` for a positive finite `v` (normal or subnormal).
-fn floor_log2(v: f64) -> i32 {
-    let bits = v.to_bits();
-    let biased = ((bits >> 52) & 0x7ff) as i32;
-    if biased == 0
-    {
-        // Subnormal: value = mantissa * 2^-1074.
-        let mantissa = bits & ((1u64 << 52) - 1);
-        63 - mantissa.leading_zeros() as i32 - 1074
-    }
-    else
-    {
-        biased - 1023
-    }
-}
-
-/// `v * 2^e`, applied in steps so that intermediate powers stay normal.
-fn ldexp(mut v: f64, mut e: i32) -> f64 {
-    while e != 0
-    {
-        let step = e.clamp(-1000, 1000);
-        v *= f64::from_bits(((1023 + step) as u64) << 52);
-        e -= step;
-    }
-    v
 }
 
 /// Which boundary condition to impose when solving for the moments.

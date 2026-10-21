@@ -724,4 +724,141 @@ mod tests {
         let got = p.derivative(1.0);
         assert!(close_rel(got, want, s, 1e-12), "{got:e} vs {want:e}");
     }
+    // ---------------------------------------------------------------- //
+    //  PCHIP / Akima at extreme abscissa and ordinate scales.          //
+    // ---------------------------------------------------------------- //
+
+    /// Check every PCHIP and Akima quantity of `(xs * 2^a, ys * 2^b)` against
+    /// the unscaled interpolant, rescaled by the matching power of two.
+    /// Expected values that overflow or fall below the normal range are
+    /// skipped; nodes must be reproduced bit for bit.
+    fn check_power_of_two_covariance(a: i32, b: i32) {
+        use crate::util::ldexp;
+        let xs = [-2.75, -2.25, -1.0, -0.75, 0.5, 1.25, 2.75];
+        let ys = [1.0, -0.5, 1.9, 0.25, 1.5, -1.0, 0.75];
+        let xs_s: Vec<f64> = xs.iter().map(|&x| ldexp(x, a)).collect();
+        let ys_s: Vec<f64> = ys.iter().map(|&y| ldexp(y, b)).collect();
+        let check = |name: &str, got: f64, want_unscaled: f64, e: i32, scale: f64| {
+            let want = ldexp(want_unscaled, e);
+            let floor = ldexp(scale, e);
+            if !want.is_finite() || !floor.is_normal()
+            {
+                return;
+            }
+            assert!(
+                close_rel(got, want, floor, 1e-12),
+                "{name} (a={a}, b={b}): {got:e} vs {want:e}"
+            );
+        };
+        let p = PchipInterp::new(&xs, &ys).unwrap();
+        let ps = PchipInterp::new(&xs_s, &ys_s).unwrap();
+        let ak = AkimaSpline::new(&xs, &ys).unwrap();
+        let aks = AkimaSpline::new(&xs_s, &ys_s).unwrap();
+        for (x, y) in xs_s.iter().zip(&ys_s)
+        {
+            assert_eq!(ps.eval(*x), *y, "pchip node (a={a}, b={b})");
+            assert_eq!(aks.eval(*x), *y, "akima node (a={a}, b={b})");
+        }
+        for k in 0..=50
+        {
+            let x = -3.0 + 0.125 * f64::from(k);
+            let xq = ldexp(x, a);
+            for (name, f, fs) in [
+                ("pchip", &p as &dyn Interpolator, &ps as &dyn Interpolator),
+                ("akima", &ak, &aks),
+            ]
+            {
+                check(name, fs.eval(xq), f.eval(x), b, 1.0);
+            }
+            check("pchip'", ps.derivative(xq), p.derivative(x), b - a, 1.0);
+            check("akima'", aks.derivative(xq), ak.derivative(x), b - a, 1.0);
+            check(
+                "pchip''",
+                ps.second_derivative(xq),
+                p.second_derivative(x),
+                b - 2 * a,
+                1.0,
+            );
+            check(
+                "akima''",
+                aks.second_derivative(xq),
+                ak.second_derivative(x),
+                b - 2 * a,
+                1.0,
+            );
+        }
+        for (lo, hi) in [(-2.75, 2.75), (-3.0, -1.5), (0.125, 3.0)]
+        {
+            let (lq, hq) = (ldexp(lo, a), ldexp(hi, a));
+            check(
+                "pchip∫",
+                ps.integrate(lq, hq),
+                p.integrate(lo, hi),
+                a + b,
+                1.0,
+            );
+            check(
+                "akima∫",
+                aks.integrate(lq, hq),
+                ak.integrate(lo, hi),
+                a + b,
+                1.0,
+            );
+        }
+    }
+
+    #[test]
+    fn pchip_and_akima_handle_node_spans_beyond_f64_max() {
+        // Before the fix PCHIP's weights `2 h_k + h_{k-1}` and its end-slope
+        // numerators overflowed once the node widths approached f64::MAX, so
+        // eval returned NaN everywhere (node values included).
+        check_power_of_two_covariance(1022, 0);
+        check_power_of_two_covariance(1022, -60);
+    }
+
+    #[test]
+    fn pchip_and_akima_handle_ordinates_near_f64_max() {
+        // Before the fix `y1 - y0` overflowed for opposite-sign ordinates
+        // near f64::MAX, giving NaN for node values and eval.
+        check_power_of_two_covariance(0, 1023);
+        check_power_of_two_covariance(-40, 1023);
+    }
+
+    #[test]
+    fn pchip_and_akima_handle_tiny_and_subnormal_node_spacing() {
+        // Before the fix the slopes `dy / dx` overflowed for subnormal node
+        // spacing (NaN everywhere), and `h * h` underflowed in the second
+        // derivative for spacings below ~1e-162 (NaN).
+        check_power_of_two_covariance(-1060, 0);
+        check_power_of_two_covariance(-1060, -100);
+        check_power_of_two_covariance(-600, -900);
+    }
+
+    #[test]
+    fn pchip_and_akima_keep_slopes_that_underflow_in_caller_units() {
+        // Before the fix tiny ordinates over huge node spacing gave secant
+        // slopes below the subnormal range, which flushed to zero, so eval
+        // between the nodes lost the cubic shape (errors of tens of percent).
+        check_power_of_two_covariance(600, -700);
+        check_power_of_two_covariance(1000, -1000);
+    }
+
+    #[test]
+    fn pchip_and_akima_constant_data_near_f64_max_has_zero_derivative() {
+        // Before the fix the derivative summed `±1.5 * y` terms, which
+        // overflowed to `inf - inf = NaN` for constant ordinates near MAX.
+        let xs = [0.0, 1.0, 2.0, 3.0, 4.0];
+        let ys = [1.7e308; 5];
+        let p = PchipInterp::new(&xs, &ys).unwrap();
+        let a = AkimaSpline::new(&xs, &ys).unwrap();
+        for x in [-0.5, 0.0, 0.3, 1.5, 3.9, 4.0, 4.5]
+        {
+            assert_eq!(p.derivative(x), 0.0);
+            assert_eq!(a.derivative(x), 0.0);
+            assert_eq!(p.second_derivative(x), 0.0);
+            assert_eq!(a.second_derivative(x), 0.0);
+            assert!(close_rel(p.eval(x), 1.7e308, 1.7e308, 1e-14));
+            assert!(close_rel(a.eval(x), 1.7e308, 1.7e308, 1e-14));
+        }
+    }
 }
