@@ -92,11 +92,32 @@ pub fn lmtd(delta_t1: f64, delta_t2: f64) -> Result<f64, ThermoError> {
     positive("delta_t2", delta_t2)?;
     // Relative closeness switch keeps the function smooth and avoids the
     // 0/0 form without any user-visible discontinuity.
-    if (delta_t1 - delta_t2).abs() <= 1e-12 * delta_t1.max(delta_t2)
+    let (hi, lo) = if delta_t1 >= delta_t2
+    {
+        (delta_t1, delta_t2)
+    }
+    else
+    {
+        (delta_t2, delta_t1)
+    };
+    let diff = hi - lo;
+    if diff <= 1e-12 * hi
     {
         return Ok(0.5 * (delta_t1 + delta_t2));
     }
-    Ok((delta_t1 - delta_t2) / (delta_t1 / delta_t2).ln())
+    // ln(hi/lo) = ln_1p((hi − lo)/lo) avoids rounding the ratio when the end
+    // differences are close; when the ratio overflows, fall back to the
+    // difference of logarithms (both terms are then well separated).
+    let r = diff / lo;
+    let log_ratio = if r.is_finite()
+    {
+        r.ln_1p()
+    }
+    else
+    {
+        hi.ln() - lo.ln()
+    };
+    Ok(diff / log_ratio)
 }
 
 /// Effectiveness of a **counter-flow** heat exchanger from `NTU ≥ 0`
@@ -111,8 +132,11 @@ pub fn effectiveness_counterflow(ntu: f64, cr: f64) -> Result<f64, ThermoError> 
     {
         return Ok(ntu / (1.0 + ntu));
     }
-    let e = (-ntu * (1.0 - cr)).exp();
-    Ok((1.0 - e) / (1.0 - cr * e))
+    // Cancellation-free form: with m = expm1(−NTU(1−C_r)) ≤ 0,
+    // 1 − e^{…} = −m and 1 − C_r e^{…} = (1 − C_r) − C_r m (both terms ≥ 0).
+    let one_minus_cr = 1.0 - cr;
+    let m = (-ntu * one_minus_cr).exp_m1();
+    Ok(-m / (one_minus_cr - cr * m))
 }
 
 /// Effectiveness of a **parallel-flow** heat exchanger:
@@ -120,7 +144,8 @@ pub fn effectiveness_counterflow(ntu: f64, cr: f64) -> Result<f64, ThermoError> 
 pub fn effectiveness_parallel(ntu: f64, cr: f64) -> Result<f64, ThermoError> {
     non_negative("ntu", ntu)?;
     in_range("cr", cr, 0.0, 1.0)?;
-    Ok((1.0 - (-ntu * (1.0 + cr)).exp()) / (1.0 + cr))
+    // −expm1(x) = 1 − e^{x} without cancellation when NTU(1+C_r) → 0.
+    Ok(-(-ntu * (1.0 + cr)).exp_m1() / (1.0 + cr))
 }
 
 /// **Dittus–Boelter** Nusselt correlation for fully developed turbulent
@@ -214,6 +239,63 @@ mod tests {
             effectiveness_counterflow(2.0, 0.8).unwrap()
                 > effectiveness_parallel(2.0, 0.8).unwrap()
         );
+    }
+
+    #[test]
+    fn lmtd_keeps_precision_for_nearly_equal_end_differences() {
+        // ΔT₂/ΔT₁ − 1 ≈ 3e-11: just outside the equal-difference switch.
+        // Reference (mpmath, 50 digits): 300.000000004500009254… K.
+        let dt2 = 300.0 * (1.0 + 3e-11);
+        let reference = 300.000_000_004_5;
+        for (a, b) in [(300.0, dt2), (dt2, 300.0)]
+        {
+            let dt = lmtd(a, b).unwrap();
+            assert!(
+                ((dt - reference) / reference).abs() < 1e-14,
+                "LMTD({a}, {b}) = {dt}, relative error {:e}",
+                (dt - reference) / reference
+            );
+        }
+    }
+
+    #[test]
+    fn lmtd_does_not_overflow_for_widely_separated_end_differences() {
+        // ΔT₁/ΔT₂ = 1e600 overflows f64, but the LMTD itself is finite:
+        // (1e300 − 1e-300)/ln(1e600) = 7.238241365054197…e296 (mpmath).
+        let reference = 7.238_241_365_054_197e296;
+        for (a, b) in [(1e300, 1e-300), (1e-300, 1e300)]
+        {
+            let dt = lmtd(a, b).unwrap();
+            assert!(
+                ((dt - reference) / reference).abs() < 1e-14,
+                "LMTD({a:e}, {b:e}) = {dt:e}"
+            );
+        }
+    }
+
+    #[test]
+    fn effectiveness_keeps_precision_for_small_exponents() {
+        // References computed with mpmath (50 digits).
+        let cases = [
+            // (value, reference)
+            (
+                effectiveness_counterflow(1e-10, 0.5).unwrap(),
+                9.999_999_999_250_001e-11,
+            ),
+            (
+                effectiveness_counterflow(2.0, 1.0 - 1e-11).unwrap(),
+                0.666_666_666_668_888_9,
+            ),
+            (
+                effectiveness_parallel(1e-14, 0.5).unwrap(),
+                9.999_999_999_999_924e-15,
+            ),
+        ];
+        for (i, (eps, reference)) in cases.into_iter().enumerate()
+        {
+            let rel = ((eps - reference) / reference).abs();
+            assert!(rel < 1e-13, "case {i}: eps = {eps}, relative error {rel:e}");
+        }
     }
 
     #[test]
