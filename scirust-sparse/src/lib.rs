@@ -52,18 +52,27 @@ use std::fmt;
 /// A single sparse column: `(row, value)` pairs used inside [`SparseLu`].
 type SparseCol = Vec<(usize, f64)>;
 
-/// Given the largest-magnitude entry of a matrix and its size, returns the
-/// pivot-rejection threshold `n · eps · max|a_ij|` (Golub & Van Loan, *Matrix
-/// Computations*, §3.4.6). A pivot at or below this is treated as
-/// numerically zero.
+/// Pivot-rejection threshold `n · eps · scale` (Golub & Van Loan, *Matrix
+/// Computations*, §3.4.6), where `scale` is the sum of the magnitudes of the
+/// terms that produced the candidate pivot during elimination. A pivot at or
+/// below this cannot be told apart from the rounding error of its own
+/// computation and is treated as numerically zero.
 ///
-/// This is deliberately *relative* to the matrix's own scale rather than a
-/// fixed absolute constant: a regular matrix at a small physical scale (e.g.
-/// capacitances in Farads, ~1e-12) was previously declared singular by a
-/// fixed `1e-12` cutoff even though it is perfectly well-conditioned once
-/// rescaled.
-fn pivot_tol(n: usize, max_abs: f64) -> f64 {
-    (n as f64) * f64::EPSILON * max_abs.max(1e-300)
+/// The threshold is *local* to each pivot rather than tied to a fixed
+/// absolute constant or to the largest entry of the whole matrix:
+///
+/// * a regular matrix at a small physical scale (e.g. capacitances in Farads,
+///   ~1e-12) was previously declared singular by a fixed `1e-12` cutoff;
+/// * a regular matrix whose equations are written in very different units
+///   (rows scaled by, say, 1e15 relative to each other) was declared
+///   singular by a cutoff relative to the matrix's global `max|a_ij|`, since
+///   the pivots of the small-scale rows fall below it.
+///
+/// Rescaling a row or column of the matrix rescales a candidate and its
+/// threshold together, and pivots that are pure cancellation residue
+/// (dependent rows) are still rejected.
+fn pivot_tol(n: usize, scale: f64) -> f64 {
+    (n as f64) * f64::EPSILON * scale
 }
 
 /// Errors returned by the sparse matrix and solver routines.
@@ -938,7 +947,11 @@ impl SparseLu {
     /// Factor a square sparse matrix into `P·A = L·U` with partial pivoting.
     ///
     /// Returns [`SparseError::NotSquare`] for a rectangular matrix and
-    /// [`SparseError::Singular`] if a (numerically) zero pivot is encountered.
+    /// [`SparseError::Singular`] if a (numerically) zero pivot is encountered:
+    /// no candidate pivot of a column stands above the rounding error of its
+    /// own elimination. The test is local to each pivot rather than relative
+    /// to the largest entry of `a`, so rows or columns of very different
+    /// magnitudes do not trigger it.
     pub fn factor(a: &CscMatrix) -> Result<SparseLu, SparseError> {
         if a.rows != a.cols
         {
@@ -948,8 +961,6 @@ impl SparseLu {
             });
         }
         let n = a.rows;
-        let max_abs = a.data.iter().fold(0.0f64, |acc, &v| acc.max(v.abs()));
-        let piv_tol = pivot_tol(n, max_abs);
         // pinv[i] == usize::MAX means original row `i` is not yet a pivot;
         // otherwise it holds that row's permuted pivot index.
         let mut pinv = vec![usize::MAX; n];
@@ -958,6 +969,9 @@ impl SparseLu {
         let mut u_cols: Vec<SparseCol> = vec![Vec::new(); n];
         let mut u_diag = vec![0.0f64; n];
         let mut x = vec![0.0f64; n];
+        // Running sum of |terms| that went into each x[i]: the scale against
+        // which a candidate pivot is compared (see `pivot_tol`).
+        let mut mag = vec![0.0f64; n];
 
         for k in 0..n
         {
@@ -966,11 +980,16 @@ impl SparseLu {
             {
                 *v = 0.0;
             }
+            for v in mag.iter_mut()
+            {
+                *v = 0.0;
+            }
             let cs = a.indptr[k];
             let ce = a.indptr[k + 1];
             for t in cs..ce
             {
                 x[a.indices[t]] = a.data[t];
+                mag[a.indices[t]] = a.data[t].abs();
             }
 
             // Forward-solve L x = A(:,k) using the columns computed so far,
@@ -985,6 +1004,7 @@ impl SparseLu {
                     for &(i, lij) in &l_cols[j]
                     {
                         x[i] -= lij * xj;
+                        mag[i] += (lij * xj).abs();
                     }
                 }
             }
@@ -1000,22 +1020,23 @@ impl SparseLu {
             }
 
             // Partial pivoting: pick the largest-magnitude candidate among the
-            // rows that have not yet been used as a pivot.
+            // rows that have not yet been used as a pivot, ignoring candidates
+            // that are indistinguishable from their own rounding error.
             let mut piv_row = usize::MAX;
             let mut piv_mag = 0.0;
             for i in 0..n
             {
                 if pinv[i] == usize::MAX
                 {
-                    let mag = x[i].abs();
-                    if mag > piv_mag
+                    let m = x[i].abs();
+                    if m > piv_mag && m > pivot_tol(n, mag[i])
                     {
-                        piv_mag = mag;
+                        piv_mag = m;
                         piv_row = i;
                     }
                 }
             }
-            if piv_row == usize::MAX || piv_mag <= piv_tol
+            if piv_row == usize::MAX
             {
                 return Err(SparseError::Singular);
             }
@@ -1111,7 +1132,10 @@ impl SparseLu {
 ///
 /// Returns [`SparseError::DimensionMismatch`] if the slice lengths are
 /// inconsistent and [`SparseError::ZeroPivot`] if elimination hits a zero
-/// pivot.
+/// pivot (an exact zero `diag[0]`, or an eliminated pivot that does not stand
+/// above the rounding error of its own elimination; the test is local to each
+/// row rather than relative to the largest coefficient, so rows of very
+/// different magnitudes do not trigger it).
 ///
 /// # Example
 ///
@@ -1167,14 +1191,9 @@ pub fn solve_tridiagonal(
     let mut c_prime = vec![0.0f64; n];
     let mut d_prime = vec![0.0f64; n];
 
-    let max_abs = sub
-        .iter()
-        .chain(diag.iter())
-        .chain(sup.iter())
-        .fold(0.0f64, |acc, &v| acc.max(v.abs()));
-    let piv_tol = pivot_tol(n, max_abs);
-
-    if diag[0].abs() <= piv_tol
+    // The first pivot is an input entry, not the result of an elimination:
+    // only an exact zero is singular there.
+    if diag[0] == 0.0
     {
         return Err(SparseError::ZeroPivot { index: 0 });
     }
@@ -1186,8 +1205,9 @@ pub fn solve_tridiagonal(
 
     for i in 1..n
     {
-        let denom = diag[i] - sub[i - 1] * c_prime[i - 1];
-        if denom.abs() <= piv_tol
+        let elim = sub[i - 1] * c_prime[i - 1];
+        let denom = diag[i] - elim;
+        if denom.abs() <= pivot_tol(n, diag[i].abs() + elim.abs())
         {
             return Err(SparseError::ZeroPivot { index: i });
         }
@@ -1653,6 +1673,86 @@ mod tests {
             .expect("a regular tridiagonal system at a tiny scale must not be reported singular");
         let want = dense_solve(&dense, &rhs);
         assert_close(&got, &want, 1e-6);
+    }
+
+    #[test]
+    fn sparse_lu_solves_rows_at_very_different_scales() {
+        // Equations written in different units (rows scaled by 1e15) form a
+        // regular matrix; scaling rows does not change the solution. A
+        // pivot threshold taken relative to the largest entry of the whole
+        // matrix rejected the pivots of the unscaled rows as "zero".
+        let n = 6;
+        let base = rand_ddom(n, 0x5CA1_E001);
+        let mut seed = 0x5CA1_E002u64;
+        let b0: Vec<f64> = (0..n).map(|_| next_sym(&mut seed)).collect();
+        let want = dense_solve(&base, &b0);
+        let row_scale = |i: usize| if i < n / 2 { 1e15 } else { 1.0 };
+        let a: Vec<Vec<f64>> = base
+            .iter()
+            .enumerate()
+            .map(|(i, row)| row.iter().map(|v| v * row_scale(i)).collect())
+            .collect();
+        let b: Vec<f64> = b0
+            .iter()
+            .enumerate()
+            .map(|(i, v)| v * row_scale(i))
+            .collect();
+        let lu = SparseLu::factor(&dense_to_csc(&a))
+            .expect("a row-scaled regular matrix must not be reported singular");
+        let got = lu.solve(&b).unwrap();
+        for (g, w) in got.iter().zip(&want)
+        {
+            assert!((g - w).abs() <= 1e-9 * w.abs().max(1.0), "{g} vs {w}");
+        }
+
+        // Smallest case: diag(1e17, 1) is trivially regular.
+        let d = vec![vec![1e17, 0.0], vec![0.0, 1.0]];
+        let x = SparseLu::factor(&dense_to_csc(&d))
+            .expect("diag(1e17, 1) is regular")
+            .solve(&[1e17, 2.0])
+            .unwrap();
+        assert!(
+            (x[0] - 1.0).abs() < 1e-12 && (x[1] - 2.0).abs() < 1e-12,
+            "{x:?}"
+        );
+
+        // Row scaling must not hide a genuine singularity either.
+        let sing = vec![vec![1e15, 2e15], vec![1.0, 2.0]];
+        assert_eq!(
+            SparseLu::factor(&dense_to_csc(&sing)).err(),
+            Some(SparseError::Singular)
+        );
+    }
+
+    #[test]
+    fn tridiagonal_solves_rows_at_very_different_scales() {
+        // Same finding for the Thomas algorithm: a 1-D Laplacian whose first
+        // rows are written in units 1e16 times larger.
+        let n = 6;
+        let row_scale = |i: usize| if i < n / 2 { 1e16 } else { 1.0 };
+        let base = laplacian(n);
+        let b0: Vec<f64> = (0..n).map(|i| (i as f64 * 0.5) - 1.0).collect();
+        let want = dense_solve(&base, &b0);
+        let diag: Vec<f64> = (0..n).map(|i| 2.0 * row_scale(i)).collect();
+        let sub: Vec<f64> = (1..n).map(|i| -row_scale(i)).collect();
+        let sup: Vec<f64> = (0..n - 1).map(|i| -row_scale(i)).collect();
+        let rhs: Vec<f64> = b0
+            .iter()
+            .enumerate()
+            .map(|(i, v)| v * row_scale(i))
+            .collect();
+        let got = solve_tridiagonal(&sub, &diag, &sup, &rhs)
+            .expect("a row-scaled regular tridiagonal system must not hit a zero pivot");
+        for (g, w) in got.iter().zip(&want)
+        {
+            assert!((g - w).abs() <= 1e-9 * w.abs().max(1.0), "{g} vs {w}");
+        }
+
+        // A genuinely singular row-scaled system is still rejected.
+        assert_eq!(
+            solve_tridiagonal(&[1.0], &[1e15, 1.0], &[1e15], &[1.0, 1.0]),
+            Err(SparseError::ZeroPivot { index: 1 })
+        );
     }
 
     #[test]
