@@ -9,10 +9,17 @@
 ///
 /// # Numerical limitations
 ///
-/// The current implementation sums before dividing and does not compensate
-/// rounding or intermediate overflow. For example, two `f64::MAX` samples have
-/// a representable mathematical mean but their intermediate sum overflows.
-/// Do not use this routine as an overflow-safe or order-independent reduction.
+/// The implementation sums before dividing and does not compensate rounding,
+/// so the result depends on sample order and is not a correctly rounded mean.
+/// When every sample is finite but the plain sum overflows, the samples are
+/// rescaled by a power of two before summing, so a representable mean such as
+/// that of two `f64::MAX` samples is returned instead of an infinity.
+///
+/// ```
+/// use scirust_stats::describe::mean;
+/// assert_eq!(mean(&[f64::MAX, f64::MAX]), f64::MAX);
+/// assert_eq!(mean(&[f64::MAX, f64::MAX, -f64::MAX]), f64::MAX / 3.0);
+/// ```
 ///
 /// # Examples
 ///
@@ -37,7 +44,61 @@ pub fn mean(data: &[f64]) -> f64 {
     {
         return f64::NAN;
     }
-    data.iter().sum::<f64>() / data.len() as f64
+    let n = data.len() as f64;
+    let sum = data.iter().sum::<f64>();
+    if sum.is_finite() || data.iter().any(|x| !x.is_finite())
+    {
+        return sum / n;
+    }
+    // Every sample is finite, so the mean is representable, but the plain sum
+    // overflowed. Dividing by a power of two is exact for these magnitudes, and
+    // each rescaled sample is below 2 in magnitude, so the rescaled sum cannot
+    // overflow; `(sum / n) * scale` is bounded by the largest sample.
+    let scale = pow2_floor(max_abs(data));
+    (data.iter().map(|x| x / scale).sum::<f64>() / n) * scale
+}
+
+/// Largest absolute value of finite samples (`0` for an empty slice).
+fn max_abs(data: &[f64]) -> f64 {
+    data.iter().fold(0.0_f64, |acc, x| acc.max(x.abs()))
+}
+
+/// Largest power of two not above a finite, positive `x`, clamped below at the
+/// smallest normal power of two so that dividing by it never overflows.
+fn pow2_floor(x: f64) -> f64 {
+    if x < f64::MIN_POSITIVE
+    {
+        return f64::MIN_POSITIVE;
+    }
+    f64::from_bits(x.to_bits() & 0x7ff0_0000_0000_0000)
+}
+
+/// Unbiased variance as `(scaled, scale)`, meaning `variance = scaled * scale²`
+/// and `std_dev = sqrt(scaled) * scale`. Returns `(NaN, 1)` for fewer than two
+/// samples or any non-finite sample.
+fn scaled_variance(data: &[f64]) -> (f64, f64) {
+    let n = data.len();
+    if n < 2 || data.iter().any(|x| !x.is_finite())
+    {
+        return (f64::NAN, 1.0);
+    }
+    let denom = n as f64 - 1.0;
+    let m = mean(data);
+    let ss = data.iter().map(|x| (x - m) * (x - m)).sum::<f64>();
+    if ss.is_finite() && (ss >= f64::MIN_POSITIVE || data.iter().all(|&x| x == m))
+    {
+        return (ss / denom, 1.0);
+    }
+    // The deviations or their squares overflowed, or the squares underflowed
+    // into the subnormal range and lost digits. Rescale by a power of two so
+    // the largest sample lies in [1, 2): deviations are then at most 4, and
+    // nonzero deviations are at least about 2^-52, so squares neither
+    // overflow nor underflow.
+    let scale = pow2_floor(max_abs(data));
+    let ys = data.iter().map(|x| x / scale);
+    let my = ys.clone().sum::<f64>() / n as f64;
+    let ssy = ys.map(|y| (y - my) * (y - my)).sum::<f64>();
+    (ssy / denom, scale)
 }
 
 /// Unbiased sample variance using the `n - 1` divisor.
@@ -48,9 +109,24 @@ pub fn mean(data: &[f64]) -> f64 {
 ///
 /// # Numerical limitations
 ///
-/// Two passes do not make the reduction universally overflow-safe. The mean,
-/// subtraction, squaring or sum can overflow for finite samples. These
-/// limitations also affect [`std_dev`] and [`std_error`].
+/// When the deviations from the mean or their squares overflow, or the
+/// squares underflow into the subnormal range, the samples are rescaled by a
+/// power of two and the two passes are repeated, so the result is finite and
+/// nonzero whenever the true variance is representable. A variance above
+/// `f64::MAX` still returns infinity; [`std_dev`] and [`std_error`] avoid
+/// forming the variance and stay finite in that case.
+///
+/// ```
+/// use scirust_stats::describe::variance;
+/// // One large outlier among many zeros: the squared deviation overflows,
+/// // but the variance (about 1.96e307) is representable.
+/// let mut data = vec![0.0; 1000];
+/// data.push(1.4e155);
+/// let v = variance(&data);
+/// assert!(v.is_finite() && (v / 1.958e307 - 1.0).abs() < 1e-3);
+/// // A variance above `f64::MAX` is still infinite.
+/// assert_eq!(variance(&[1e200, -1e200]), f64::INFINITY);
+/// ```
 ///
 /// # Examples
 ///
@@ -71,21 +147,24 @@ pub fn mean(data: &[f64]) -> f64 {
 /// assert!(variance(&[1.0, f64::INFINITY]).is_nan());
 /// ```
 pub fn variance(data: &[f64]) -> f64 {
-    let n = data.len();
-    if n < 2
-    {
-        return f64::NAN;
-    }
-    let m = mean(data);
-    data.iter().map(|x| (x - m) * (x - m)).sum::<f64>() / (n as f64 - 1.0)
+    let (scaled, scale) = scaled_variance(data);
+    scaled * scale * scale
 }
 
 /// Sample standard deviation: the square root of [`variance`].
 ///
 /// Uses the unbiased sample variance, not the population variance. Returns
-/// `NaN` for fewer than two samples or non-finite samples. Inherits the
-/// numerical limitations of [`variance`], including intermediate overflow.
-/// Runs in `O(n)` time with `O(1)` auxiliary storage and leaves `data` unchanged.
+/// `NaN` for fewer than two samples or non-finite samples. The square root is
+/// taken before undoing the power-of-two rescaling described in [`variance`],
+/// so the result stays finite for finite samples even when the variance itself
+/// would overflow. Runs in `O(n)` time with `O(1)` auxiliary storage and leaves
+/// `data` unchanged.
+///
+/// ```
+/// use scirust_stats::describe::std_dev;
+/// let s = std_dev(&[1e200, -1e200]);
+/// assert!((s / (2.0_f64.sqrt() * 1e200) - 1.0).abs() < 1e-14);
+/// ```
 ///
 /// # Examples
 ///
@@ -102,15 +181,16 @@ pub fn variance(data: &[f64]) -> f64 {
 /// assert!(std_dev(&[1.0, f64::NAN]).is_nan());
 /// ```
 pub fn std_dev(data: &[f64]) -> f64 {
-    variance(data).sqrt()
+    let (scaled, scale) = scaled_variance(data);
+    scaled.sqrt() * scale
 }
 
 /// Estimated standard error of the mean, `s / sqrt(n)`.
 ///
 /// Here `s` is [`std_dev`] and `n` is the sample count. This computes the usual
 /// independent-sample estimator; it does not correct dependence between samples.
-/// Returns `NaN` for fewer than two samples or non-finite samples and inherits
-/// [`variance`]'s overflow limitations. Runs in `O(n)` time, uses `O(1)` auxiliary
+/// Returns `NaN` for fewer than two samples or non-finite samples and, like
+/// [`std_dev`], stays finite for finite samples. Runs in `O(n)` time, uses `O(1)` auxiliary
 /// storage and leaves `data` unchanged.
 ///
 /// # Examples
@@ -378,6 +458,76 @@ mod tests {
         assert!(mean(&[]).is_nan());
         assert!(variance(&[1.0]).is_nan());
         assert!(median(&[]).is_nan());
+    }
+
+    fn rel(actual: f64, expected: f64) -> f64 {
+        ((actual - expected) / expected).abs()
+    }
+
+    #[test]
+    fn regression_mean_of_finite_samples_does_not_overflow() {
+        // Before the fix the plain sum overflowed to +inf (or inf - inf = NaN).
+        assert_eq!(mean(&[f64::MAX, f64::MAX]), f64::MAX);
+        assert_eq!(mean(&[-f64::MAX, -f64::MAX]), -f64::MAX);
+        assert_eq!(mean(&[f64::MAX, f64::MAX, -f64::MAX]), f64::MAX / 3.0);
+        let m = mean(&[1e308, 1e308, 1e308, -1e308]);
+        assert!(rel(m, 5e307) < 1e-15, "{m}");
+        // Non-finite inputs keep plain floating-point semantics.
+        assert_eq!(mean(&[f64::MAX, f64::INFINITY]), f64::INFINITY);
+        assert!(mean(&[f64::INFINITY, f64::NEG_INFINITY]).is_nan());
+    }
+
+    #[test]
+    fn regression_variance_large_outlier_is_finite() {
+        // The squared deviation (~1.96e310) overflowed although the variance
+        // (exact rational value 1.9580419580419583e307) is representable.
+        let mut data = vec![0.0; 1000];
+        data.push(1.4e155);
+        let v = variance(&data);
+        assert!(rel(v, 1.958_041_958_041_958_3e307) < 1e-12, "{v}");
+        let s = std_dev(&data);
+        assert!(
+            rel(s, 1.958_041_958_041_958_3e307_f64.sqrt()) < 1e-12,
+            "{s}"
+        );
+    }
+
+    #[test]
+    fn regression_std_dev_of_huge_samples_is_finite() {
+        // Variance 2e400 overflows, but the standard deviation is ~1.414e200.
+        let s = std_dev(&[1e200, -1e200]);
+        assert!(rel(s, 2.0_f64.sqrt() * 1e200) < 1e-14, "{s}");
+        assert!(variance(&[1e200, -1e200]).is_infinite());
+        let se = std_error(&[1e200, -1e200]);
+        assert!(rel(se, 1e200) < 1e-14, "{se}");
+        // Opposite extremes: deviations themselves overflowed before the fix.
+        // sqrt(2) * f64::MAX is not representable, so infinity is correct here.
+        assert!(std_dev(&[f64::MAX, -f64::MAX]).is_infinite());
+        let s = std_dev(&[f64::MAX / 2.0, -f64::MAX / 2.0]);
+        assert!(rel(s, f64::MAX / 2.0_f64.sqrt()) < 1e-14, "{s}");
+    }
+
+    #[test]
+    fn regression_std_dev_of_tiny_samples_keeps_precision() {
+        // Squared deviations (1e-320) were subnormal and lost most digits.
+        let s = std_dev(&[1e-160, 3e-160]);
+        assert!(rel(s, 2.0_f64.sqrt() * 1e-160) < 1e-14, "{s}");
+        let s = std_dev(&[2e-300, 4e-300, 6e-300]);
+        assert!(rel(s, 2e-300) < 1e-14, "{s}");
+        assert_eq!(std_dev(&[5e-320, 5e-320]), 0.0);
+    }
+
+    #[test]
+    fn rescaling_keeps_ordinary_results_bit_identical() {
+        let d = [2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0];
+        let m = d.iter().sum::<f64>() / 8.0;
+        let v = d.iter().map(|x| (x - m) * (x - m)).sum::<f64>() / 7.0;
+        assert_eq!(mean(&d).to_bits(), m.to_bits());
+        assert_eq!(variance(&d).to_bits(), v.to_bits());
+        assert_eq!(std_dev(&d).to_bits(), v.sqrt().to_bits());
+        assert!(variance(&[1.0, f64::INFINITY]).is_nan());
+        assert!(std_dev(&[f64::NAN, 1.0]).is_nan());
+        assert!(std_dev(&[f64::INFINITY, f64::INFINITY]).is_nan());
     }
 
     #[test]
