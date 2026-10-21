@@ -7,7 +7,7 @@
 //!   cargo run -p scirust-sciagent --bin collect-data -- --input <external-corpus-dir> --tokenizer ./scirust-sciagent/tokenizer/bpe.json --recursive
 
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -28,41 +28,65 @@ const USER_AGENT: &str = "scirust-sciagent/0.1 (data-collection)";
 fn get_with_retry(
     url: &str,
     max_retries: u32,
-) -> Result<ureq::Response, Box<dyn std::error::Error>> {
+) -> Result<ureq::http::Response<ureq::Body>, Box<dyn std::error::Error>> {
+    // Statuses are inspected here (not turned into errors) so a 429/503 keeps
+    // its `Retry-After` header.
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(120)))
+        .http_status_as_error(false)
+        .build()
+        .into();
     let mut backoff = Duration::from_secs(2);
     let mut attempt = 0;
     loop
     {
-        match ureq::get(url)
-            .set("User-Agent", USER_AGENT)
-            .timeout(Duration::from_secs(120))
-            .call()
+        let resp = agent.get(url).header("User-Agent", USER_AGENT).call()?;
+        let code = resp.status().as_u16();
+        if code == 429 || code == 503
         {
-            Ok(resp) => return Ok(resp),
-            Err(ureq::Error::Status(code, resp)) if code == 429 || code == 503 =>
+            if attempt >= max_retries
             {
-                if attempt >= max_retries
-                {
-                    return Err(format!("{url}: status {code} after {max_retries} retries").into());
-                }
-                // Honor Retry-After (seconds) if the server sent one, else back off.
-                let wait = resp
-                    .header("retry-after")
-                    .and_then(|s| s.trim().parse::<u64>().ok())
-                    .map(Duration::from_secs)
-                    .unwrap_or(backoff);
-                eprintln!(
-                    "  {code} rate-limited — waiting {}s (retry {}/{max_retries})",
-                    wait.as_secs(),
-                    attempt + 1
-                );
-                std::thread::sleep(wait);
-                backoff = (backoff * 2).min(Duration::from_secs(60));
-                attempt += 1;
-            },
-            Err(e) => return Err(e.into()),
+                return Err(format!("{url}: status {code} after {max_retries} retries").into());
+            }
+            // Honor Retry-After (seconds) if the server sent one, else back off.
+            let wait = resp
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.trim().parse::<u64>().ok())
+                .map(Duration::from_secs)
+                .unwrap_or(backoff);
+            eprintln!(
+                "  {code} rate-limited — waiting {}s (retry {}/{max_retries})",
+                wait.as_secs(),
+                attempt + 1
+            );
+            std::thread::sleep(wait);
+            backoff = (backoff * 2).min(Duration::from_secs(60));
+            attempt += 1;
+        }
+        else if !resp.status().is_success()
+        {
+            return Err(format!("{url}: status {code}").into());
+        }
+        else
+        {
+            return Ok(resp);
         }
     }
+}
+
+/// Upper bound on a single response body (crate tarballs and crates.io JSON).
+/// ureq 3 caps bodies at 10 MB by default, below some published tarballs.
+const MAX_BODY_BYTES: u64 = 512 * 1024 * 1024;
+
+fn read_json<T: serde::de::DeserializeOwned>(
+    mut resp: ureq::http::Response<ureq::Body>,
+) -> Result<T, ureq::Error> {
+    resp.body_mut()
+        .with_config()
+        .limit(MAX_BODY_BYTES)
+        .read_json()
 }
 
 // ── crates.io API response shapes ──────────────────────────────────────
@@ -208,7 +232,7 @@ fn fetch_top_crates(count: usize, max_retries: u32) -> Vec<CrateSummary> {
         eprintln!("Error fetching crate list: {e}");
         std::process::exit(1);
     });
-    let api: ApiResponse = resp.into_json().unwrap_or_else(|e| {
+    let api: ApiResponse = read_json(resp).unwrap_or_else(|e| {
         eprintln!("Error parsing crate list JSON: {e}");
         std::process::exit(1);
     });
@@ -223,7 +247,7 @@ fn fetch_top_crates(count: usize, max_retries: u32) -> Vec<CrateSummary> {
                 format!("https://crates.io/api/v1/crates?page={page}&per_page=100&sort=downloads");
             if let Ok(resp) = get_with_retry(&url, max_retries)
             {
-                if let Ok(api) = resp.into_json::<ApiResponse>()
+                if let Ok(api) = read_json::<ApiResponse>(resp)
                 {
                     all.extend(api.crates);
                 }
@@ -251,7 +275,7 @@ fn fetch_and_extract(
     //    tamper-evident (audit `AUDIT_COMPLET.md`, finding S3).
     let detail_url = format!("https://crates.io/api/v1/crates/{}", krate.id);
     let resp = get_with_retry(&detail_url, max_retries)?;
-    let detail: CrateDetail = resp.into_json()?;
+    let detail: CrateDetail = read_json(resp)?;
     let chosen = if krate.max_version.is_empty()
     {
         detail.versions.first().cloned().ok_or("no versions")?
@@ -283,10 +307,13 @@ fn fetch_and_extract(
             "  DL {} v{} ({} downloads)",
             krate.id, version, krate.downloads
         );
-        let resp = get_with_retry(&dl_url, max_retries)?;
+        let mut resp = get_with_retry(&dl_url, max_retries)?;
 
-        let mut body = Vec::new();
-        resp.into_reader().read_to_end(&mut body)?;
+        let body = resp
+            .body_mut()
+            .with_config()
+            .limit(MAX_BODY_BYTES)
+            .read_to_vec()?;
 
         // Supply-chain integrity: verify the SHA-256 of the downloaded bytes
         // against the checksum published by crates.io for this version. A
