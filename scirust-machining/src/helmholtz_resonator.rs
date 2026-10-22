@@ -3,7 +3,7 @@
 //!
 //! ```text
 //! fréquence propre       f = (c / (2·π)) · sqrt(S / (V · L))
-//! longueur effective     L = L0 + 1.7 · r        (col à bride, un côté)
+//! longueur effective     L = L0 + 1.7 · r        (deux extrémités bridées)
 //! cavité réciproque      V = S · (c / (2·π·f))² / L
 //! ```
 //!
@@ -11,9 +11,15 @@
 //! (m/s), `S` aire de la section du col (m²), `V` volume de la cavité (m³),
 //! `L` longueur **effective** (acoustique) du col (m), `L0` longueur physique
 //! du col (m), `r` rayon du col (m). La correction d'embouchure `1.7·r`
-//! correspond à un col cylindrique **bridé d'un seul côté** (bride côté cavité,
-//! extrémité libre côté extérieur) ; ajuster le coefficient pour d'autres
-//! géométries d'extrémités.
+//! correspond à un col cylindrique dont **les deux extrémités sont bridées**
+//! (environ `0.85·r` par extrémité bridée) : l'extrémité côté cavité, débouchant
+//! dans la paroi, et l'extrémité extérieure affleurant une paroi ou une bride.
+//! Une extrémité **non bridée** (tube dépassant dans l'air libre) ne compte
+//! qu'environ `0.6·r` : un col bridé côté cavité mais libre côté extérieur
+//! donne plutôt `L ≈ L0 + 1.45·r`, et un col libre aux deux bouts
+//! `L ≈ L0 + 1.2·r`. Ces coefficients sont des valeurs de premier ordre en
+//! basses fréquences (`k·r ≪ 1`) ; pour ces autres géométries, calculer `L`
+//! soi-même et le passer à [`helmholtz_resonant_frequency`].
 //!
 //! **Convention** : SI cohérent (m, m², m³, m/s, Hz). **Limite honnête** :
 //! cavité à **parois rigides** grande devant le col, longueur d'onde **très
@@ -54,9 +60,20 @@ pub fn helmholtz_resonant_frequency(
 
 /// Longueur effective du col `L = L0 + 1.7·r` (m), correction d'embouchure.
 ///
-/// Ajoute à la longueur physique la masse d'air rayonnée aux extrémités
-/// (col bridé d'un seul côté). C'est cette longueur acoustique qui intervient
+/// Ajoute à la longueur physique la masse d'air rayonnée aux extrémités,
+/// pour un col **bridé aux deux extrémités** (`0.85·r` par extrémité). Un col
+/// dont l'extrémité extérieure est libre (non bridée) a une correction plus
+/// faible, d'environ `1.45·r` : cette fonction la surestime alors et sous-estime
+/// légèrement la fréquence. C'est cette longueur acoustique qui intervient
 /// dans [`helmholtz_resonant_frequency`].
+///
+/// ```
+/// use scirust_machining::helmholtz_resonator::helmholtz_effective_length;
+///
+/// // Col de 3 cm, rayon 1 cm, bridé aux deux bouts : 0,03 + 1,7·0,01.
+/// let l = helmholtz_effective_length(0.03, 0.01);
+/// assert!((l - 0.047).abs() < 1e-12);
+/// ```
 ///
 /// Panique si `physical_length < 0` ou `neck_radius < 0`.
 pub fn helmholtz_effective_length(physical_length: f64, neck_radius: f64) -> f64 {
@@ -144,7 +161,7 @@ mod tests {
 
     #[test]
     fn effective_length_adds_end_correction() {
-        // L = L0 + 1,7·r : L0 = 0,03 m, r = 0,01 m → 0,03 + 0,017 = 0,047 m.
+        // Col bridé aux deux bouts, L = L0 + 1,7·r : L0 = 0,03 m, r = 0,01 m → 0,047 m.
         let l = helmholtz_effective_length(0.03, 0.01);
         assert_relative_eq!(l, 0.047, epsilon = 1e-12);
         // Rayon nul : la longueur effective se réduit à la longueur physique.
