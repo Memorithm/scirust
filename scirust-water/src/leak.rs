@@ -28,10 +28,15 @@ pub struct LeakLocation {
 /// Lag (in samples, in `[-max_lag, max_lag]`) at which `y` best matches `x`, by
 /// maximising the normalised cross-correlation `Σ x[t]·y[t+lag]`. A positive lag
 /// means `y` is delayed relative to `x`.
+///
+/// Lags whose magnitude reaches the longer signal's length have no overlapping
+/// samples, so the search is capped there: an oversized `max_lag` (up to
+/// `usize::MAX`) costs no more than `max(x.len(), y.len())` and never overflows.
 #[allow(clippy::needless_range_loop)]
 pub fn best_lag(x: &[f64], y: &[f64], max_lag: usize) -> (i64, f64) {
     let nx = x.len();
     let ny = y.len();
+    let max_lag = max_lag.min(nx.max(ny));
     let energy = |s: &[f64]| s.iter().map(|v| v * v).sum::<f64>().sqrt();
     let norm = energy(x) * energy(y);
     let mut best = f64::MIN;
@@ -60,6 +65,11 @@ pub fn best_lag(x: &[f64], y: &[f64], max_lag: usize) -> (i64, f64) {
 /// Locate a leak on a pipe segment of length `pipe_length` (m) from two sensor
 /// recordings (`sensor_a`, `sensor_b`), the acoustic `wave_speed` (m/s) and the
 /// `sample_rate` (Hz). Searches lags up to the segment's acoustic length.
+///
+/// The geometry must be physical: `pipe_length` finite and non-negative,
+/// `wave_speed` and `sample_rate` finite and strictly positive. Otherwise no
+/// position can be derived and the result has `dist_from_a = NaN`,
+/// `lag_samples = 0` and `peak_corr = 0.0` instead of panicking.
 pub fn locate_leak(
     sensor_a: &[f64],
     sensor_b: &[f64],
@@ -67,8 +77,24 @@ pub fn locate_leak(
     wave_speed: f64,
     sample_rate: f64,
 ) -> LeakLocation {
+    let valid = pipe_length.is_finite()
+        && pipe_length >= 0.0
+        && wave_speed.is_finite()
+        && wave_speed > 0.0
+        && sample_rate.is_finite()
+        && sample_rate > 0.0;
+    if !valid
+    {
+        return LeakLocation {
+            dist_from_a: f64::NAN,
+            lag_samples: 0,
+            peak_corr: 0.0,
+        };
+    }
     // The physical delay can never exceed the whole segment's transit time.
-    let max_lag = ((pipe_length / wave_speed) * sample_rate).ceil() as usize + 1;
+    // The float-to-int cast saturates; `best_lag` caps the search at the
+    // signal length, so an enormous transit time cannot overflow.
+    let max_lag = (((pipe_length / wave_speed) * sample_rate).ceil() as usize).saturating_add(1);
     let (lag, corr) = best_lag(sensor_a, sensor_b, max_lag);
     let tau = lag as f64 / sample_rate;
     let mut d_a = (pipe_length - wave_speed * tau) / 2.0;
@@ -163,5 +189,40 @@ mod tests {
             "got {}",
             loc.dist_from_a
         );
+    }
+
+    #[test]
+    fn invalid_geometry_returns_nan_instead_of_panicking() {
+        let a = noise(256, 7);
+        let b = a.clone();
+        for (l, c, fs) in [
+            (f64::NAN, 1200.0, 8000.0),
+            (-10.0, 1200.0, 8000.0),
+            (f64::INFINITY, 1200.0, 8000.0),
+            (100.0, 0.0, 8000.0),
+            (100.0, -1200.0, 8000.0),
+            (100.0, f64::NAN, 8000.0),
+            (100.0, 1200.0, 0.0),
+            (100.0, 1200.0, f64::NAN),
+        ]
+        {
+            let loc = locate_leak(&a, &b, l, c, fs);
+            assert!(loc.dist_from_a.is_nan(), "L={l}, c={c}, fs={fs}: {loc:?}");
+            assert_eq!(loc.lag_samples, 0);
+            assert_eq!(loc.peak_corr, 0.0);
+        }
+    }
+
+    #[test]
+    fn huge_transit_time_does_not_overflow_the_lag_search() {
+        // wave speed so small that the transit time saturates the usize cast.
+        let a = noise(128, 3);
+        let b = a.clone();
+        let loc = locate_leak(&a, &b, 100.0, 1e-300, 8000.0);
+        assert_eq!(loc.lag_samples, 0);
+        assert!((loc.dist_from_a - 50.0).abs() < 1e-9, "{loc:?}");
+        let (lag, corr) = best_lag(&a, &b, usize::MAX);
+        assert_eq!(lag, 0);
+        assert!((corr - 1.0).abs() < 1e-12);
     }
 }
