@@ -20,24 +20,33 @@ use crate::YieldPoint;
 /// Indices des points conservés après filtre global : rejette tout point
 /// dont le rendement s'écarte de la moyenne globale de plus de `k_std`
 /// écarts-types (Sudduth & Drummond, filtres "globaux").
+///
+/// Un rendement non fini (`NaN`, `±∞` — mesure absente ou capteur en
+/// défaut) est toujours rejeté, et la moyenne et l'écart-type sont calculés
+/// sur les seuls rendements finis : un point invalide ne peut donc pas faire
+/// rejeter les autres.
 pub fn global_filter(points: &[YieldPoint], k_std: f64) -> Vec<usize> {
-    let n = points.len();
-    if n == 0
+    let finite: Vec<usize> = (0..points.len())
+        .filter(|&i| points[i].yield_value.is_finite())
+        .collect();
+    if finite.is_empty()
     {
         return Vec::new();
     }
-    let mean = points.iter().map(|p| p.yield_value).sum::<f64>() / n as f64;
-    let variance = points
+    let n = finite.len() as f64;
+    let mean = finite.iter().map(|&i| points[i].yield_value).sum::<f64>() / n;
+    let variance = finite
         .iter()
-        .map(|p| (p.yield_value - mean).powi(2))
+        .map(|&i| (points[i].yield_value - mean).powi(2))
         .sum::<f64>()
-        / n as f64;
+        / n;
     let std = variance.sqrt();
     if std < 1e-12
     {
-        return (0..n).collect(); // no variation: nothing to filter
+        return finite; // no variation: nothing to filter
     }
-    (0..n)
+    finite
+        .into_iter()
         .filter(|&i| ((points[i].yield_value - mean) / std).abs() <= k_std)
         .collect()
 }
@@ -60,19 +69,36 @@ fn distance(a: &YieldPoint, b: &YieldPoint) -> f64 {
 /// déterministe des ex æquo de distance par index croissant — adapté aux
 /// tailles de jeux de données de parcelle habituelles, pas à un flux à
 /// très grande échelle.
+///
+/// Un point dont la position ou le rendement n'est pas fini (`NaN`, `±∞`)
+/// est rejeté et n'entre dans le voisinage d'aucun autre point. Un point
+/// valide sans aucun voisin valide (par ex. un jeu d'un seul point) ne peut
+/// pas être jugé localement et est conservé ; `k_neighbors == 0` désactive
+/// le filtre et renvoie tous les indices.
 pub fn local_filter(points: &[YieldPoint], k_neighbors: usize, k_std: f64) -> Vec<usize> {
     let n = points.len();
     if n == 0 || k_neighbors == 0
     {
         return (0..n).collect();
     }
+    let valid = |p: &YieldPoint| p.x.is_finite() && p.y.is_finite() && p.yield_value.is_finite();
     let mut kept = Vec::with_capacity(n);
     for i in 0..n
     {
+        if !valid(&points[i])
+        {
+            continue;
+        }
         let mut dists: Vec<(f64, usize)> = (0..n)
-            .filter(|&j| j != i)
+            .filter(|&j| j != i && valid(&points[j]))
             .map(|j| (distance(&points[i], &points[j]), j))
             .collect();
+        if dists.is_empty()
+        {
+            // No neighbour to compare with: no local evidence against it.
+            kept.push(i);
+            continue;
+        }
         dists.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         let k = k_neighbors.min(dists.len());
         let neighbor_yields: Vec<f64> = dists[..k]
@@ -166,5 +192,66 @@ mod tests {
             "the zone-B anomaly should be rejected locally"
         );
         assert_eq!(local_kept.len(), points.len() - 1);
+    }
+
+    /// Un rendement non fini (capteur en défaut : NaN, ou ±∞) ne doit pas
+    /// contaminer la moyenne et l'écart-type globaux : avant correction, un
+    /// seul NaN rendait `mean` et `std` NaN et **tous** les points étaient
+    /// rejetés.
+    #[test]
+    fn global_filter_rejects_only_the_non_finite_point() {
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY]
+        {
+            let points = vec![
+                pt(0.0, 0.0, 8.0),
+                pt(1.0, 0.0, 9.0),
+                pt(2.0, 0.0, bad),
+                pt(3.0, 0.0, 10.0),
+                pt(4.0, 0.0, 9.5),
+            ];
+            assert_eq!(global_filter(&points, 2.0), vec![0, 1, 3, 4], "bad = {bad}");
+        }
+    }
+
+    /// Les statistiques globales sont celles des seuls points finis : le
+    /// verdict sur les points valides est identique avec ou sans le point
+    /// non fini.
+    #[test]
+    fn global_filter_statistics_ignore_non_finite_points() {
+        let clean = vec![
+            pt(0.0, 0.0, 8.0),
+            pt(1.0, 0.0, 9.0),
+            pt(2.0, 0.0, 10.0),
+            pt(3.0, 0.0, 9.5),
+            pt(4.0, 0.0, 8.5),
+            pt(5.0, 0.0, 50.0),
+        ];
+        let mut dirty = clean.clone();
+        dirty.push(pt(6.0, 0.0, f64::NAN));
+        assert_eq!(global_filter(&clean, 2.0), global_filter(&dirty, 2.0));
+        assert!(global_filter(&[pt(0.0, 0.0, f64::NAN)], 2.0).is_empty());
+    }
+
+    /// Un rendement NaN chez un voisin ne doit pas faire rejeter les points
+    /// valides qui l'entourent (avant correction, la moyenne locale devenait
+    /// NaN et les deux voisins du point NaN étaient rejetés avec lui).
+    #[test]
+    fn local_filter_ignores_non_finite_neighbours() {
+        let mut points: Vec<YieldPoint> = (0..10).map(|i| pt(i as f64, 0.0, 10.0)).collect();
+        points[5].yield_value = f64::NAN;
+        let kept = local_filter(&points, 2, 2.0);
+        let expected: Vec<usize> = (0..10).filter(|&i| i != 5).collect();
+        assert_eq!(kept, expected);
+    }
+
+    /// Un point sans aucun voisin exploitable (jeu à un seul point) ne peut
+    /// pas être jugé localement : il est conservé, comme avec
+    /// `k_neighbors == 0`, au lieu d'être rejeté par une comparaison NaN
+    /// (`0/0` sur un voisinage vide).
+    #[test]
+    fn local_filter_keeps_a_point_without_neighbours() {
+        assert_eq!(local_filter(&[pt(0.0, 0.0, 7.0)], 3, 2.0), vec![0]);
+        let points = vec![pt(0.0, 0.0, 7.0), pt(1.0, 0.0, f64::NAN)];
+        assert_eq!(local_filter(&points, 3, 2.0), vec![0]);
     }
 }
