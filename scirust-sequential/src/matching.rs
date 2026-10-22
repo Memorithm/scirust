@@ -248,7 +248,11 @@ pub fn dynamic_time_warping(seq1: &[f64], seq2: &[f64], step_size: Option<usize>
 /// None`. The path lists 0-based index pairs from `(0, 0)` to
 /// `(n − 1, m − 1)`. If both sequences are empty the result is `(0.0, [])`;
 /// if exactly one is empty no warping path exists and the result is
-/// `(+∞, [])`, matching [`dynamic_time_warping`].
+/// `(+∞, [])`, matching [`dynamic_time_warping`]. If the minimal cost is
+/// not finite (squared differences overflow to `+∞`, or an input is NaN),
+/// the distance is `+∞` or NaN as in [`dynamic_time_warping`] and the path is
+/// still a valid monotone path from `(0, 0)` to `(n − 1, m − 1)`, but it is
+/// not meaningful as an optimal alignment.
 pub fn dynamic_time_warping_with_path(seq1: &[f64], seq2: &[f64]) -> (f64, Vec<(usize, usize)>) {
     let n = seq1.len();
     let m = seq2.len();
@@ -293,7 +297,24 @@ pub fn dynamic_time_warping_with_path(seq1: &[f64], seq2: &[f64]) -> (f64, Vec<(
     while i > 0 || j > 0
     {
         path.push((i - 1, j - 1));
-        match traceback[i][j]
+        // Row 1 and column 1 have a single valid predecessor. When every
+        // candidate cost is +inf (squared differences that overflow, e.g.
+        // 1e200 vs -1e200) or NaN, the stored choice defaults to "up", which
+        // on row 1 would step to row 0 with j > 0 and underflow `i - 1` on
+        // the next iteration.
+        let step = if i == 1 && j > 1
+        {
+            1
+        }
+        else if j == 1 && i > 1
+        {
+            0
+        }
+        else
+        {
+            traceback[i][j]
+        };
+        match step
         {
             0 => i -= 1,
             1 => j -= 1,
@@ -586,6 +607,32 @@ mod tests {
                     (cost.sqrt() - dist).abs() <= 1e-12 * dist.max(1.0),
                     "n={n} m={m}"
                 );
+            }
+        }
+    }
+    #[test]
+    fn dtw_with_path_non_finite_costs_do_not_panic() {
+        // (1e200 - (-1e200))^2 overflows to +inf, so every cell on row 1 is
+        // +inf and the traceback used to step from row 1 to row 0 with j > 0.
+        let cases: Vec<(Vec<f64>, Vec<f64>)> = vec![
+            (vec![1e200], vec![-1e200, 0.0]),
+            (vec![-1e200, 0.0], vec![1e200]),
+            (vec![1e200, 1.0], vec![-1e200, -1e200, 3.0]),
+            (vec![f64::NAN], vec![1.0, 2.0, 3.0]),
+            (vec![1.0, 2.0, 3.0], vec![f64::NAN]),
+        ];
+        for (a, b) in cases
+        {
+            let (dist, path) = dynamic_time_warping_with_path(&a, &b);
+            let plain = dynamic_time_warping(&a, &b, None);
+            assert!(!dist.is_finite(), "dist = {dist}");
+            assert_eq!(dist.is_nan(), plain.is_nan());
+            assert_eq!(path.first(), Some(&(0, 0)));
+            assert_eq!(path.last(), Some(&(a.len() - 1, b.len() - 1)));
+            for w in path.windows(2)
+            {
+                let (di, dj) = (w[1].0 - w[0].0, w[1].1 - w[0].1);
+                assert!(matches!((di, dj), (1, 0) | (0, 1) | (1, 1)), "step {w:?}");
             }
         }
     }
