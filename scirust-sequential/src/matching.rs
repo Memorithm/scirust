@@ -243,10 +243,24 @@ pub fn dynamic_time_warping(seq1: &[f64], seq2: &[f64], step_size: Option<usize>
 }
 
 /// DTW that also returns the optimal warping path.
+///
+/// The distance is the same as [`dynamic_time_warping`] with `step_size =
+/// None`. The path lists 0-based index pairs from `(0, 0)` to
+/// `(n − 1, m − 1)`. If both sequences are empty the result is `(0.0, [])`;
+/// if exactly one is empty no warping path exists and the result is
+/// `(+∞, [])`, matching [`dynamic_time_warping`].
 pub fn dynamic_time_warping_with_path(seq1: &[f64], seq2: &[f64]) -> (f64, Vec<(usize, usize)>) {
     let n = seq1.len();
     let m = seq2.len();
     let inf = f64::INFINITY;
+
+    // With one empty sequence the traceback below would start on row or
+    // column 0 and compute `0 - 1` on a `usize`.
+    if n == 0 || m == 0
+    {
+        let dist = if n == m { 0.0 } else { inf };
+        return (dist, Vec::new());
+    }
 
     let mut dp = vec![vec![inf; m + 1]; n + 1];
     let mut traceback = vec![vec![0u8; m + 1]; n + 1];
@@ -525,5 +539,54 @@ mod tests {
         let full = dynamic_time_warping(&s1, &s2, None);
         let banded = dynamic_time_warping(&s1, &s2, Some(10));
         assert!((full - banded).abs() < 1e-10);
+    }
+
+    #[test]
+    fn dtw_with_path_one_empty_input_returns_infinity_without_panicking() {
+        // The traceback used to compute `0 - 1` on a usize when exactly one
+        // input was empty (overflow panic in debug builds). No warping path
+        // exists in that case, as in `dynamic_time_warping`.
+        let s = vec![1.0, 2.0, 3.0];
+        let empty: Vec<f64> = Vec::new();
+        for (a, b) in [(&s, &empty), (&empty, &s)]
+        {
+            let (dist, path) = dynamic_time_warping_with_path(a, b);
+            assert!(dist.is_infinite() && dist > 0.0, "dist={dist}");
+            assert!(path.is_empty(), "path={path:?}");
+            assert_eq!(dist, dynamic_time_warping(a, b, None));
+        }
+        let (dist, path) = dynamic_time_warping_with_path(&empty, &empty);
+        assert_eq!(dist, 0.0);
+        assert!(path.is_empty());
+    }
+
+    #[test]
+    fn dtw_with_path_agrees_with_distance_and_path_cost() {
+        // For non-empty inputs the path variant gives the unconstrained
+        // distance, and the returned path is a monotone warping path from
+        // (0, 0) to (n - 1, m - 1) whose squared cost equals that distance.
+        for n in 1..=7usize
+        {
+            for m in 1..=7usize
+            {
+                let a: Vec<f64> = (0..n).map(|k| (0.8 * k as f64).sin()).collect();
+                let b: Vec<f64> = (0..m).map(|k| (0.6 * k as f64).cos()).collect();
+                let (dist, path) = dynamic_time_warping_with_path(&a, &b);
+                let full = dynamic_time_warping(&a, &b, None);
+                assert!((dist - full).abs() <= 1e-12 * full.max(1.0), "n={n} m={m}");
+                assert_eq!(path.first(), Some(&(0, 0)));
+                assert_eq!(path.last(), Some(&(n - 1, m - 1)));
+                for w in path.windows(2)
+                {
+                    let (di, dj) = (w[1].0 - w[0].0, w[1].1 - w[0].1);
+                    assert!(matches!((di, dj), (1, 0) | (0, 1) | (1, 1)), "n={n} m={m}");
+                }
+                let cost: f64 = path.iter().map(|&(i, j)| (a[i] - b[j]).powi(2)).sum();
+                assert!(
+                    (cost.sqrt() - dist).abs() <= 1e-12 * dist.max(1.0),
+                    "n={n} m={m}"
+                );
+            }
+        }
     }
 }
