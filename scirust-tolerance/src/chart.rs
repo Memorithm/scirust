@@ -22,7 +22,7 @@
 //! dominates and the re-centering move that would restore the target.
 
 use crate::inertia::Inertia;
-use crate::special::chi2_quantile;
+use crate::special::chi2_quantile_upper;
 use serde::{Deserialize, Serialize};
 
 /// An inertial piloting chart: a target, an inertia budget and a subgroup
@@ -90,7 +90,7 @@ impl PilotingChart {
     /// (e.g. `0.0027` for a 3σ-equivalent limit).
     pub fn upper_limit(&self, alpha: f64) -> f64 {
         let n = self.subgroup.max(1) as f64;
-        self.i_max * (chi2_quantile(n, 1.0 - alpha) / n).sqrt()
+        self.i_max * (chi2_quantile_upper(n, alpha) / n).sqrt()
     }
 
     /// Pilot a subgroup: estimate its inertia, test it against `UPL(alpha)`,
@@ -184,5 +184,21 @@ mod tests {
         let chart = PilotingChart::new(0.0, 1.0, 4);
         let groups = vec![vec![0.1, -0.1, 0.0, 0.05], vec![0.2, 0.3, 0.25, 0.28]];
         assert_eq!(chart.evaluate_run(&groups, 0.0027).len(), 2);
+    }
+
+    #[test]
+    fn upper_limit_is_finite_for_tiny_false_alarm_risk() {
+        // Regression: UPL used χ²_{n}(1 − α), and `1 − 1e-20` rounds to 1, so
+        // the limit was +∞ and every subgroup read as in control. Reference
+        // (mpmath): χ²₅ upper 1e-20 quantile = 103.428977237757949, so
+        // UPL = 0.2·√(103.428977…/5) = 0.909632792890660682.
+        let chart = PilotingChart::new(10.0, 0.2, 5);
+        assert_relative_eq!(
+            chart.upper_limit(1e-20),
+            0.909_632_792_890_660_7,
+            max_relative = 1e-11
+        );
+        let sig = chart.evaluate(&[11.0, 11.1, 10.9, 11.0, 11.0], 1e-20);
+        assert!(!sig.in_control);
     }
 }

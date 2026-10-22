@@ -27,7 +27,7 @@
 //! index *is* the Taguchi index, read against an explicit inertia limit.
 
 use crate::inertia::Inertia;
-use crate::special::{chi2_quantile, inv_normal_cdf, normal_cdf, normal_sf};
+use crate::special::{chi2_quantile, chi2_quantile_upper, inv_normal_cdf, normal_cdf, normal_sf};
 use serde::{Deserialize, Serialize};
 
 /// `Cp = (USL − LSL) / (6σ)` — potential capability (spread only, ignores
@@ -197,7 +197,7 @@ pub fn cp_confidence_interval(cp_hat: f64, n: usize, conf: f64) -> Option<(f64, 
     let nu = (n - 1) as f64;
     let alpha = 1.0 - conf;
     let lo = cp_hat * (chi2_quantile(nu, alpha / 2.0) / nu).sqrt();
-    let hi = cp_hat * (chi2_quantile(nu, 1.0 - alpha / 2.0) / nu).sqrt();
+    let hi = cp_hat * (chi2_quantile_upper(nu, alpha / 2.0) / nu).sqrt();
     Some((lo, hi))
 }
 
