@@ -25,10 +25,17 @@
 //! **Convention** : **SI cohérent** — charges linéiques en **N/m**, charges
 //! concentrées en **N**, longueurs en **m**, module `E` en **Pa**, inertie `I`
 //! en **m⁴**, tassement `δ` en **m** ; tous les moments sont alors renvoyés en
-//! **N·m**. Les fonctions renvoient la **valeur absolue** du moment
-//! d'encastrement : c'est à l'appelant d'affecter le **signe** selon la
-//! convention adoptée (par exemple moments positifs comprimant la fibre
-//! supérieure) et selon le sens du tassement. Types `f64`.
+//! **N·m**. Les formules ci-dessus sont écrites en grandeur (`|M|`), mais les
+//! fonctions **ne prennent pas de valeur absolue** : le résultat est le produit
+//! direct de la formule et porte donc le **signe de la charge** (`w` ou `P`) ou
+//! du **tassement** `δ` fourni. Pour une charge ou un tassement positif, le
+//! résultat est positif et égal à la grandeur `|M|` ; une charge négative (par
+//! exemple dirigée vers le haut) ou un tassement négatif donne un résultat
+//! négatif de même grandeur. Ce signe ne suit **aucune convention de signe des
+//! moments aux appuis** : c'est à l'appelant d'affecter le signe de chaque
+//! moment d'encastrement selon la convention adoptée (par exemple moments
+//! positifs comprimant la fibre supérieure, ou signes opposés aux deux appuis
+//! dans la méthode de Cross). Types `f64`.
 //!
 //! **Limite honnête** : **valeurs classiques de la RDM** pour une poutre
 //! **bi-encastrée prismatique** (section et rigidité `E·I` constantes) en
@@ -45,8 +52,8 @@
 /// la portée d'une poutre bi-encastrée : `|M| = w·L² / 12`.
 ///
 /// `load_per_length` = `w` charge linéique (N/m), `span` = `L` portée (m) ;
-/// renvoie la valeur absolue du moment d'encastrement (N·m), identique aux deux
-/// appuis.
+/// renvoie `w·L² / 12` (N·m), identique en grandeur aux deux appuis. Le résultat
+/// porte le signe de `w` (aucune valeur absolue n'est prise).
 ///
 /// Panique si `load_per_length` est non fini, ou si `span` est non fini ou n'est
 /// pas strictement positif (une portée physique est strictement positive).
@@ -65,8 +72,9 @@ pub fn fem_udl(load_per_length: f64, span: f64) -> f64 {
 /// Moment d'encastrement parfait d'une **charge concentrée appliquée au milieu**
 /// d'une poutre bi-encastrée : `|M| = P·L / 8`.
 ///
-/// `point_load` = `P` charge concentrée (N), `span` = `L` portée (m) ; renvoie la
-/// valeur absolue du moment d'encastrement (N·m), identique aux deux appuis.
+/// `point_load` = `P` charge concentrée (N), `span` = `L` portée (m) ; renvoie
+/// `P·L / 8` (N·m), identique en grandeur aux deux appuis. Le résultat porte le
+/// signe de `P` (aucune valeur absolue n'est prise).
 ///
 /// Panique si `point_load` est non fini, ou si `span` est non fini ou n'est pas
 /// strictement positif (une portée physique est strictement positive).
@@ -88,8 +96,9 @@ pub fn fem_point_center(point_load: f64, span: f64) -> f64 {
 ///
 /// `point_load` = `P` charge concentrée (N), `distance_a` = `a` distance de la
 /// charge à l'appui considéré (m), `distance_b` = `b` distance de la charge à
-/// l'appui opposé (m, avec `a + b = L`), `span` = `L` portée (m) ; renvoie la
-/// valeur absolue du moment d'encastrement à cet appui (N·m). Le moment à
+/// l'appui opposé (m, avec `a + b = L`), `span` = `L` portée (m) ; renvoie
+/// `P·a·b² / L²` (N·m), le moment d'encastrement à cet appui, qui porte le signe
+/// de `P` (aucune valeur absolue n'est prise). Le moment à
 /// l'appui opposé s'obtient en permutant `a` et `b` : `Mba = P·a²·b / L²`.
 ///
 /// Panique si `point_load` est non fini, si `distance_a` ou `distance_b` est non
@@ -125,8 +134,9 @@ pub fn fem_point_general(point_load: f64, distance_a: f64, distance_b: f64, span
 /// = w·L²/20` et `M(x = 0) = ∫ q·x·(L−x)²/L² dx = w·L²/30`.)
 ///
 /// `peak_load_per_length` = `w` valeur de crête de la charge linéique (N/m),
-/// `span` = `L` portée (m) ; renvoie la valeur absolue du moment d'encastrement à
-/// l'appui côté crête (N·m).
+/// `span` = `L` portée (m) ; renvoie `w·L² / 20` (N·m), le moment d'encastrement
+/// à l'appui côté crête, qui porte le signe de `w` (aucune valeur absolue n'est
+/// prise).
 ///
 /// Panique si `peak_load_per_length` est non fini, ou si `span` est non fini ou
 /// n'est pas strictement positif (une portée physique est strictement positive).
@@ -148,8 +158,10 @@ pub fn fem_triangular(peak_load_per_length: f64, span: f64) -> f64 {
 ///
 /// `elastic_modulus` = `E` module d'élasticité longitudinal (Pa), `inertia` =
 /// `I` moment d'inertie de flexion de la section (m⁴), `settlement` = `δ`
-/// tassement différentiel (m), `span` = `L` portée (m) ; renvoie la valeur
-/// absolue du moment d'encastrement engendré (N·m), identique aux deux appuis.
+/// tassement différentiel (m), `span` = `L` portée (m) ; renvoie
+/// `6·E·I·δ / L²` (N·m), identique en grandeur aux deux appuis. Comme `E` et `I`
+/// sont strictement positifs, le résultat porte le signe de `δ` (aucune valeur
+/// absolue n'est prise).
 ///
 /// Panique si `settlement` est non fini, si `elastic_modulus` ou `inertia` est
 /// non fini ou n'est pas strictement positif, ou si `span` est non fini ou n'est
@@ -306,6 +318,26 @@ mod tests {
             fem_triangular(w, span) * 2.0 / 3.0,
             zero_end,
             max_relative = 1e-9
+        );
+    }
+
+    /// Les fonctions ne prennent pas de valeur absolue : une charge ou un
+    /// tassement négatif donne le résultat opposé de celui de l'entrée positive
+    /// (la documentation l'annonçait à tort comme une valeur absolue).
+    #[test]
+    fn results_carry_the_sign_of_the_load_or_settlement() {
+        assert_relative_eq!(fem_udl(-12_000.0, 5.0), -25_000.0, epsilon = 1e-6);
+        assert_relative_eq!(fem_point_center(-40_000.0, 8.0), -40_000.0, epsilon = 1e-6);
+        assert_relative_eq!(
+            fem_point_general(-60_000.0, 2.0, 4.0, 6.0),
+            -1_920_000.0 / 36.0,
+            epsilon = 1e-3
+        );
+        assert_relative_eq!(fem_triangular(-9_000.0, 10.0), -45_000.0, epsilon = 1e-6);
+        assert_relative_eq!(
+            fem_support_settlement(2.0e11, 8.0e-5, -0.010, 4.0),
+            -60_000.0,
+            epsilon = 1e-3
         );
     }
 
