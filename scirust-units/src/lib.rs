@@ -169,42 +169,137 @@ impl Dimension {
     }
 
     /// Multiplies two dimensions by adding their exponents component-wise.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any resulting exponent falls outside the `i8` range
+    /// `-128..=127` (in every build profile; in a `const` context this is a
+    /// compile-time error). Use [`Dimension::checked_mul`] for a non-panicking
+    /// variant.
     #[must_use]
     pub const fn mul(self, other: Dimension) -> Dimension {
-        let mut e = self.exponents;
-        let mut i = 0;
-        while i < N
+        match self.checked_mul(other)
         {
-            e[i] += other.exponents[i];
-            i += 1;
+            Some(d) => d,
+            None => panic!("Dimension::mul: exponent overflow (outside i8 range)"),
         }
-        Dimension::from_exponents(e)
     }
 
     /// Divides two dimensions by subtracting the divisor's exponents.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any resulting exponent falls outside the `i8` range
+    /// `-128..=127` (in every build profile; in a `const` context this is a
+    /// compile-time error). Use [`Dimension::checked_div`] for a non-panicking
+    /// variant.
     #[must_use]
     pub const fn div(self, other: Dimension) -> Dimension {
-        let mut e = self.exponents;
-        let mut i = 0;
-        while i < N
+        match self.checked_div(other)
         {
-            e[i] -= other.exponents[i];
-            i += 1;
+            Some(d) => d,
+            None => panic!("Dimension::div: exponent overflow (outside i8 range)"),
         }
-        Dimension::from_exponents(e)
     }
 
     /// Raises the dimension to an integer power by scaling every exponent by `n`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any resulting exponent falls outside the `i8` range
+    /// `-128..=127` (in every build profile; in a `const` context this is a
+    /// compile-time error). Use [`Dimension::checked_powi`] for a
+    /// non-panicking variant.
     #[must_use]
     pub const fn powi(self, n: i32) -> Dimension {
+        match self.checked_powi(n)
+        {
+            Some(d) => d,
+            None => panic!("Dimension::powi: exponent overflow (outside i8 range)"),
+        }
+    }
+
+    /// Checked [`Dimension::mul`]: returns `None` instead of panicking when a
+    /// resulting exponent does not fit in `i8`.
+    ///
+    /// ```
+    /// use scirust_units::Dimension;
+    ///
+    /// assert_eq!(
+    ///     Dimension::FORCE.checked_mul(Dimension::LENGTH),
+    ///     Some(Dimension::ENERGY)
+    /// );
+    /// let big = Dimension::LENGTH.powi(127);
+    /// assert_eq!(big.checked_mul(Dimension::LENGTH), None);
+    /// ```
+    #[must_use]
+    pub const fn checked_mul(self, other: Dimension) -> Option<Dimension> {
         let mut e = self.exponents;
         let mut i = 0;
         while i < N
         {
-            e[i] = (e[i] as i32 * n) as i8;
+            e[i] = match e[i].checked_add(other.exponents[i])
+            {
+                Some(x) => x,
+                None => return None,
+            };
             i += 1;
         }
-        Dimension::from_exponents(e)
+        Some(Dimension::from_exponents(e))
+    }
+
+    /// Checked [`Dimension::div`]: returns `None` instead of panicking when a
+    /// resulting exponent does not fit in `i8`.
+    #[must_use]
+    pub const fn checked_div(self, other: Dimension) -> Option<Dimension> {
+        let mut e = self.exponents;
+        let mut i = 0;
+        while i < N
+        {
+            e[i] = match e[i].checked_sub(other.exponents[i])
+            {
+                Some(x) => x,
+                None => return None,
+            };
+            i += 1;
+        }
+        Some(Dimension::from_exponents(e))
+    }
+
+    /// Checked [`Dimension::powi`]: returns `None` instead of panicking when a
+    /// resulting exponent does not fit in `i8`.
+    ///
+    /// ```
+    /// use scirust_units::Dimension;
+    ///
+    /// assert_eq!(Dimension::LENGTH.checked_powi(3), Some(Dimension::VOLUME));
+    /// // 2 * 64 = 128 does not fit in i8.
+    /// assert_eq!(Dimension::AREA.checked_powi(64), None);
+    /// // A dimensionless base stays dimensionless for any power.
+    /// assert_eq!(
+    ///     Dimension::DIMENSIONLESS.checked_powi(i32::MAX),
+    ///     Some(Dimension::DIMENSIONLESS)
+    /// );
+    /// ```
+    #[must_use]
+    pub const fn checked_powi(self, n: i32) -> Option<Dimension> {
+        let mut e = self.exponents;
+        let mut i = 0;
+        while i < N
+        {
+            let scaled = match (e[i] as i32).checked_mul(n)
+            {
+                Some(x) => x,
+                None => return None,
+            };
+            if scaled < i8::MIN as i32 || scaled > i8::MAX as i32
+            {
+                return None;
+            }
+            e[i] = scaled as i8;
+            i += 1;
+        }
+        Some(Dimension::from_exponents(e))
     }
 
     /// Attempts the dimensional square root, halving every exponent.
@@ -277,6 +372,9 @@ pub enum UnitsError {
         /// The offending dimension.
         dim: Dimension,
     },
+    /// A dimension exponent would fall outside the `i8` range `-128..=127`
+    /// that [`Dimension`] stores (for example `m^100 · m^100`).
+    ExponentOverflow,
 }
 
 impl fmt::Display for UnitsError {
@@ -294,6 +392,10 @@ impl fmt::Display for UnitsError {
                     f,
                     "cannot take the square root of non-square dimension {dim}"
                 )
+            },
+            UnitsError::ExponentOverflow =>
+            {
+                write!(f, "dimension exponent overflow (outside i8 range)")
             },
         }
     }
@@ -361,9 +463,29 @@ impl Quantity {
     }
 
     /// Multiplies two quantities: magnitudes multiply and dimensions combine.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a combined dimension exponent falls outside the `i8` range
+    /// (see [`Dimension::mul`]). Use [`Quantity::try_mul`] for a checked
+    /// variant.
     #[must_use]
     pub fn mul(&self, other: &Quantity) -> Quantity {
         Quantity::new(self.value * other.value, self.dim.mul(other.dim))
+    }
+
+    /// Checked [`Quantity::mul`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UnitsError::ExponentOverflow`] if a combined dimension
+    /// exponent falls outside the `i8` range.
+    pub fn try_mul(&self, other: &Quantity) -> Result<Quantity, UnitsError> {
+        let dim = self
+            .dim
+            .checked_mul(other.dim)
+            .ok_or(UnitsError::ExponentOverflow)?;
+        Ok(Quantity::new(self.value * other.value, dim))
     }
 
     /// Divides this quantity by another: magnitudes divide and dimensions
@@ -372,16 +494,18 @@ impl Quantity {
     /// # Errors
     ///
     /// Returns [`UnitsError::DivisionByZero`] if the divisor's magnitude is
-    /// zero.
+    /// zero, and [`UnitsError::ExponentOverflow`] if a resulting dimension
+    /// exponent falls outside the `i8` range.
     pub fn div(&self, other: &Quantity) -> Result<Quantity, UnitsError> {
         if other.value == 0.0
         {
             return Err(UnitsError::DivisionByZero);
         }
-        Ok(Quantity::new(
-            self.value / other.value,
-            self.dim.div(other.dim),
-        ))
+        let dim = self
+            .dim
+            .checked_div(other.dim)
+            .ok_or(UnitsError::ExponentOverflow)?;
+        Ok(Quantity::new(self.value / other.value, dim))
     }
 
     /// Scales the magnitude by a dimensionless factor, leaving the dimension
@@ -393,9 +517,29 @@ impl Quantity {
 
     /// Raises the quantity to an integer power: the magnitude uses
     /// [`f64::powi`] and the dimension's exponents scale by `n`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a scaled dimension exponent falls outside the `i8` range
+    /// (see [`Dimension::powi`]). Use [`Quantity::try_powi`] for a checked
+    /// variant.
     #[must_use]
     pub fn powi(&self, n: i32) -> Quantity {
         Quantity::new(self.value.powi(n), self.dim.powi(n))
+    }
+
+    /// Checked [`Quantity::powi`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UnitsError::ExponentOverflow`] if a scaled dimension exponent
+    /// falls outside the `i8` range.
+    pub fn try_powi(&self, n: i32) -> Result<Quantity, UnitsError> {
+        let dim = self
+            .dim
+            .checked_powi(n)
+            .ok_or(UnitsError::ExponentOverflow)?;
+        Ok(Quantity::new(self.value.powi(n), dim))
     }
 
     /// Attempts the square root of the quantity.
@@ -751,6 +895,87 @@ mod tests {
         assert_eq!(
             UnitsError::DivisionByZero.to_string(),
             "division by zero magnitude"
+        );
+    }
+
+    #[test]
+    fn powi_exponent_overflow_does_not_wrap() {
+        // 1 * 128 does not fit in i8: previously wrapped to m^-128.
+        assert_eq!(Dimension::LENGTH.checked_powi(128), None);
+        // 1 * 256 previously wrapped to 0, i.e. silently dimensionless.
+        assert_eq!(Dimension::LENGTH.checked_powi(256), None);
+        // i8 * i32 product itself overflowing i32.
+        assert_eq!(Dimension::LENGTH.powi(100).checked_powi(i32::MAX), None);
+        // Boundaries that do fit.
+        assert_eq!(
+            Dimension::LENGTH
+                .checked_powi(127)
+                .map(|d| d.exponents()[0]),
+            Some(127)
+        );
+        assert_eq!(
+            Dimension::LENGTH
+                .checked_powi(-128)
+                .map(|d| d.exponents()[0]),
+            Some(-128)
+        );
+        assert_eq!(
+            Dimension::DIMENSIONLESS.checked_powi(i32::MIN),
+            Some(Dimension::DIMENSIONLESS)
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "exponent overflow")]
+    fn powi_panics_on_exponent_overflow() {
+        let _ = Dimension::LENGTH.powi(256);
+    }
+
+    #[test]
+    fn mul_div_exponent_overflow_is_detected() {
+        let big = Dimension::LENGTH.powi(100);
+        assert_eq!(big.checked_mul(big), None);
+        assert_eq!(big.checked_div(big.powi(-1)), None);
+        assert_eq!(
+            big.checked_mul(big.powi(-1)),
+            Some(Dimension::DIMENSIONLESS)
+        );
+        assert_eq!(big.checked_div(big), Some(Dimension::DIMENSIONLESS));
+    }
+
+    #[test]
+    #[should_panic(expected = "exponent overflow")]
+    fn mul_panics_on_exponent_overflow() {
+        let big = Dimension::LENGTH.powi(100);
+        let _ = big.mul(big);
+    }
+
+    #[test]
+    #[should_panic(expected = "exponent overflow")]
+    fn div_panics_on_exponent_overflow() {
+        let big = Dimension::LENGTH.powi(100);
+        let _ = big.div(big.powi(-1));
+    }
+
+    #[test]
+    fn quantity_checked_ops_report_exponent_overflow() {
+        let q = Quantity::meters(1.0);
+        assert_eq!(q.try_powi(256), Err(UnitsError::ExponentOverflow));
+        let big = q.powi(100);
+        assert_eq!(big.try_mul(&big), Err(UnitsError::ExponentOverflow));
+        let inv = Quantity::new(1.0, Dimension::LENGTH.powi(-100));
+        assert_eq!(big.div(&inv), Err(UnitsError::ExponentOverflow));
+        let ok = q.try_powi(3).expect("m^3 fits");
+        assert_eq!(ok.dim, Dimension::VOLUME);
+        assert_eq!(
+            Quantity::newtons(2.0)
+                .try_mul(&Quantity::meters(3.0))
+                .map(|e| e.dim),
+            Ok(Dimension::ENERGY)
+        );
+        assert_eq!(
+            UnitsError::ExponentOverflow.to_string(),
+            "dimension exponent overflow (outside i8 range)"
         );
     }
 }
