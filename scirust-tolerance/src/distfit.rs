@@ -120,7 +120,25 @@ impl FittedDistribution {
     }
 
     /// The probability density at `x`.
+    ///
+    /// Evaluated as a direct product; where that product is not finite
+    /// (an intermediate factor overflowed, e.g. `1/x` at a subnormal `x`
+    /// for the lognormal or `r^(k−1)` in the far right tail of a Weibull,
+    /// giving `inf` or `inf·0 = NaN`), the result is recomputed as
+    /// `exp(log_pdf(x))`, which stays finite wherever the density does.
     pub fn pdf(&self, x: f64) -> f64 {
+        let direct = self.pdf_direct(x);
+        if direct.is_finite() || x.is_nan()
+        {
+            direct
+        }
+        else
+        {
+            self.log_pdf(x).exp()
+        }
+    }
+
+    fn pdf_direct(&self, x: f64) -> f64 {
         let inv_sqrt_2pi = 1.0 / (std::f64::consts::TAU).sqrt();
         match *self
         {
@@ -144,7 +162,10 @@ impl FittedDistribution {
                 {
                     return 0.0;
                 }
-                x / (sigma * sigma) * (-x * x / (2.0 * sigma * sigma)).exp()
+                // (u/σ)·exp(−u²/2), u = x/σ: forming `σ²` or `x²` on its own
+                // under/overflows for |log10 σ| ≳ 154 (NaN, 0 or lost digits).
+                let u = x / sigma;
+                u / sigma * (-0.5 * u * u).exp()
             },
             FittedDistribution::Weibull { shape, scale } =>
             {
@@ -562,5 +583,55 @@ mod tests {
         let data = [0.2, 0.3, 0.35, 0.5, 0.6, 0.9, 1.2, 1.8, 2.5, 4.0, 6.0];
         let best = best_fit(&data).unwrap();
         assert!(!matches!(best, FittedDistribution::Normal { .. }));
+    }
+
+    #[test]
+    fn pdf_stays_finite_where_intermediate_factors_overflow() {
+        // References from the closed-form densities in 50-digit mpmath.
+        let cases = [
+            // Lognormal at subnormal x: 1/(xσ) overflows although the density
+            // is ~5e31 (was inf).
+            (
+                FittedDistribution::Lognormal {
+                    mu: 0.0,
+                    sigma: 20.0,
+                },
+                1e-310,
+                5.033_218_384_435_013e31,
+            ),
+            // Rayleigh with σ² underflowing (was NaN = 0/0).
+            (
+                FittedDistribution::Rayleigh { sigma: 1e-170 },
+                1e-170,
+                6.065_306_597_126_334e169,
+            ),
+            // Rayleigh with σ² overflowing (was 0).
+            (
+                FittedDistribution::Rayleigh { sigma: 1e170 },
+                1e170,
+                6.065_306_597_126_334e-171,
+            ),
+            // Rayleigh with subnormal σ² (digits were lost).
+            (
+                FittedDistribution::Rayleigh { sigma: 1e-160 },
+                1e-160,
+                6.065_306_597_126_334e159,
+            ),
+        ];
+        for (d, x, want) in cases
+        {
+            assert_relative_eq!(d.pdf(x), want, max_relative = 1e-12);
+        }
+        // True density underflows to 0; the direct product was inf·0 = NaN.
+        let weibull = FittedDistribution::Weibull {
+            shape: 5.0,
+            scale: 1.0,
+        };
+        assert_eq!(weibull.pdf(1e80), 0.0);
+        let lognormal = FittedDistribution::Lognormal {
+            mu: 0.0,
+            sigma: 1.0,
+        };
+        assert_eq!(lognormal.pdf(1e-310), 0.0);
     }
 }
