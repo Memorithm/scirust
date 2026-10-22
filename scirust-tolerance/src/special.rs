@@ -12,7 +12,10 @@
 //! - [`normal_cdf`] / [`normal_sf`] — standard-normal CDF `Φ` and survival
 //!   `1 - Φ`, both routed through [`erfc`] so each tail is computed directly.
 //! - [`chi2_cdf`] / [`chi2_quantile`] — χ² CDF (regularised incomplete gamma)
-//!   and its Newton-refined inverse, used by the piloting chart's upper limit.
+//!   and its Newton-refined inverse; [`chi2_sf`] / [`chi2_quantile_upper`] —
+//!   the survival function and its inverse, which take the upper-tail
+//!   probability `α` itself, so `χ²_{k;1−α}` stays finite and accurate for
+//!   tiny `α` (the piloting chart's upper limit, acceptance-sampling plans).
 //! - [`ncchi2_cdf`] — non-central χ² CDF (Poisson mixture of central χ²), the
 //!   sampling law behind the acceptance-sampling operating-characteristic curve.
 
@@ -246,6 +249,28 @@ pub fn chi2_cdf(dof: f64, x: f64) -> f64 {
     gammp(dof / 2.0, x / 2.0)
 }
 
+/// Survival function of the chi-square law with `dof` degrees of freedom,
+/// `P(X > x) = Q(dof/2, x/2) = 1 − chi2_cdf(dof, x)`, computed directly from
+/// the upper regularised incomplete gamma so the upper tail keeps its relative
+/// accuracy (`1 − chi2_cdf` rounds to a multiple of `2⁻⁵³` there).
+///
+/// Above `dof = 20000` it uses the same Wilson–Hilferty normal approximation
+/// as [`chi2_cdf`], through [`normal_sf`].
+pub fn chi2_sf(dof: f64, x: f64) -> f64 {
+    if x <= 0.0
+    {
+        return 1.0;
+    }
+    if dof > 20_000.0
+    {
+        let t = (x / dof).cbrt();
+        let m = 1.0 - 2.0 / (9.0 * dof);
+        let s = (2.0 / (9.0 * dof)).sqrt();
+        return normal_sf((t - m) / s).clamp(0.0, 1.0);
+    }
+    scirust_special::regularized_gamma_q(dof / 2.0, x / 2.0)
+}
+
 /// Cumulative distribution of the **non-central** chi-square law with `dof`
 /// degrees of freedom and non-centrality `lambda ≥ 0`, evaluated as the
 /// Poisson-weighted mixture of central chi-square CDFs
@@ -317,6 +342,13 @@ pub fn ncchi2_cdf(dof: f64, lambda: f64, x: f64) -> f64 {
 /// tightens: a step that would leave the bracket is replaced by a (geometric)
 /// bisection. Wilson–Hilferty alone is ~1 % off near `dof = 2`, and is
 /// unusable in the lower tail.
+///
+/// For `p ≥ ½` it returns [`chi2_quantile_upper`]`(dof, 1 − p)` (the
+/// subtraction is exact there), so the upper half is solved on the survival
+/// function. An upper quantile at risk `α` should be requested as
+/// `chi2_quantile_upper(dof, α)` rather than `chi2_quantile(dof, 1.0 − α)`:
+/// `1.0 − α` rounds to `1.0` (and the result to `+∞`) for `α < 2⁻⁵⁴`, and
+/// carries a relative error up to `≈ 1.1e-16/α` in the tail probability above.
 pub fn chi2_quantile(dof: f64, p: f64) -> f64 {
     if p <= 0.0
     {
@@ -325,6 +357,10 @@ pub fn chi2_quantile(dof: f64, p: f64) -> f64 {
     if p >= 1.0
     {
         return f64::INFINITY;
+    }
+    if p >= 0.5
+    {
+        return chi2_quantile_upper(dof, 1.0 - p);
     }
     let z = inv_normal_cdf(p);
     let a = 2.0 / (9.0 * dof);
@@ -367,18 +403,11 @@ pub fn chi2_quantile(dof: f64, p: f64) -> f64 {
         }
         // ln pdf(x) = (k/2−1)·ln x − x/2 − ln(2^{k/2} Γ(k/2)).
         let ln_pdf = (half - 1.0) * x.ln() - x / 2.0 - ln_norm;
-        // Below the median, Newton runs on ln F(x) − ln p (step (ln F − ln p)·F/f),
-        // which converges fast in the lower tail where F is tiny and strongly
-        // convex; above it, on F(x) − p directly. F/f is formed in log space so
-        // a subnormal pdf does not blow the step up.
-        let newton = if p < 0.5
-        {
-            x - (cdf.ln() - p.ln()) * (cdf.ln() - ln_pdf).exp()
-        }
-        else
-        {
-            x - err / ln_pdf.exp()
-        };
+        // Here p < ½ (the upper half is delegated above). Newton runs on
+        // ln F(x) − ln p (step (ln F − ln p)·F/f), which converges fast in the
+        // lower tail where F is tiny and strongly convex. F/f is formed in log
+        // space so a subnormal pdf does not blow the step up.
+        let newton = x - (cdf.ln() - p.ln()) * (cdf.ln() - ln_pdf).exp();
         let nx = if newton.is_finite() && newton > 0.0 && newton >= lo && newton <= hi
         {
             newton
@@ -394,6 +423,96 @@ pub fn chi2_quantile(dof: f64, p: f64) -> f64 {
         else
         {
             // √lo·√hi rather than √(lo·hi), which underflows for tiny roots.
+            lo.sqrt() * hi.sqrt()
+        };
+        let done = (nx - x).abs() <= x.abs() * 1e-14;
+        x = nx;
+        if done || (hi.is_finite() && hi - lo <= hi * 1e-14)
+        {
+            break;
+        }
+    }
+    x
+}
+
+/// Upper quantile of the chi-square distribution with `dof` degrees of
+/// freedom: the `x` with `P(X > x) = alpha`, i.e. `χ²_{dof; 1−alpha}`.
+///
+/// The tail probability `alpha` is used as given, never through `1 − alpha`,
+/// so small risks keep their relative accuracy and every `alpha` in
+/// `(0, ½]` (down to the smallest subnormal) gives a finite result.
+/// Seeded with Wilson–Hilferty at `z = −Φ⁻¹(alpha)` and refined by Newton
+/// steps on `ln Q(x) − ln alpha` against [`chi2_sf`] (step
+/// `(ln Q − ln alpha)·Q/f`, formed in log space), inside the same
+/// bisection-safeguarded bracket as [`chi2_quantile`]. For `alpha > ½` it
+/// returns [`chi2_quantile`]`(dof, 1 − alpha)`.
+///
+/// `alpha ≤ 0` gives `+∞` and `alpha ≥ 1` gives `0`.
+pub fn chi2_quantile_upper(dof: f64, alpha: f64) -> f64 {
+    if alpha.is_nan() || dof.is_nan()
+    {
+        return f64::NAN;
+    }
+    if alpha <= 0.0
+    {
+        return f64::INFINITY;
+    }
+    if alpha >= 1.0
+    {
+        return 0.0;
+    }
+    if alpha > 0.5
+    {
+        return chi2_quantile(dof, 1.0 - alpha);
+    }
+    let z = -inv_normal_cdf(alpha);
+    let a = 2.0 / (9.0 * dof);
+    let t = 1.0 - a + z * a.sqrt();
+    let mut x = dof * t * t * t;
+    if !(x.is_finite() && x > 0.0)
+    {
+        x = dof.max(1.0);
+    }
+    let half = dof / 2.0;
+    let ln_norm = half * 2.0_f64.ln() + ln_gamma(half);
+    let ln_alpha = alpha.ln();
+    // Bracket on the root: sf(lo) > alpha ≥ sf(hi).
+    let mut lo = 0.0_f64;
+    let mut hi = f64::INFINITY;
+    for _ in 0..200
+    {
+        let sf = chi2_sf(dof, x);
+        if sf == alpha
+        {
+            break;
+        }
+        if sf > alpha
+        {
+            lo = x;
+        }
+        else
+        {
+            hi = x;
+        }
+        let ln_sf = sf.ln();
+        let ln_pdf = (half - 1.0) * x.ln() - x / 2.0 - ln_norm;
+        // d ln Q/dx = −f/Q, so Newton on ln Q − ln alpha steps by
+        // +(ln Q − ln alpha)·Q/f. Near-linear in x in the tail (ln Q ≈ −x/2).
+        let newton = x + (ln_sf - ln_alpha) * (ln_sf - ln_pdf).exp();
+        let nx = if newton.is_finite() && newton > 0.0 && newton >= lo && newton <= hi
+        {
+            newton
+        }
+        else if hi.is_infinite()
+        {
+            2.0 * x.max(lo).max(f64::MIN_POSITIVE)
+        }
+        else if lo <= 0.0
+        {
+            0.5 * hi
+        }
+        else
+        {
             lo.sqrt() * hi.sqrt()
         };
         let done = (nx - x).abs() <= x.abs() * 1e-14;
@@ -612,6 +731,72 @@ mod tests {
             let got = chi2_quantile(dof, p);
             close_rel(got, want, 1e-9);
             close_rel(chi2_cdf(dof, got), p, 1e-8);
+        }
+    }
+
+    #[test]
+    fn chi2_quantile_upper_stays_finite_and_accurate_for_tiny_risks() {
+        // Regression: upper quantiles were taken as chi2_quantile(dof, 1 − α);
+        // `1 − α` rounds to 1 for α < 2⁻⁵⁴, which gave +∞ (χ²₅ at α = 1e-20),
+        // and above that the rounding of `1 − α` shifted the result (χ²₅ at
+        // α = 1e-16 came out 84.63 instead of 84.41). References: mpmath root
+        // of Q(dof/2, x/2) = α (60 digits).
+        let cases = [
+            (1.0, 1e-3, 10.827_566_170_662_732),
+            (8.0, 0.01, 20.090_235_029_663_233),
+            (2.0, 1e-10, 46.051_701_859_880_914),
+            (10.0, 1e-12, 78.471_646_562_838_48),
+            (5.0, 1e-14, 74.849_631_008_511_25),
+            (30.0, 1e-15, 137.618_667_477_467_97),
+            (5.0, 1e-16, 84.411_683_100_633_27),
+            (5.0, 1e-20, 103.428_977_237_757_95),
+            (4.0, 1e-30, 146.773_663_446_050_44),
+            (50.0, 1e-50, 371.769_865_619_133_4),
+            (3.0, 1e-100, 466.214_357_571_291_4),
+            (2.0, 1e-300, 1_381.551_055_796_427_4),
+        ];
+        for (dof, alpha, want) in cases
+        {
+            let got = chi2_quantile_upper(dof, alpha);
+            close_rel(got, want, 1e-11);
+            close_rel(chi2_sf(dof, got), alpha, 1e-9);
+        }
+        // The two entry points agree where `1 − α` is exact.
+        for &(dof, alpha) in &[(3.0, 0.5), (5.0, 0.25), (7.0, 0.05), (12.0, 0.001)]
+        {
+            close_rel(
+                chi2_quantile_upper(dof, alpha),
+                chi2_quantile(dof, 1.0 - alpha),
+                1e-12,
+            );
+        }
+        // Subnormal risks keep only a few bits, so only the order of magnitude
+        // is checked (mpmath: χ²₁ upper 2⁻¹⁰⁷⁴ quantile = 1481.1266547553563).
+        close_rel(
+            chi2_quantile_upper(1.0, 5e-324),
+            1_481.126_654_755_356_3,
+            1e-3,
+        );
+        assert_eq!(chi2_quantile_upper(5.0, 0.0), f64::INFINITY);
+        assert_eq!(chi2_quantile_upper(5.0, 1.0), 0.0);
+        assert!(chi2_quantile_upper(5.0, f64::NAN).is_nan());
+    }
+
+    #[test]
+    fn chi2_quantile_upper_half_matches_its_rounded_probability() {
+        // Regression: above the median the Newton residual was F(x) − p with F
+        // rounded near 1, so χ²₃₀ at p = 1 − 1e-15 returned 137.72 instead of
+        // 137.62. References (mpmath) are for the f64 value of each `p`, i.e.
+        // the upper risk 1 − p that the call actually encodes.
+        let cases = [
+            (5.0, 1.0 - 1e-14, 74.851_295_144_266_81),
+            (30.0, 1.0 - 1e-15, 137.620_666_234_360_05),
+            (10.0, 1.0 - 1e-12, 78.471_695_680_240_2),
+            (8.0, 1.0 - 1e-9, 58.307_613_190_283_05),
+        ];
+        for (dof, p, want) in cases
+        {
+            close_rel(chi2_quantile(dof, p), want, 1e-11);
         }
     }
 }

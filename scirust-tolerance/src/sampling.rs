@@ -26,7 +26,7 @@
 //! Reference: M. Pillet & E. Maire, *Inertial tolerancing and acceptance
 //! sampling* (hal-00834744).
 
-use crate::special::{chi2_cdf, chi2_quantile, ncchi2_cdf};
+use crate::special::{chi2_cdf, chi2_quantile_upper, ncchi2_cdf};
 use serde::{Deserialize, Serialize};
 
 /// A single-sampling plan by inertia: draw `n` parts, accept the batch if the
@@ -114,7 +114,7 @@ impl SamplingPlan {
 /// This coincides with the piloting chart's upper limit divided by `I_max`.
 pub fn plan_for_producer_risk(n: usize, alpha: f64) -> SamplingPlan {
     let nf = n.max(1) as f64;
-    let k = (chi2_quantile(nf, 1.0 - alpha) / nf).sqrt();
+    let k = (chi2_quantile_upper(nf, alpha) / nf).sqrt();
     SamplingPlan::new(n, k)
 }
 
@@ -139,7 +139,7 @@ pub fn design_plan(alpha: f64, beta: f64, ratio_bad: f64, max_n: usize) -> Optio
     for n in 2..=max_n
     {
         let nf = n as f64;
-        let crit = chi2_quantile(nf, 1.0 - alpha); // = n·k²
+        let crit = chi2_quantile_upper(nf, alpha); // = n·k²
         let consumer = chi2_cdf(nf, crit / (ratio_bad * ratio_bad));
         if consumer <= beta
         {
@@ -230,5 +230,21 @@ mod tests {
     #[test]
     fn design_plan_rejects_bad_ratio() {
         assert!(design_plan(0.05, 0.1, 0.9, 100).is_none());
+    }
+
+    #[test]
+    fn plans_stay_defined_for_tiny_producer_risk() {
+        // Regression: k = √(χ²_{n;1−α}/n) was computed from `1 − α`, which
+        // rounds to 1 for α = 1e-20, so k was +∞ and `design_plan` could never
+        // meet the consumer condition (it returned None for every max_n).
+        // Reference (mpmath): χ²₅ upper 1e-20 quantile = 103.428977237757949,
+        // √(…/5) = 4.54816396445330341.
+        let plan = plan_for_producer_risk(5, 1e-20);
+        assert_relative_eq!(plan.factor, 4.548_163_964_453_303, max_relative = 1e-11);
+        let plan = design_plan(1e-20, 0.1, 3.0, 200).expect("a plan within n ≤ 200");
+        assert!(plan.factor.is_finite());
+        let nf = plan.n as f64;
+        let crit = plan.factor * plan.factor * nf;
+        assert!(chi2_cdf(nf, crit / 9.0) <= 0.1);
     }
 }
