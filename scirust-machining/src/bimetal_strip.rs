@@ -2,7 +2,7 @@
 //! courbure, rayon et flèche en bout selon la formule simplifiée de Timoshenko.
 //!
 //! ```text
-//! courbure       k = 6·(α₂ − α₁)·ΔT / t        (lames d'épaisseurs égales)
+//! courbure       k = 3·(α₂ − α₁)·ΔT / (2·t)    (lames d'épaisseurs égales)
 //! rayon          R = 1 / k
 //! flèche en bout δ = k·L² / 2                   (poutre en arc de cercle)
 //! ```
@@ -13,13 +13,19 @@
 //! `R` rayon de courbure (m), `L` longueur libre de la lame (m), `δ` flèche
 //! transversale en bout (m).
 //!
+//! La courbure est le cas `m = t₁/t₂ = 1`, `n = E₁/E₂ = 1` de la formule
+//! générale de Timoshenko (1925)
+//! `k = 6·Δα·ΔT·(1 + m)² / (t·[3·(1 + m)² + (1 + m·n)·(m² + 1/(m·n))])`,
+//! soit `6·4 / (t·16) = 3/(2·t)` fois `Δα·ΔT`.
+//!
 //! **Convention** : SI cohérent. **Limite honnête** : formule de Timoshenko
 //! **simplifiée** valable pour deux lames d'**épaisseurs égales** et de modules
 //! d'Young **voisins**, en **petites courbures** (arc de cercle) ; les
 //! coefficients de dilatation, épaisseurs et longueurs sont **fournis par
 //! l'appelant** — aucune valeur matériau n'est supposée par défaut.
 
-/// Courbure `k = 6·(α₂ − α₁)·ΔT / t` d'un bilame thermique (1/m).
+/// Courbure `k = 3·(α₂ − α₁)·ΔT / (2·t)` d'un bilame thermique (1/m), `t`
+/// étant l'épaisseur **totale** (deux lames de `t/2` chacune).
 ///
 /// Le signe suit celui de `(α₂ − α₁)·ΔT` : positif quand la lame 2 se dilate
 /// plus que la lame 1 (courbure vers la lame 1).
@@ -35,7 +41,7 @@ pub fn bimetal_curvature(
         total_thickness > 0.0,
         "l'épaisseur totale du bilame doit être strictement positive"
     );
-    6.0 * (alpha2 - alpha1) * delta_temperature / total_thickness
+    1.5 * (alpha2 - alpha1) * delta_temperature / total_thickness
 }
 
 /// Flèche transversale en bout `δ = k·L² / 2` d'une lame en arc de cercle (m).
@@ -68,9 +74,9 @@ mod tests {
     #[test]
     fn curvature_realistic_case() {
         // α₁=12 µm/m/K (acier), α₂=20 µm/m/K (laiton), ΔT=100 K, t=0,5 mm.
-        // Δα = 8e-6 ; k = 6·8e-6·100 / 5e-4 = 6·1,6 = 9,6 1/m.
+        // Δα = 8e-6 ; k = 3·8e-6·100 / (2·5e-4) = 1,5·1,6 = 2,4 1/m.
         let k = bimetal_curvature(12e-6, 20e-6, 100.0, 0.5e-3);
-        assert_relative_eq!(k, 9.6, max_relative = 1e-12);
+        assert_relative_eq!(k, 2.4, max_relative = 1e-12);
     }
 
     #[test]
@@ -78,16 +84,16 @@ mod tests {
         // Réciprocité : R = 1/k et k = 1/R.
         let k = bimetal_curvature(12e-6, 20e-6, 100.0, 0.5e-3);
         let r = bimetal_radius(k);
-        assert_relative_eq!(r, 1.0 / 9.6, max_relative = 1e-12);
+        assert_relative_eq!(r, 1.0 / 2.4, max_relative = 1e-12);
         assert_relative_eq!(1.0 / r, k, max_relative = 1e-12);
     }
 
     #[test]
     fn tip_deflection_realistic_case() {
-        // k=9,6 1/m, L=50 mm : δ = 9,6·0,05²/2 = 9,6·0,00125 = 0,012 m.
+        // k=2,4 1/m, L=50 mm : δ = 2,4·0,05²/2 = 2,4·0,00125 = 0,003 m.
         let k = bimetal_curvature(12e-6, 20e-6, 100.0, 0.5e-3);
         let d = bimetal_tip_deflection(k, 0.05);
-        assert_relative_eq!(d, 0.012, max_relative = 1e-12);
+        assert_relative_eq!(d, 0.003, max_relative = 1e-12);
     }
 
     #[test]
@@ -112,6 +118,48 @@ mod tests {
         let d1 = bimetal_tip_deflection(k, 0.05);
         let d2 = bimetal_tip_deflection(k, 0.10);
         assert_relative_eq!(d2, 4.0 * d1, max_relative = 1e-12);
+    }
+
+    /// Courbure obtenue directement à partir de l'équilibre d'une bilame à
+    /// deux lames identiques (épaisseur `h = t/2`, module `E`, largeur
+    /// unitaire) : l'effort interne `P` et la courbure `k` vérifient
+    /// `P·t/2 = k·2·E·h³/12` (moments) et
+    /// `2·P/(E·h) + k·t/2 = Δα·ΔT` (continuité de la déformation à
+    /// l'interface).
+    fn curvature_from_equilibrium(d_alpha_dt: f64, t: f64) -> f64 {
+        let h = 0.5 * t;
+        let e = 200e9;
+        // P = k·E·h³/(3·t) ; reporter dans la continuité et isoler k.
+        let p_over_k = e * h.powi(3) / (3.0 * t);
+        d_alpha_dt / (2.0 * p_over_k / (e * h) + 0.5 * t)
+    }
+
+    #[test]
+    fn curvature_matches_the_equal_layer_equilibrium() {
+        // Régression : la courbure valait 6·Δα·ΔT/t, quatre fois la valeur
+        // de Timoshenko 3·Δα·ΔT/(2·t) pour des lames d'épaisseurs et de
+        // modules égaux.
+        for &(a1, a2, dt, t) in &[
+            (12e-6, 20e-6, 100.0, 0.5e-3),
+            (1.2e-6, 18.5e-6, 35.0, 1.0e-3),
+            (19e-6, 11e-6, -40.0, 2.0e-4),
+        ]
+        {
+            let k = bimetal_curvature(a1, a2, dt, t);
+            let reference = curvature_from_equilibrium((a2 - a1) * dt, t);
+            assert_relative_eq!(k, reference, max_relative = 1e-12);
+        }
+    }
+
+    #[test]
+    fn curvature_matches_the_general_timoshenko_formula_at_m_n_one() {
+        // k = 6·Δα·ΔT·(1+m)² / (t·[3(1+m)² + (1+mn)(m² + 1/(mn))]).
+        let (m, n) = (1.0_f64, 1.0_f64);
+        let (d_alpha, dt, t) = (8e-6, 100.0, 0.5e-3);
+        let general = 6.0 * d_alpha * dt * (1.0 + m).powi(2)
+            / (t * (3.0 * (1.0 + m).powi(2) + (1.0 + m * n) * (m * m + 1.0 / (m * n))));
+        let k = bimetal_curvature(12e-6, 20e-6, dt, t);
+        assert_relative_eq!(k, general, max_relative = 1e-12);
     }
 
     #[test]
