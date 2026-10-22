@@ -75,6 +75,12 @@ pub fn normal_sf(z: f64) -> f64 {
 /// Inverse standard-normal CDF `Φ⁻¹(p)` (Acklam's rational approximation,
 /// refined by one Halley step). Valid on the open interval `(0, 1)`; returns
 /// `−∞` for `p ≤ 0` and `+∞` for `p ≥ 1`.
+///
+/// The Halley residual `Φ(x) − p` is formed from the tail that is small: as
+/// `Φ(x) − p` below the median and as `(1 − p) − Q(x)` (with `Q` =
+/// [`normal_sf`]) above it. `1 − p` is exact in `f64` for `p ≥ ½`, whereas
+/// `Φ(x)` rounds to a multiple of `2⁻⁵³` near `1`, which would leave the upper
+/// tail at the ~1e-9 relative accuracy of the unrefined approximation.
 pub fn inv_normal_cdf(p: f64) -> f64 {
     if p <= 0.0
     {
@@ -139,7 +145,14 @@ pub fn inv_normal_cdf(p: f64) -> f64 {
     // One Halley refinement. For |x| > ~37.6 (p below ~1e-308) the factor
     // e^{x²/2} overflows; the correction is then skipped (Acklam's estimate
     // alone, ~1e-9 relative) instead of turning into NaN.
-    let e = normal_cdf(x) - p;
+    let e = if p > 0.5
+    {
+        (1.0 - p) - normal_sf(x)
+    }
+    else
+    {
+        normal_cdf(x) - p
+    };
     let u = e * (2.0 * PI).sqrt() * (x * x / 2.0).exp();
     let step = u / (1.0 + x * u / 2.0);
     if step.is_finite()
@@ -456,6 +469,36 @@ mod tests {
             close(inv_normal_cdf(p), z, 1e-6);
         }
         close(inv_normal_cdf(0.975), 1.959_963_984_540_054, 1e-6);
+    }
+
+    #[test]
+    fn inv_normal_cdf_keeps_relative_accuracy_in_the_upper_tail() {
+        // Regression: the Halley residual was `Φ(x) − p`, and `Φ(x)` rounds to a
+        // multiple of 2⁻⁵³ near 1, so the upper tail kept only the ~1e-9
+        // accuracy of the unrefined approximation (Φ⁻¹(1 − 1e-12) came out
+        // 7.034486902684304, off by 7.4e-9). References (mpmath, 60 digits) are
+        // for the f64 value of each `p`.
+        let cases = [
+            (1.0 - 1e-10, 6.361_340_889_697_422),
+            (1.0 - 1e-12, 7.034_486_910_047_835_2),
+            (1.0 - 1e-14, 7.650_730_905_155_643),
+        ];
+        for &(p, want) in &cases
+        {
+            close_rel(inv_normal_cdf(p), want, 1e-14);
+        }
+        // With q = 2⁻ᵏ both q and 1 − q are exact, so the two tails must mirror
+        // each other: Φ⁻¹(1 − q) = −Φ⁻¹(q).
+        for &(k, want) in &[
+            (30, 6.009_353_565_530_744),
+            (40, 7.047_700_256_664_409),
+            (50, 7.956_038_125_481_531),
+        ]
+        {
+            let q = 2.0_f64.powi(-k);
+            close_rel(inv_normal_cdf(1.0 - q), want, 1e-14);
+            close_rel(-inv_normal_cdf(q), want, 1e-14);
+        }
     }
 
     #[test]
