@@ -294,10 +294,16 @@ pub fn ncchi2_cdf(dof: f64, lambda: f64, x: f64) -> f64 {
 /// freedom at probability `p`.
 ///
 /// Seeded with the Wilson–Hilferty cube-root-normal approximation
-/// `χ²_{dof;p} ≈ dof·(1 − 2/(9·dof) + z_p·√(2/(9·dof)))³` and refined by
-/// Newton steps on the exact CDF ([`chi2_cdf`]), so it is accurate to full
-/// `f64` precision at every `dof ≥ 1` (Wilson–Hilferty alone is ~1 % near
-/// `dof = 2`).
+/// `χ²_{dof;p} ≈ dof·(1 − 2/(9·dof) + z_p·√(2/(9·dof)))³`, or, when it is
+/// smaller (the lower tail, including where the cube goes non-positive), with
+/// the leading term of the incomplete-gamma series
+/// `P(k/2, x/2) ≈ (x/2)^{k/2} / Γ(k/2 + 1)`, i.e. `x ≈ 2·(p·Γ(k/2 + 1))^{2/k}`.
+/// It is then refined by Newton steps on the exact CDF ([`chi2_cdf`]) — on
+/// `ln F(x) − ln p` below the median, so tiny lower-tail probabilities converge
+/// quickly — safeguarded by a bracket `[lo, hi]` that every CDF evaluation
+/// tightens: a step that would leave the bracket is replaced by a (geometric)
+/// bisection. Wilson–Hilferty alone is ~1 % off near `dof = 2`, and is
+/// unusable in the lower tail.
 pub fn chi2_quantile(dof: f64, p: f64) -> f64 {
     if p <= 0.0
     {
@@ -310,26 +316,76 @@ pub fn chi2_quantile(dof: f64, p: f64) -> f64 {
     let z = inv_normal_cdf(p);
     let a = 2.0 / (9.0 * dof);
     let t = 1.0 - a + z * a.sqrt();
-    let mut x = (dof * t * t * t).max(1e-6);
-    let ln_norm = (dof / 2.0) * 2.0_f64.ln() + ln_gamma(dof / 2.0);
-    for _ in 0..60
+    let half = dof / 2.0;
+    // Lower-tail seed from P(k/2, y) ≈ y^{k/2}/Γ(k/2 + 1), solved in log space.
+    let series_seed = 2.0 * ((p.ln() + ln_gamma(half + 1.0)) / half).exp();
+    let wh_seed = dof * t * t * t;
+    let mut x = if t > 0.0 && wh_seed > series_seed
     {
-        let err = chi2_cdf(dof, x) - p;
-        // pdf(x) = x^{k/2−1} e^{−x/2} / (2^{k/2} Γ(k/2)).
-        let ln_pdf = (dof / 2.0 - 1.0) * x.ln() - x / 2.0 - ln_norm;
-        let pdf = ln_pdf.exp();
-        if pdf <= 0.0
+        wh_seed
+    }
+    else
+    {
+        series_seed
+    };
+    if !(x.is_finite() && x > 0.0)
+    {
+        x = dof.max(1.0);
+    }
+    let ln_norm = half * 2.0_f64.ln() + ln_gamma(half);
+    // Bracket on the root: cdf(lo) < p ≤ cdf(hi).
+    let mut lo = 0.0_f64;
+    let mut hi = f64::INFINITY;
+    for _ in 0..200
+    {
+        let cdf = chi2_cdf(dof, x);
+        let err = cdf - p;
+        if err == 0.0
         {
             break;
         }
-        let step = err / pdf;
-        let mut nx = x - step;
-        if nx <= 0.0
+        if err < 0.0
         {
-            nx = x / 2.0; // keep the iterate positive
+            lo = x;
         }
+        else
+        {
+            hi = x;
+        }
+        // ln pdf(x) = (k/2−1)·ln x − x/2 − ln(2^{k/2} Γ(k/2)).
+        let ln_pdf = (half - 1.0) * x.ln() - x / 2.0 - ln_norm;
+        // Below the median, Newton runs on ln F(x) − ln p (step (ln F − ln p)·F/f),
+        // which converges fast in the lower tail where F is tiny and strongly
+        // convex; above it, on F(x) − p directly. F/f is formed in log space so
+        // a subnormal pdf does not blow the step up.
+        let newton = if p < 0.5
+        {
+            x - (cdf.ln() - p.ln()) * (cdf.ln() - ln_pdf).exp()
+        }
+        else
+        {
+            x - err / ln_pdf.exp()
+        };
+        let nx = if newton.is_finite() && newton > 0.0 && newton >= lo && newton <= hi
+        {
+            newton
+        }
+        else if hi.is_infinite()
+        {
+            2.0 * lo
+        }
+        else if lo <= 0.0
+        {
+            0.5 * hi
+        }
+        else
+        {
+            // √lo·√hi rather than √(lo·hi), which underflows for tiny roots.
+            lo.sqrt() * hi.sqrt()
+        };
+        let done = (nx - x).abs() <= x.abs() * 1e-14;
         x = nx;
-        if step.abs() <= x.abs() * 1e-14
+        if done || (hi.is_finite() && hi - lo <= hi * 1e-14)
         {
             break;
         }
@@ -489,5 +545,30 @@ mod tests {
         );
         let p = chi2_cdf(1e9, 1e9); // at the mean ⇒ ≈ 0.5
         close(p, 0.5, 1e-3);
+    }
+
+    #[test]
+    fn chi2_quantile_converges_in_the_lower_tail() {
+        // Regression: when the Wilson–Hilferty seed went negative it was clamped
+        // to 1e-6, where the χ² pdf of dof ≥ 3 is tiny, so the first Newton
+        // step overshot to huge x (χ²₁₀ at p = 1e-12 returned 7.7e14 instead of
+        // 0.0208). References: mpmath root of P(dof/2, x/2) = p (40 digits).
+        let cases = [
+            (1.0, 1e-15, 1.570_796_326_794_897e-30),
+            (1.0, 1e-12, 1.570_796_326_794_897e-24),
+            (3.0, 1e-12, 2.417_987_942_718_036e-8),
+            (5.0, 1e-6, 1.289_616_020_649_71e-2),
+            (6.0, 1e-8, 7.837_408_893_164_595e-3),
+            (8.0, 1e-12, 4.428_688_500_381_786e-3),
+            (10.0, 1e-12, 2.077_868_970_500_36e-2),
+            (15.0, 1e-15, 7.174_997_854_776_458e-2),
+            (20.0, 1e-15, 2.902_233_362_613e-1),
+        ];
+        for (dof, p, want) in cases
+        {
+            let got = chi2_quantile(dof, p);
+            close_rel(got, want, 1e-9);
+            close_rel(chi2_cdf(dof, got), p, 1e-8);
+        }
     }
 }

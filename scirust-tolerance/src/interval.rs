@@ -159,4 +159,13 @@ mod tests {
         assert!(tolerance_factor_two_sided(10, 1.0, 0.9).is_none());
         assert!(tolerance_factor_one_sided(10, 0.9, 0.0).is_none());
     }
+
+    #[test]
+    fn two_sided_factor_at_high_confidence_small_sample() {
+        // Regression: conf = 1 − 1e-6 at n = 6 needs χ²₅ at p = 1e-6, where
+        // chi2_quantile returned 7.5e3 instead of 0.0129, giving k = 0.046.
+        // Reference: Howe formula with scipy.stats chi2.ppf / norm.ppf.
+        let k = tolerance_factor_two_sided(6, 0.9, 0.999_999).unwrap();
+        assert_relative_eq!(k, 34.982_870_624_977, max_relative = 1e-9);
+    }
 }
