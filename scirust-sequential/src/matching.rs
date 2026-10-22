@@ -191,6 +191,21 @@ pub fn longest_common_subsequence(seq1: &[usize], seq2: &[usize]) -> Vec<usize> 
 }
 
 /// Dynamic Time Warping distance between two 1-D sequences.
+///
+/// Returns `sqrt` of the minimal sum of squared differences over warping
+/// paths from `(0, 0)` to `(n − 1, m − 1)` with steps `(1, 0)`, `(0, 1)` and
+/// `(1, 1)`.
+///
+/// `step_size = Some(s)` restricts the paths to a Sakoe–Chiba band of
+/// half-width `s` around the diagonal scaled to the length ratio: row `i`
+/// (1-based) keeps the columns that the straight line from `(0, 0)` to
+/// `(n, m)` crosses between rows `i − 1` and `i`, widened by `s` on each side,
+/// i.e. `⌊(i − 1)·m/n⌋ + 1 − s ..= ⌈i·m/n⌉ + s`, clamped to `1..=m`. For
+/// equal lengths this is `i − s ..= i + s`. Consecutive rows overlap and the
+/// first and last rows reach columns `1` and `m`, so the band always contains
+/// a path and the result is finite for finite, non-empty inputs, whichever
+/// sequence is longer. `None` uses the full grid. If exactly one sequence
+/// is empty no path exists and the result is `+∞`.
 pub fn dynamic_time_warping(seq1: &[f64], seq2: &[f64], step_size: Option<usize>) -> f64 {
     let n = seq1.len();
     let m = seq2.len();
@@ -201,16 +216,17 @@ pub fn dynamic_time_warping(seq1: &[f64], seq2: &[f64], step_size: Option<usize>
 
     for i in 1..=n
     {
-        // Sakoe-Chiba band centered on the warping diagonal scaled by the length
-        // ratio, so that for unequal lengths the band still contains a feasible path
-        // reaching (n, m) instead of spuriously leaving every (n, m) cell at INFINITY.
+        // Columns crossed by the scaled diagonal within row i, widened by s.
+        // A band centred on a single rounded column per row misses column 1
+        // in the first row (and leaves gaps between rows) once m/n exceeds
+        // about s + 1, which left dp[n][m] at INFINITY when seq2 is the
+        // longer sequence.
         let (j_start, j_end) = match step_size
         {
             Some(s) =>
             {
-                let center = ((i * m + n / 2) / n).max(1).min(m);
-                let start = center.saturating_sub(s).max(1);
-                let end = center.saturating_add(s).min(m);
+                let start = ((i - 1) * m / n + 1).saturating_sub(s).max(1);
+                let end = (i * m).div_ceil(n).saturating_add(s).min(m);
                 (start, end)
             },
             None => (1, m),
@@ -436,6 +452,70 @@ mod tests {
             banded
         );
         assert!((banded - 0.0).abs() < 1e-10, "banded={}", banded);
+    }
+
+    #[test]
+    fn dtw_banded_reaches_corner_when_second_sequence_is_longer() {
+        // Mirror of `dtw_banded_unequal_lengths_reaches_corner` with the longer
+        // sequence second. The band used to start row 1 at column 2 for
+        // s <= 1, so every cell stayed at INFINITY. Reference values: the same
+        // banded recursion written out in Python (row 1 keeps columns
+        // 1..=3 + s, row 2 keeps 4 - s..=6).
+        let s1 = vec![0.0, 1.0];
+        let s2 = vec![0.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+        let expected = [2.0_f64.sqrt(), 1.0, 0.0];
+        for (s, &want) in expected.iter().enumerate()
+        {
+            let banded = dynamic_time_warping(&s1, &s2, Some(s));
+            assert!((banded - want).abs() < 1e-12, "s={s}: banded={banded}");
+        }
+    }
+
+    #[test]
+    fn dtw_band_always_contains_a_path_and_never_beats_full() {
+        // For every shape up to 12x12 and every half-width, the banded
+        // distance is finite and no smaller than the unconstrained one (the
+        // band only removes paths), and a band at least as wide as the grid
+        // gives the unconstrained distance.
+        for n in 1..=12usize
+        {
+            for m in 1..=12usize
+            {
+                let a: Vec<f64> = (0..n).map(|k| (0.9 * k as f64).sin()).collect();
+                let b: Vec<f64> = (0..m).map(|k| (0.5 * k as f64).cos()).collect();
+                let full = dynamic_time_warping(&a, &b, None);
+                for s in 0..4
+                {
+                    let banded = dynamic_time_warping(&a, &b, Some(s));
+                    assert!(banded.is_finite(), "n={n} m={m} s={s}: {banded}");
+                    assert!(banded >= full - 1e-12, "n={n} m={m} s={s}");
+                }
+                let wide = dynamic_time_warping(&a, &b, Some(n.max(m)));
+                assert!((wide - full).abs() <= 1e-12 * full.max(1.0), "n={n} m={m}");
+            }
+        }
+    }
+
+    #[test]
+    fn dtw_banded_long_second_sequence_matches_reference() {
+        // 10 vs 100 samples of the same sine at matching phase steps.
+        // Reference values from the same recursion in Python (full grid and
+        // the documented band). Before the fix s = 0, 1 and 5 gave INFINITY.
+        let a: Vec<f64> = (0..10).map(|k| (0.7 * k as f64).sin()).collect();
+        let b: Vec<f64> = (0..100).map(|k| (0.07 * k as f64).sin()).collect();
+        let full = dynamic_time_warping(&a, &b, None);
+        assert!((full - 1.720_978_946_203_408_4).abs() < 1e-9, "full={full}");
+        let cases = [
+            (0, 2.726_278_105_070_878),
+            (1, 2.392_055_296_736_038_4),
+            (5, 1.729_101_440_046_996_4),
+            (10, 1.720_978_946_203_408_4),
+        ];
+        for (s, want) in cases
+        {
+            let banded = dynamic_time_warping(&a, &b, Some(s));
+            assert!((banded - want).abs() < 1e-9, "s={s}: banded={banded}");
+        }
     }
 
     #[test]
