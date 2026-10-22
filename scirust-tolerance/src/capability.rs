@@ -216,7 +216,9 @@ pub fn cpk_confidence_interval(cpk_hat: f64, n: usize, conf: f64) -> Option<(f64
     {
         return None;
     }
-    let z = inv_normal_cdf(1.0 - 0.5 * (1.0 - conf));
+    // z_{1−α/2} = −Φ⁻¹(α/2), with α = 1 − conf exact for conf ≥ ½; forming
+    // `1 − α/2` first would round to `1` (z = +∞) for conf within 2⁻⁵³ of 1.
+    let z = -inv_normal_cdf(0.5 * (1.0 - conf));
     let se = (1.0 / (9.0 * n as f64) + cpk_hat * cpk_hat / (2.0 * (n - 1) as f64)).sqrt();
     Some((cpk_hat - z * se, cpk_hat + z * se))
 }
@@ -337,5 +339,20 @@ mod tests {
         assert!(z38.is_finite() && z38 > 37.0, "sigma_level(±38σ) = {z38}");
         // A truly defect-free (σ = 0, centred) process still returns +∞.
         assert_eq!(sigma_level(0.0, 0.0, -1.0, 1.0), f64::INFINITY);
+    }
+
+    #[test]
+    fn cpk_confidence_interval_stays_finite_at_conf_next_to_one() {
+        // conf = 1 − 2⁻⁵³ (largest f64 below 1): α/2 = 2⁻⁵⁴ and `1 − α/2` rounds
+        // to 1. Reference z = −Φ⁻¹(2⁻⁵⁴) = 8.29236107581359554 (mpmath, 40 digits).
+        let conf = 1.0 - f64::EPSILON / 2.0;
+        let (lo, hi) = cpk_confidence_interval(1.0, 50, conf).unwrap();
+        let se = (1.0 / 450.0 + 1.0 / 98.0_f64).sqrt();
+        assert!(lo.is_finite() && hi.is_finite(), "({lo}, {hi})");
+        assert_relative_eq!(
+            (hi - lo) / (2.0 * se),
+            8.292_361_075_813_596,
+            max_relative = 1e-12
+        );
     }
 }
