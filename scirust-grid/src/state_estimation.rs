@@ -162,7 +162,10 @@ pub struct BadDataReport {
 /// `h`/`weights` doivent être les mêmes que ceux passés à
 /// [`wls_state_estimate`] ; `residuals` son résultat `residuals`.
 /// `threshold` est usuellement ~3.0 (≈3σ sous H0 : résidu normal centré
-/// réduit).
+/// réduit). Une mesure dont `Ω_ii` est négligeable devant sa variance
+/// `1/w_i` (mesure critique, `Ω_ii/(1/w_i) ≤ 1e-10`) reçoit un résidu
+/// normalisé de 0 : son erreur n'est pas détectable par ce test. Le seuil
+/// est relatif, donc le résultat ne dépend pas des unités des mesures.
 pub fn largest_normalized_residual_test(
     h: &Matrix,
     weights: &[f64],
@@ -182,8 +185,14 @@ pub fn largest_normalized_residual_test(
         {
             hgh_ii += hg[(i, j)] * h[(i, j)];
         }
-        let omega_ii = 1.0 / weights[i] - hgh_ii;
-        normalized_residuals[i] = if omega_ii > 1e-12
+        // Ω_ii = R_ii·(1 - K_ii) with 0 ≤ K_ii ≤ 1, so the zero test is made
+        // relative to the measurement variance R_ii = 1/w_i: an absolute
+        // cut-off would depend on the units of z and zero out every
+        // normalized residual once the variances are small enough. A
+        // critical measurement (K_ii = 1) still lands below the cut-off.
+        let r_ii = 1.0 / weights[i];
+        let omega_ii = r_ii - hgh_ii;
+        normalized_residuals[i] = if omega_ii > 1e-10 * r_ii
         {
             residuals[i].abs() / omega_ii.sqrt()
         }
@@ -315,5 +324,56 @@ mod tests {
             epsilon = 1e-6
         );
         assert_relative_eq!(report.normalized_residuals[3], 0.0, epsilon = 1e-6);
+    }
+
+    /// Regression: the residual covariance `Ω_ii` was compared against an
+    /// absolute `1e-12`, so once the measurement variances `1/w_i` were that
+    /// small in the caller's units every normalized residual was reported as
+    /// 0 and the gross error went unflagged. Re-expressing the same problem
+    /// in units scaled by `s` (z and H scaled by `s`, σ scaled by `s`, so
+    /// `w` scales by `1/s²`) must leave the normalized residuals unchanged.
+    #[test]
+    fn normalized_residuals_do_not_depend_on_measurement_units() {
+        let h = redundant_example();
+        let mut z = vec![3.0, 2.0, 5.0, 1.0];
+        z[2] += 5.0;
+        let weights = vec![1.0; 4];
+        let est = wls_state_estimate(&h, &z, &weights).unwrap();
+        let reference =
+            largest_normalized_residual_test(&h, &weights, &est.residuals, 2.5).unwrap();
+
+        for s in [1e-3_f64, 1e-7, 1e-9, 1e3]
+        {
+            let (m, n) = h.shape();
+            let hs = Matrix::from_fn(m, n, |i, j| h[(i, j)] * s);
+            let zs: Vec<f64> = z.iter().map(|v| v * s).collect();
+            let ws = vec![1.0 / (s * s); 4];
+            let est_s = wls_state_estimate(&hs, &zs, &ws).unwrap();
+            let report = largest_normalized_residual_test(&hs, &ws, &est_s.residuals, 2.5).unwrap();
+            assert_eq!(report.suspect_index, Some(2), "scale {s}: {report:?}");
+            for (a, b) in report
+                .normalized_residuals
+                .iter()
+                .zip(&reference.normalized_residuals)
+            {
+                assert_relative_eq!(*a, *b, epsilon = 1e-6, max_relative = 1e-6);
+            }
+        }
+    }
+
+    /// A critical measurement (no redundancy, `Ω_ii = 0`) keeps a normalized
+    /// residual of 0 at any measurement scale.
+    #[test]
+    fn critical_measurement_has_zero_normalized_residual_at_any_scale() {
+        for s in [1.0_f64, 1e-7, 1e5]
+        {
+            let h = Matrix::from_row_major(2, 2, vec![s, 0.0, 0.0, s]);
+            let z = vec![3.0 * s, 2.0 * s];
+            let ws = vec![1.0 / (s * s); 2];
+            let est = wls_state_estimate(&h, &z, &ws).unwrap();
+            let report = largest_normalized_residual_test(&h, &ws, &est.residuals, 2.5).unwrap();
+            assert_eq!(report.normalized_residuals, vec![0.0, 0.0], "scale {s}");
+            assert_eq!(report.suspect_index, None);
+        }
     }
 }
