@@ -148,6 +148,9 @@ impl SequentialPlan {
 /// Design a sequential (SPRT) plan from the producer quality `aql` (with risk
 /// `alpha`) and consumer quality `rql` (with risk `beta`), `0 < aql < rql < 1`.
 /// Returns `None` on out-of-range inputs.
+///
+/// `ln(1−p)` terms are evaluated with `ln_1p`, so the slope keeps full
+/// relative precision for very small `aql`/`rql` (ppm level and below).
 pub fn design_sequential_plan(aql: f64, rql: f64, alpha: f64, beta: f64) -> Option<SequentialPlan> {
     if !(aql > 0.0 && aql < rql && rql < 1.0)
         || !(0.0..1.0).contains(&alpha)
@@ -157,12 +160,27 @@ pub fn design_sequential_plan(aql: f64, rql: f64, alpha: f64, beta: f64) -> Opti
     {
         return None;
     }
-    let k = (rql * (1.0 - aql) / (aql * (1.0 - rql))).ln();
-    if k <= 0.0
+    // ln(1−p) through ln_1p: with ppm-level or smaller qualities the ratio
+    // (1−aql)/(1−rql) is 1+ε and its logarithm would lose most of its digits.
+    let ln_q_aql = (-aql).ln_1p();
+    let ln_q_rql = (-rql).ln_1p();
+    // ln(rql/aql), falling back to a log difference if the ratio overflows
+    // (subnormal aql).
+    let ratio = rql / aql;
+    let ln_ratio = if ratio.is_finite()
+    {
+        ratio.ln()
+    }
+    else
+    {
+        rql.ln() - aql.ln()
+    };
+    let k = ln_ratio + (ln_q_aql - ln_q_rql);
+    if !(k > 0.0 && k.is_finite())
     {
         return None;
     }
-    let slope = ((1.0 - aql) / (1.0 - rql)).ln() / k;
+    let slope = (ln_q_aql - ln_q_rql) / k;
     let accept_intercept = ((1.0 - alpha) / beta).ln() / k;
     let reject_intercept = ((1.0 - beta) / alpha).ln() / k;
     Some(SequentialPlan {
@@ -259,6 +277,38 @@ mod tests {
         assert_eq!(plan.verdict(n_accept, 0), SequentialVerdict::Accept);
         // A burst of defects early ⇒ reject.
         assert_eq!(plan.verdict(5, 10), SequentialVerdict::Reject);
+    }
+
+    #[test]
+    fn sequential_slope_keeps_precision_for_tiny_qualities() {
+        // (1−aql)/(1−rql) is 1+ε here; ln of the ratio lost digits (relative
+        // error ~1.5e-5 at 1e-12/1e-11, slope 0 below ~1e-16). References:
+        // mpmath at 60 digits, rounded to f64.
+        let cases = [
+            (1e-6, 1e-5, 3.908_656_557_194_945e-6),
+            (1e-9, 1e-8, 3.908_650_343_349_296e-9),
+            (1e-12, 1e-11, 3.908_650_337_135_486_5e-12),
+            (1e-17, 1e-16, 3.908_650_337_129_266_5e-17),
+        ];
+        for (aql, rql, slope) in cases
+        {
+            let plan = design_sequential_plan(aql, rql, 0.05, 0.10).unwrap();
+            // epsilon = 0: the default absolute epsilon would hide errors at this scale.
+            assert_relative_eq!(plan.slope, slope, epsilon = 0.0, max_relative = 1e-13);
+        }
+    }
+
+    #[test]
+    fn sequential_plan_handles_subnormal_aql() {
+        // rql/aql overflows (k came out +inf, slope 0); reference: mpmath.
+        let plan = design_sequential_plan(1e-320, 1e-3, 0.05, 0.10).unwrap();
+        assert_relative_eq!(
+            plan.slope,
+            1.370_697_702_858_513e-6,
+            epsilon = 0.0,
+            max_relative = 1e-12
+        );
+        assert!(plan.accept_intercept > 0.0 && plan.reject_intercept > 0.0);
     }
 
     #[test]
