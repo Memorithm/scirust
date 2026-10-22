@@ -1136,6 +1136,15 @@ impl CalibratedThresholds {
 /// quantile function, not a bisection or Monte Carlo of this module's own
 /// devising.
 ///
+/// It is evaluated as `1 / F(2n,2n).quantile(alpha)` rather than as
+/// `quantile(1 - alpha)`: `1/MR = B/A` has the same `F(2n,2n)` law, so
+/// `P(MR > k) = P(1/MR < 1/k)` and the two forms agree exactly in real
+/// arithmetic. In `f64`, `1 - alpha` keeps `alpha` only to an absolute
+/// `≈1.1e-16`, so the direct form drifted for small `alpha` (≈3e-6
+/// relative at `n = 8`, `alpha = 1e-12`) and returned `+∞` once
+/// `1 - alpha` rounded to `1` (`alpha ≲ 5.6e-17`). The lower-tail
+/// quantile takes `alpha` as is.
+///
 /// This calibrates only `alpha`; see this section's own docs above for why
 /// `beta` (the missed-non-homogeneity rate) is not calibrated here.
 pub fn calibrate_k_mr(reference_cells: usize, alpha: f64) -> Result<f64, CfarError> {
@@ -1151,7 +1160,9 @@ pub fn calibrate_k_mr(reference_cells: usize, alpha: f64) -> Result<f64, CfarErr
     }
     let n = reference_cells as f64;
     let f_dist = scirust_stats::FisherF::new(2.0 * n, 2.0 * n);
-    Ok(f_dist.quantile(1.0 - alpha))
+    // Upper quantile through the reciprocal symmetry of F(d, d) (see above),
+    // so `alpha` is never rounded through `1 - alpha`.
+    Ok(1.0 / f_dist.quantile(alpha))
 }
 
 /// A small, self-contained, deterministic LCG (no OS/clock entropy) for
@@ -2464,6 +2475,39 @@ mod tests {
         // k_mr must be > 1: MR=1 (equal means) can never itself count as
         // "too imbalanced", for any alpha < 1.
         assert!(loose > 1.0 && tight > 1.0);
+    }
+
+    #[test]
+    fn calibrate_k_mr_stays_finite_and_accurate_for_tiny_alpha() {
+        // Reference k_mr = F(2n,2n) upper-alpha quantile, from
+        // 1 / scipy.stats.f.ppf(alpha, 2n, 2n) (SciPy 1.18.1), cross-checked
+        // with mpmath (50 digits): P(F > k_mr) / alpha = 1 within 3e-14.
+        // `scipy.stats.f.isf` itself returns inf for the first three cases.
+        let cases = [
+            (2usize, 1e-20, 17320508074.355442),
+            (16, 1e-20, 58.34200853890371),
+            (16, 1e-17, 37.213952341170206),
+            (8, 1e-12, 92.8541947246427),
+            (16, 0.01, 2.318118423176641),
+            (4, 0.7, 0.6813522812620364),
+        ];
+        for (n, alpha, want) in cases
+        {
+            let k_mr = calibrate_k_mr(n, alpha).unwrap();
+            assert!(k_mr.is_finite(), "n={n}, alpha={alpha}: k_mr={k_mr}");
+            let rel = ((k_mr - want) / want).abs();
+            assert!(
+                rel < 1e-9,
+                "n={n}, alpha={alpha}: k_mr={k_mr}, want {want} (rel err {rel:e})"
+            );
+            // Defining identity: P(MR > k_mr) = alpha under F(2n, 2n).
+            let d = 2.0 * n as f64;
+            let tail = scirust_stats::FisherF::new(d, d).sf(k_mr);
+            assert!(
+                ((tail - alpha) / alpha).abs() < 1e-8,
+                "n={n}, alpha={alpha}: sf(k_mr)={tail}"
+            );
+        }
     }
 
     #[test]
