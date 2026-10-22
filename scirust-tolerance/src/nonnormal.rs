@@ -31,18 +31,86 @@ fn cf_w(z: f64, s: f64, k: f64) -> f64 {
         - (2.0 * z * z * z - 5.0 * z) * s * s / 36.0
 }
 
-/// Derivative `dw/dz`, for the Newton inversion in [`nonnormal_ppm`].
+/// Derivative `dw/dz`, which bounds the monotone branch used by
+/// [`cornish_fisher_quantile`] and [`nonnormal_ppm`].
 fn cf_w_prime(z: f64, s: f64, k: f64) -> f64 {
     1.0 + (2.0 * z) * s / 6.0 + (3.0 * z * z - 3.0) * k / 24.0 - (6.0 * z * z - 5.0) * s * s / 36.0
+}
+
+/// Edges `[zl, zh]` of the **monotone branch** of the Cornish–Fisher map `w`
+/// around `z = 0`, i.e. the interval containing `0` on which `w'(z) > 0`,
+/// capped to `[−40, 40]`. Returns `None` when `w'(0) ≤ 0` (the expansion is
+/// degenerate, not increasing even at the centre).
+///
+/// `w'(z) = a·z² + b·z + c` with `a = K/8 − S²/6`, `b = S/3`,
+/// `c = 1 − K/8 + 5S²/36`, so the edges are the roots of that quadratic nearest
+/// to `0` on either side (computed with the cancellation-free form).
+fn cf_branch(s: f64, k: f64) -> Option<(f64, f64)> {
+    const CAP: f64 = 40.0;
+    let c = cf_w_prime(0.0, s, k);
+    if c <= 0.0
+    {
+        return None;
+    }
+    let a = k / 8.0 - s * s / 6.0;
+    let b = s / 3.0;
+    let (mut zl, mut zh) = (-CAP, CAP);
+    let mut take = |r: f64| {
+        if r.is_finite()
+        {
+            if r < 0.0 && r > zl
+            {
+                zl = r;
+            }
+            if r > 0.0 && r < zh
+            {
+                zh = r;
+            }
+        }
+    };
+    if a == 0.0
+    {
+        if b != 0.0
+        {
+            take(-c / b);
+        }
+    }
+    else
+    {
+        let disc = b * b - 4.0 * a * c;
+        if disc >= 0.0
+        {
+            let q = -0.5 * (b + b.signum() * disc.sqrt());
+            // q ≠ 0: q = 0 would need b = 0 and disc = −4ac = 0, impossible
+            // with a ≠ 0 < c (`signum(0.0)` is 1).
+            take(q / a);
+            take(c / q);
+        }
+    }
+    Some((zl, zh))
 }
 
 /// The Cornish–Fisher approximation of a distribution's `p`-quantile from its
 /// mean `μ`, standard deviation `σ`, skewness `s` and excess kurtosis `k`:
 /// `x_p = μ + σ·w(Φ⁻¹(p))`. Exact for a normal process (`s = k = 0`, where it
 /// is `μ + σ·Φ⁻¹(p)`).
+///
+/// The map `w` is a cubic and is increasing only on its monotone branch
+/// `[zl, zh]` around `z = 0` (see [`nonnormal_ppm`]); beyond it the raw
+/// expansion turns back, so for strongly skewed moments a far-tail quantile
+/// could land on the wrong side of a central one. `Φ⁻¹(p)` is therefore
+/// clamped to that branch, which keeps the result non-decreasing in `p` and
+/// consistent with the inversion used by [`nonnormal_ppm`]: quantiles beyond
+/// the branch saturate at its endpoint. If the expansion is degenerate
+/// (`w'(0) ≤ 0`) the plain normal quantile `μ + σ·Φ⁻¹(p)` is returned, matching
+/// the fallback of [`nonnormal_ppm`].
 pub fn cornish_fisher_quantile(mean: f64, sd: f64, skew: f64, ex_kurtosis: f64, p: f64) -> f64 {
     let z = inv_normal_cdf(p);
-    mean + sd * cf_w(z, skew, ex_kurtosis)
+    match cf_branch(skew, ex_kurtosis)
+    {
+        Some((zl, zh)) => mean + sd * cf_w(z.clamp(zl, zh), skew, ex_kurtosis),
+        None => mean + sd * z,
+    }
 }
 
 /// Invert the Cornish–Fisher expansion: find the standard-normal deviate `z`
@@ -50,30 +118,18 @@ pub fn cornish_fisher_quantile(mean: f64, sd: f64, skew: f64, ex_kurtosis: f64, 
 /// solve `w(z) = t`.
 ///
 /// The map `w` is a cubic, so it is only invertible on the **monotone branch**
-/// around `z = 0` (between the turning points where `w'(z) = 0`). This routine
-/// locates that branch, clamps a target outside its range to the nearest branch
-/// endpoint — an extreme spec limit thereby yields a negligible tail rather than
-/// a spurious root — and bisects for the unique root inside it. If `w'(0) ≤ 0`
-/// the expansion is degenerate (very strong non-normality) and it falls back to
-/// the plain normal deviate `t`.
+/// around `z = 0` (between the turning points where `w'(z) = 0`, see
+/// `cf_branch`). This routine clamps a target outside its range to the
+/// nearest branch endpoint — an extreme spec limit thereby yields a negligible
+/// tail rather than a spurious root — and bisects for the unique root inside
+/// it. If `w'(0) ≤ 0` the expansion is degenerate (very strong non-normality)
+/// and it falls back to the plain normal deviate `t`.
 fn cf_inverse_z(t: f64, s: f64, k: f64) -> f64 {
-    if cf_w_prime(0.0, s, k) <= 0.0
+    let Some((zl, zh)) = cf_branch(s, k)
+    else
     {
         return t; // degenerate: not monotone even at the centre
-    }
-    // March out from 0 to the edges of the monotone branch (w' stays > 0).
-    let cap = 40.0;
-    let dz = 0.05;
-    let mut zl = 0.0;
-    while zl - dz >= -cap && cf_w_prime(zl - dz, s, k) > 0.0
-    {
-        zl -= dz;
-    }
-    let mut zh = 0.0;
-    while zh + dz <= cap && cf_w_prime(zh + dz, s, k) > 0.0
-    {
-        zh += dz;
-    }
+    };
     let wl = cf_w(zl, s, k);
     let wh = cf_w(zh, s, k);
     if t <= wl
@@ -273,5 +329,96 @@ mod tests {
         // Both tails are now treated symmetrically.
         let mirrored = nonnormal_ppm(0.0, 1.0, 0.0, 0.0, -9.0, 40.0);
         assert_relative_eq!(p9, mirrored, max_relative = 1e-12);
+    }
+
+    #[test]
+    fn quantile_is_non_decreasing_in_p_for_skewed_moments() {
+        // Regression: the raw cubic `w(Φ⁻¹(p))` turns back outside its monotone
+        // branch. With exponential-like moments (S = 2, K = 6) the 0.135 %
+        // quantile came out at −0.500σ, above the 10 % quantile (−0.877σ); with
+        // S = K = 2 it was +2.50σ, above the median (−0.333σ).
+        let ps = [
+            1e-9,
+            0.001_35,
+            0.01,
+            0.05,
+            0.1,
+            0.25,
+            0.5,
+            0.75,
+            0.9,
+            0.95,
+            0.99,
+            0.998_65,
+            1.0 - 1e-9,
+        ];
+        for &(s, k) in &[
+            (2.0, 6.0),
+            (2.0, 2.0),
+            (1.5, 0.5),
+            (1.0, 0.0),
+            (-1.5, 0.5),
+            (0.5, 4.0),
+        ]
+        {
+            let q: Vec<f64> = ps
+                .iter()
+                .map(|&p| cornish_fisher_quantile(0.0, 1.0, s, k, p))
+                .collect();
+            for w in q.windows(2)
+            {
+                assert!(w[0] <= w[1], "s={s} k={k}: quantiles not monotone: {q:?}");
+            }
+        }
+        let lo = cornish_fisher_quantile(0.0, 1.0, 2.0, 6.0, 0.001_35);
+        let p10 = cornish_fisher_quantile(0.0, 1.0, 2.0, 6.0, 0.1);
+        assert!(lo < p10, "{lo} should lie below {p10}");
+        // Clements on S = K = 2: the lower percentile now lies below the median,
+        // so Cpl is finite (it was +∞, with Cp ≈ 18 from a 0.33σ "spread").
+        let c = clements_capability(0.0, 1.0, 2.0, 2.0, -3.0, 3.0);
+        assert!(c.cpl.is_finite() && c.cp < 2.0, "{c:?}");
+    }
+
+    #[test]
+    fn quantile_round_trips_through_ppm_on_the_branch() {
+        // Inside the monotone branch the quantile and `nonnormal_ppm` invert
+        // each other: the lower-tail ppm at x_p is 10⁶·p.
+        for &(s, k) in &[(2.0, 6.0), (1.0, 1.5), (0.6, 1.5)]
+        {
+            let (zl, _) = cf_branch(s, k).unwrap();
+            for &p in &[0.02, 0.1, 0.3]
+            {
+                if inv_normal_cdf(p) <= zl
+                {
+                    continue; // saturated: outside the branch
+                }
+                let x = cornish_fisher_quantile(0.0, 1.0, s, k, p);
+                let ppm = nonnormal_ppm(0.0, 1.0, s, k, x, 1e3);
+                assert_relative_eq!(ppm, 1e6 * p, max_relative = 1e-9);
+            }
+        }
+    }
+
+    #[test]
+    fn branch_edges_are_turning_points() {
+        for &(s, k) in &[(2.0, 6.0), (2.0, 2.0), (1.5, 0.5), (-1.0, 0.0), (0.0, -1.0)]
+        {
+            let (zl, zh) = cf_branch(s, k).unwrap();
+            assert!(zl < 0.0 && zh > 0.0);
+            for z in [zl, zh]
+            {
+                if z.abs() < 40.0
+                {
+                    assert!(cf_w_prime(z, s, k).abs() < 1e-12, "w'({z}) for s={s} k={k}");
+                }
+            }
+            for i in 1..100
+            {
+                let z = zl + (zh - zl) * i as f64 / 100.0;
+                assert!(cf_w_prime(z, s, k) > 0.0);
+            }
+        }
+        // Normal: w' ≡ 1, no turning points.
+        assert_eq!(cf_branch(0.0, 0.0), Some((-40.0, 40.0)));
     }
 }
