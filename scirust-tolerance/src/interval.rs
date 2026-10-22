@@ -36,7 +36,9 @@ pub fn tolerance_factor_two_sided(n: usize, p: f64, conf: f64) -> Option<f64> {
         return None;
     }
     let nu = (n - 1) as f64;
-    let z = inv_normal_cdf(0.5 * (1.0 + p));
+    // z_{(1+p)/2} = −Φ⁻¹((1−p)/2): `1 − p` is exact for p ≥ ½, whereas
+    // `(1 + p)/2` rounds to `1` (z = +∞) for p within 2⁻⁵³ of 1.
+    let z = -inv_normal_cdf(0.5 * (1.0 - p));
     // Lower α = 1 − conf quantile of χ²_ν.
     let chi = chi2_quantile(nu, 1.0 - conf);
     if chi <= 0.0
@@ -167,5 +169,22 @@ mod tests {
         // Reference: Howe formula with scipy.stats chi2.ppf / norm.ppf.
         let k = tolerance_factor_two_sided(6, 0.9, 0.999_999).unwrap();
         assert_relative_eq!(k, 34.982_870_624_977, max_relative = 1e-9);
+    }
+
+    #[test]
+    fn two_sided_factor_stays_finite_for_p_next_to_one() {
+        // p = 1 − 2⁻⁵³: `(1 + p)/2` rounds to 1. For fixed (n, conf) the factor
+        // is proportional to z_{(1+p)/2}, so k(p)/k(0.95) = z(2⁻⁵⁴)/z(0.025) with
+        // z(2⁻⁵⁴) = 8.29236107581359554 and z(0.025) = 1.95996398454005423
+        // (mpmath, 40 digits).
+        let p = 1.0 - f64::EPSILON / 2.0;
+        let k = tolerance_factor_two_sided(30, p, 0.95).unwrap();
+        let k95 = tolerance_factor_two_sided(30, 0.95, 0.95).unwrap();
+        assert!(k.is_finite(), "k = {k}");
+        assert_relative_eq!(
+            k / k95,
+            8.292_361_075_813_596 / 1.959_963_984_540_054,
+            max_relative = 1e-12
+        );
     }
 }

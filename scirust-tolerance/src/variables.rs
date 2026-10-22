@@ -182,8 +182,11 @@ pub fn design_variables_plan(
     }
     let z_aql = -inv_normal_cdf(aql);
     let z_rql = -inv_normal_cdf(rql);
-    let z_a = inv_normal_cdf(1.0 - alpha);
-    let z_b = inv_normal_cdf(1.0 - beta);
+    // z_{1−α} = −Φ⁻¹(α): forming `1 − alpha` first would round to `1` (and the
+    // quantile to `+∞`) for `alpha` below ~1.1e-16, and lose tail digits well
+    // before that.
+    let z_a = -inv_normal_cdf(alpha);
+    let z_b = -inv_normal_cdf(beta);
     let denom = z_aql - z_rql;
     if denom <= 0.0
     {
@@ -273,5 +276,25 @@ mod tests {
         assert!(design_variables_plan(0.08, 0.01, 0.05, 0.10, true).is_none()); // aql≥rql
         assert!(design_variables_plan(0.0, 0.08, 0.05, 0.10, true).is_none());
         assert!(design_variables_plan(0.01, 0.08, 0.0, 0.10, true).is_none());
+    }
+
+    #[test]
+    fn design_stays_finite_for_risks_below_f64_epsilon() {
+        // alpha = 1e-20: `1 − alpha` rounds to 1 in f64, so z_{1−α} must come
+        // from the lower tail. Reference quantiles z_q = −Φ⁻¹(q) from mpmath
+        // (40 digits): z(1e-20) = 9.26234008979840757, z(0.01) = 2.32634787404084110,
+        // z(0.05) = 1.64485362695147271, z(0.1) = 1.28155156554460047.
+        let (z_a, z_b) = (9.262_340_089_798_408, 1.281_551_565_544_600_5);
+        let (z_aql, z_rql) = (2.326_347_874_040_841, 1.644_853_626_951_472_7);
+        let sqrt_n = (z_a + z_b) / (z_aql - z_rql);
+        let k_want = (z_aql * z_b + z_rql * z_a) / (z_a + z_b);
+        let plan = design_variables_plan(0.01, 0.05, 1e-20, 0.1, true).unwrap();
+        assert!(plan.acceptance_constant.is_finite());
+        assert_relative_eq!(plan.acceptance_constant, k_want, max_relative = 1e-12);
+        assert_eq!(plan.sample_size, (sqrt_n * sqrt_n).ceil() as usize);
+        // The symmetric case `beta` tiny as well.
+        let plan = design_variables_plan(0.01, 0.05, 0.05, 1e-20, false).unwrap();
+        assert!(plan.acceptance_constant.is_finite());
+        assert!(plan.sample_size < 10_000, "n = {}", plan.sample_size);
     }
 }
