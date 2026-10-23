@@ -102,7 +102,21 @@ impl Iso10816 {
     }
 
     /// Classify a broadband RMS velocity (mm/s) into an evaluation zone.
-    /// Boundaries are inclusive of the lower zone (a reading exactly at A/B is B).
+    ///
+    /// Each boundary belongs to the **upper** zone: a reading exactly at the
+    /// A/B limit is B, exactly at B/C is C, and exactly at C/D is D. A NaN
+    /// reading compares false against every limit and is classified as D.
+    ///
+    /// ```
+    /// use scirust_pdm::iso10816::{Iso10816, MachineGroup, Support, VibrationZone};
+    ///
+    /// // Group 2, rigid support: A/B = 1.4, B/C = 2.8, C/D = 4.5 mm/s.
+    /// let iso = Iso10816::new(MachineGroup::Group2, Support::Rigid);
+    /// assert_eq!(iso.evaluate(1.39), VibrationZone::A);
+    /// assert_eq!(iso.evaluate(1.4), VibrationZone::B);
+    /// assert_eq!(iso.evaluate(2.8), VibrationZone::C);
+    /// assert_eq!(iso.evaluate(4.5), VibrationZone::D);
+    /// ```
     pub fn evaluate(&self, rms_mms: f64) -> VibrationZone {
         if rms_mms < self.ab
         {
@@ -154,6 +168,8 @@ mod tests {
         assert_eq!(iso.evaluate(1.4), VibrationZone::B);
         assert_eq!(iso.evaluate(2.8), VibrationZone::C);
         assert_eq!(iso.evaluate(4.5), VibrationZone::D);
+        // A NaN reading is classified as D, as documented on `evaluate`.
+        assert_eq!(iso.evaluate(f64::NAN), VibrationZone::D);
     }
 
     #[test]
