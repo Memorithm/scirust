@@ -72,9 +72,15 @@ fn distance(a: &YieldPoint, b: &YieldPoint) -> f64 {
 ///
 /// Un point dont la position ou le rendement n'est pas fini (`NaN`, `±∞`)
 /// est rejeté et n'entre dans le voisinage d'aucun autre point. Un point
-/// valide sans aucun voisin valide (par ex. un jeu d'un seul point) ne peut
-/// pas être jugé localement et est conservé ; `k_neighbors == 0` désactive
-/// le filtre et renvoie tous les indices.
+/// valide dont le voisinage compte moins de deux points valides (par ex. un
+/// jeu d'un ou deux points) ne peut pas être jugé localement — l'écart-type
+/// d'une seule valeur est nul par construction — et est conservé. En
+/// conséquence, `k_neighbors == 1` conserve tous les points valides (seuls
+/// les points non finis sont rejetés) : il faut `k_neighbors >= 2` pour que
+/// le filtre local agisse. `k_neighbors == 0` désactive le filtre et
+/// renvoie tous les indices. Si les voisins ont tous le
+/// même rendement (écart-type local nul), un point dont le rendement en
+/// diffère est rejeté.
 pub fn local_filter(points: &[YieldPoint], k_neighbors: usize, k_std: f64) -> Vec<usize> {
     let n = points.len();
     if n == 0 || k_neighbors == 0
@@ -93,14 +99,16 @@ pub fn local_filter(points: &[YieldPoint], k_neighbors: usize, k_std: f64) -> Ve
             .filter(|&j| j != i && valid(&points[j]))
             .map(|j| (distance(&points[i], &points[j]), j))
             .collect();
-        if dists.is_empty()
+        let k = k_neighbors.min(dists.len());
+        if k < 2
         {
-            // No neighbour to compare with: no local evidence against it.
+            // Fewer than two neighbours: no local spread can be estimated
+            // (a single value has a standard deviation of 0 by
+            // construction), hence no local evidence against the point.
             kept.push(i);
             continue;
         }
         dists.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        let k = k_neighbors.min(dists.len());
         let neighbor_yields: Vec<f64> = dists[..k]
             .iter()
             .map(|&(_, j)| points[j].yield_value)
@@ -253,5 +261,27 @@ mod tests {
         assert_eq!(local_filter(&[pt(0.0, 0.0, 7.0)], 3, 2.0), vec![0]);
         let points = vec![pt(0.0, 0.0, 7.0), pt(1.0, 0.0, f64::NAN)];
         assert_eq!(local_filter(&points, 3, 2.0), vec![0]);
+    }
+
+    /// Un voisinage d'un seul point n'a pas d'écart-type local (il vaut 0
+    /// par construction) : avant correction, `k_neighbors == 1` — ou un jeu
+    /// de deux points valides — rejetait tout point dont le rendement
+    /// différait de celui de son voisin, quel que soit `k_std`, ce qui
+    /// pouvait vider une carte à variation lisse.
+    #[test]
+    fn local_filter_keeps_points_judged_on_a_single_neighbour() {
+        let points: Vec<YieldPoint> = (0..5)
+            .map(|i| pt(i as f64, 0.0, 8.0 + 0.1 * i as f64))
+            .collect();
+        assert_eq!(local_filter(&points, 1, 2.0), vec![0, 1, 2, 3, 4]);
+        // Only two valid points: the effective neighbourhood has one point
+        // whatever `k_neighbors` is.
+        let pair = vec![pt(0.0, 0.0, 8.0), pt(1.0, 0.0, 9.0)];
+        assert_eq!(local_filter(&pair, 3, 2.0), vec![0, 1]);
+        // With two or more identical neighbours, a differing point is still
+        // rejected (infinite local z-score), as before.
+        let mut flat: Vec<YieldPoint> = (0..6).map(|i| pt(i as f64, 0.0, 10.0)).collect();
+        flat[3].yield_value = 11.0;
+        assert!(!local_filter(&flat, 2, 2.0).contains(&3));
     }
 }
