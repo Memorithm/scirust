@@ -33,6 +33,17 @@ pub fn global_filter(points: &[YieldPoint], k_std: f64) -> Vec<usize> {
     {
         return Vec::new();
     }
+    // A field with no variation has nothing to filter. Test it exactly:
+    // the computed mean of identical values is not always exact (e.g. 11
+    // copies of 12345.678 average to 12345.678 - 1.8e-12), which gave a
+    // spurious standard deviation of about 1.8e-12, above the 1e-12 cut-off,
+    // and a z-score of exactly 1 for every point, so `k_std < 1` rejected the
+    // whole uniform field.
+    let first = points[finite[0]].yield_value;
+    if finite.iter().all(|&i| points[i].yield_value == first)
+    {
+        return finite;
+    }
     let n = finite.len() as f64;
     let mean = finite.iter().map(|&i| points[i].yield_value).sum::<f64>() / n;
     let variance = finite
@@ -113,20 +124,34 @@ pub fn local_filter(points: &[YieldPoint], k_neighbors: usize, k_std: f64) -> Ve
             .iter()
             .map(|&(_, j)| points[j].yield_value)
             .collect();
-        let mean = neighbor_yields.iter().sum::<f64>() / k as f64;
-        let variance = neighbor_yields
-            .iter()
-            .map(|y| (y - mean).powi(2))
-            .sum::<f64>()
-            / k as f64;
-        let std = variance.sqrt();
-        let keep = if std < 1e-12
+        // Identical neighbours are detected exactly and compared with their
+        // common value: their computed mean can be off by a rounding error
+        // (about 1.8e-12 for 11 copies of 12345.678), which used to produce a
+        // spurious local standard deviation above the 1e-12 cut-off and a
+        // z-score of exactly 1 for a point equal to its neighbours, so
+        // `k_std < 1` rejected it.
+        let first = neighbor_yields[0];
+        let keep = if neighbor_yields.iter().all(|&y| y == first)
         {
-            (points[i].yield_value - mean).abs() < 1e-9
+            (points[i].yield_value - first).abs() < 1e-9
         }
         else
         {
-            ((points[i].yield_value - mean) / std).abs() <= k_std
+            let mean = neighbor_yields.iter().sum::<f64>() / k as f64;
+            let variance = neighbor_yields
+                .iter()
+                .map(|y| (y - mean).powi(2))
+                .sum::<f64>()
+                / k as f64;
+            let std = variance.sqrt();
+            if std < 1e-12
+            {
+                (points[i].yield_value - mean).abs() < 1e-9
+            }
+            else
+            {
+                ((points[i].yield_value - mean) / std).abs() <= k_std
+            }
         };
         if keep
         {
@@ -283,5 +308,31 @@ mod tests {
         let mut flat: Vec<YieldPoint> = (0..6).map(|i| pt(i as f64, 0.0, 10.0)).collect();
         flat[3].yield_value = 11.0;
         assert!(!local_filter(&flat, 2, 2.0).contains(&3));
+    }
+
+    /// Un champ uniforme en kg/ha (11 points à 12 345,678) : la moyenne
+    /// calculée de valeurs identiques n'est pas exacte (écart d'environ
+    /// 1,8e-12), ce qui donnait avant correction un écart-type parasite
+    /// supérieur au seuil de 1e-12 et un score-z de 1 pour chaque point —
+    /// avec `k_std < 1`, tout le champ était rejeté (globalement) ou chaque
+    /// point égal à ses voisins était rejeté (localement).
+    #[test]
+    fn uniform_field_is_kept_despite_mean_rounding() {
+        let v = 12345.678;
+        let n = 11;
+        let mean = vec![v; n].iter().sum::<f64>() / n as f64;
+        assert_ne!(mean, v, "test premise: the computed mean is not exact");
+        let points: Vec<YieldPoint> = (0..n).map(|i| pt(i as f64, 0.0, v)).collect();
+        let all: Vec<usize> = (0..n).collect();
+        assert_eq!(global_filter(&points, 0.5), all);
+        let points12: Vec<YieldPoint> = (0..12).map(|i| pt(i as f64, 0.0, v)).collect();
+        assert_eq!(
+            local_filter(&points12, 11, 0.5),
+            (0..12).collect::<Vec<_>>()
+        );
+        // A differing point among identical neighbours is still rejected.
+        let mut dirty = points12.clone();
+        dirty[6].yield_value = v + 1.0;
+        assert!(!local_filter(&dirty, 11, 0.5).contains(&6));
     }
 }
