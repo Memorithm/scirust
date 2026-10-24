@@ -64,13 +64,33 @@ fn mag_at(spec: &[Complex], b: isize) -> f64 {
 /// via parabolic interpolation of the windowed spectrum peak.
 ///
 /// `signal.len()` must be a power of two. Searches within ±`search_hz` of
-/// `nominal_hz`.
+/// `nominal_hz`; the band is clamped to the interior bins `1..=n/2 - 1` of the
+/// half-spectrum (each candidate peak needs two neighbours).
+///
+/// Returns `NaN` when no frequency can be estimated: when the signal has fewer
+/// than 4 samples (no interior bin), or when the search band contains no
+/// interior bin, e.g. a band lying entirely above the Nyquist frequency
+/// `sample_rate / 2` or entirely at or below 0 Hz. Callers that feed the
+/// result into threshold logic (such as [`IslandingDetector`]) should check
+/// [`f64::is_finite`] first, since every comparison against `NaN` is `false`.
 pub fn grid_frequency(signal: &[f64], sample_rate: f64, nominal_hz: f64, search_hz: f64) -> f64 {
     let n = signal.len();
     let spec = windowed_spectrum(signal);
+    if spec.len() < 3
+    {
+        return f64::NAN;
+    }
     let bin_hz = sample_rate / n as f64;
-    let lo = ((nominal_hz - search_hz) / bin_hz).floor().max(1.0) as usize;
-    let hi = (((nominal_hz + search_hz) / bin_hz).ceil() as usize).min(spec.len() - 2);
+    let lo = ((nominal_hz - search_hz) / bin_hz).floor().max(1.0);
+    let hi = ((nominal_hz + search_hz) / bin_hz)
+        .ceil()
+        .min((spec.len() - 2) as f64);
+    // `lo > hi` or a NaN bound: the band holds no interior bin.
+    if lo.partial_cmp(&hi).is_none_or(|o| o.is_gt())
+    {
+        return f64::NAN;
+    }
+    let (lo, hi) = (lo as usize, hi as usize);
 
     // Peak bin in the search band.
     let mut peak = lo;
@@ -200,6 +220,46 @@ mod tests {
         let sig = sine(n, sr, 50.2, 1.0, 0.0);
         let f = grid_frequency(&sig, sr, 50.0, 2.0);
         assert!((f - 50.2).abs() < 0.05, "frequency {f} (want 50.2)");
+    }
+
+    #[test]
+    fn grid_frequency_band_above_nyquist_is_nan() {
+        // 100 Hz sampling: Nyquist is 50 Hz, so a 60 Hz ± 2 Hz band holds no
+        // spectral bin. The estimate must not be fabricated from the band edge.
+        let (n, sr) = (1024usize, 100.0);
+        let sig = sine(n, sr, 10.0, 1.0, 0.0);
+        let f = grid_frequency(&sig, sr, 60.0, 2.0);
+        assert!(f.is_nan(), "band above Nyquist gave {f} Hz");
+    }
+
+    #[test]
+    fn grid_frequency_band_below_first_bin_is_nan() {
+        // The band [-1, 0] Hz contains no positive-frequency bin.
+        let (n, sr) = (1024usize, 1024.0);
+        let sig = sine(n, sr, 50.0, 1.0, 0.0);
+        let f = grid_frequency(&sig, sr, -0.5, 0.5);
+        assert!(f.is_nan(), "band below bin 1 gave {f} Hz");
+    }
+
+    #[test]
+    fn grid_frequency_too_short_signal_is_nan_not_panic() {
+        // n = 1 and n = 2 give a half-spectrum with fewer than 3 bins: no
+        // interior peak can be interpolated.
+        for n in [1usize, 2]
+        {
+            let sig = vec![1.0; n];
+            let f = grid_frequency(&sig, 4096.0, 50.0, 2.0);
+            assert!(f.is_nan(), "n = {n} gave {f} Hz");
+        }
+    }
+
+    #[test]
+    fn grid_frequency_band_straddling_nyquist_is_clamped() {
+        // A band that only partly exceeds Nyquist still yields an estimate.
+        let (n, sr) = (4096usize, 100.0);
+        let sig = sine(n, sr, 48.0, 1.0, 0.0);
+        let f = grid_frequency(&sig, sr, 49.0, 2.0);
+        assert!((f - 48.0).abs() < 0.05, "frequency {f} (want 48.0)");
     }
 
     #[test]
