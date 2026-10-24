@@ -31,23 +31,39 @@ fn distance(query: (f64, f64), p: &YieldPoint) -> f64 {
 /// déterministe des ex æquo de distance par index croissant. Si `query`
 /// coïncide avec un point connu (distance négligeable), renvoie sa
 /// valeur directement plutôt que de diviser par un poids infini.
-/// `None` si `known` est vide ou `k_neighbors == 0`.
+///
+/// Un point connu dont la position ou le rendement n'est pas fini (`NaN`,
+/// `±∞` — position GNSS absente ou capteur en défaut) est ignoré, comme
+/// dans [`crate::outlier_filter::local_filter`] : il n'entre pas dans le
+/// voisinage et ne peut ni contaminer le résultat ni perturber le tri des
+/// distances.
+///
+/// `None` si `known` ne contient aucun point fini, si `k_neighbors == 0`
+/// ou si `query` n'est pas fini.
 pub fn idw_interpolate(
     known: &[YieldPoint],
     query: (f64, f64),
     power: f64,
     k_neighbors: usize,
 ) -> Option<f64> {
-    if known.is_empty() || k_neighbors == 0
+    if known.is_empty() || k_neighbors == 0 || !query.0.is_finite() || !query.1.is_finite()
     {
         return None;
     }
+    let valid = |p: &YieldPoint| p.x.is_finite() && p.y.is_finite() && p.yield_value.is_finite();
     let mut dists: Vec<(f64, usize)> = known
         .iter()
         .enumerate()
+        .filter(|(_, p)| valid(p))
         .map(|(i, p)| (distance(query, p), i))
         .collect();
-    dists.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    if dists.is_empty()
+    {
+        return None;
+    }
+    // Finite inputs give non-NaN distances, so this is a total order
+    // (distance, then index for ties).
+    dists.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
 
     if let Some(&(d0, i0)) = dists.first()
     {
@@ -133,6 +149,46 @@ mod tests {
         let z = idw_interpolate(&known, (1e150, 0.0), 3.0, 2).unwrap();
         assert!(z.is_finite());
         assert_relative_eq!(z, 290.0 / 28.0, max_relative = 1e-12);
+    }
+
+    /// A NaN coordinate in `known` used to reach the distance sort, whose
+    /// comparator mapped NaN to `Equal`; that is not a total order and the
+    /// standard sort panicked ("user-provided comparison function does not
+    /// correctly implement a total order"). Such points are now skipped.
+    #[test]
+    fn non_finite_known_coordinates_are_ignored() {
+        let clean: Vec<YieldPoint> = (0..30).map(|i| pt(i as f64, 0.0, i as f64)).collect();
+        let expected = idw_interpolate(&clean, (5.2, 0.0), 2.0, 3).unwrap();
+        let mut dirty = clean.clone();
+        dirty[3].x = f64::NAN;
+        dirty[17].y = f64::NAN;
+        dirty[25].x = f64::INFINITY;
+        let z = idw_interpolate(&dirty, (5.2, 0.0), 2.0, 3).unwrap();
+        assert_relative_eq!(z, expected, max_relative = 1e-12);
+    }
+
+    /// A non-finite yield among the nearest neighbours used to make the
+    /// whole estimate NaN (or ±inf); the point is now skipped and the next
+    /// valid neighbour takes its place.
+    #[test]
+    fn non_finite_known_yields_are_ignored() {
+        let clean = vec![pt(0.0, 0.0, 10.0), pt(4.0, 0.0, 20.0)];
+        let expected = idw_interpolate(&clean, (1.0, 0.0), 2.0, 2).unwrap();
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY]
+        {
+            let dirty = vec![pt(0.0, 0.0, 10.0), pt(2.0, 0.0, bad), pt(4.0, 0.0, 20.0)];
+            let z = idw_interpolate(&dirty, (1.0, 0.0), 2.0, 2).unwrap();
+            assert_relative_eq!(z, expected, max_relative = 1e-12);
+        }
+    }
+
+    #[test]
+    fn non_finite_query_or_no_valid_point_returns_none() {
+        let known = vec![pt(0.0, 0.0, 7.0), pt(1.0, 0.0, 9.0)];
+        assert!(idw_interpolate(&known, (f64::NAN, 0.0), 2.0, 2).is_none());
+        assert!(idw_interpolate(&known, (0.0, f64::INFINITY), 2.0, 2).is_none());
+        let invalid = vec![pt(f64::NAN, 0.0, 7.0), pt(1.0, 0.0, f64::NAN)];
+        assert!(idw_interpolate(&invalid, (0.0, 0.0), 2.0, 2).is_none());
     }
 
     #[test]
