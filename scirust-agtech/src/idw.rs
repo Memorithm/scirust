@@ -11,6 +11,13 @@
 //! `ẑ(x) = Σ wᵢ·zᵢ / Σ wᵢ`, `wᵢ = 1/dᵢᵖ` (`p` = puissance, typiquement 2),
 //! calculé sur les `k_neighbors` points connus les plus proches du point
 //! interrogé (IDW local, la variante la plus utilisée en pratique).
+//!
+//! Les poids sont évalués sous la forme équivalente `wᵢ = (d₀/dᵢ)ᵖ`, où
+//! `d₀` est la distance du plus proche voisin : le facteur commun `d₀ᵖ` se
+//! simplifie dans le rapport, le poids du plus proche voisin vaut 1 et les
+//! autres sont dans `[0, 1]`. `dᵢᵖ` ne peut donc ni déborder (poids tous
+//! nuls, `0/0`) ni sous-déborder (poids infini, `∞/∞`) pour de petites ou
+//! grandes distances ou une grande puissance.
 
 use crate::YieldPoint;
 
@@ -51,11 +58,15 @@ pub fn idw_interpolate(
     }
 
     let k = k_neighbors.min(dists.len());
+    // Weights relative to the nearest neighbour: (d0/d)^p equals
+    // d0^p · (1/d^p), and the common factor d0^p cancels in the ratio. The
+    // nearest weight is exactly 1, so the sum never overflows or vanishes.
+    let d0 = dists[0].0;
     let mut weight_sum = 0.0;
     let mut weighted_value_sum = 0.0;
     for &(d, i) in &dists[..k]
     {
-        let w = 1.0 / d.powf(power);
+        let w = (d0 / d).powf(power);
         weight_sum += w;
         weighted_value_sum += w * known[i].yield_value;
     }
@@ -99,6 +110,29 @@ mod tests {
         let known = vec![pt(0.0, 0.0, 7.0), pt(5.0, 5.0, 20.0)];
         let z = idw_interpolate(&known, (0.0, 0.0), 2.0, 2).unwrap();
         assert_relative_eq!(z, 7.0, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn large_power_at_tiny_distances_stays_finite() {
+        // d = 1e-10 and 2e-10 with power 40: d^40 underflows to 0, so the
+        // naive 1/d^p weights were both +inf and the result was inf/inf = NaN.
+        let known = vec![pt(1e-10, 0.0, 10.0), pt(-2e-10, 0.0, 20.0)];
+        let z = idw_interpolate(&known, (0.0, 0.0), 40.0, 2).unwrap();
+        let r = 0.5f64.powi(40);
+        assert!(z.is_finite());
+        assert_relative_eq!(z, (10.0 + 20.0 * r) / (1.0 + r), max_relative = 1e-12);
+    }
+
+    #[test]
+    fn large_distances_stay_finite() {
+        // Same geometry as closer_point_dominates_the_weighted_average,
+        // scaled by 1e150 and with power 3: d^3 overflows to inf, so the
+        // naive weights were both 0 and the result was 0/0 = NaN.
+        // w1 = 1, w2 = 1/27 -> (10 + 20/27) / (1 + 1/27) = 290/28.
+        let known = vec![pt(0.0, 0.0, 10.0), pt(4e150, 0.0, 20.0)];
+        let z = idw_interpolate(&known, (1e150, 0.0), 3.0, 2).unwrap();
+        assert!(z.is_finite());
+        assert_relative_eq!(z, 290.0 / 28.0, max_relative = 1e-12);
     }
 
     #[test]
