@@ -23,6 +23,9 @@ pub struct TdoaSolution {
     /// Gauss–Newton iterations taken.
     pub iterations: usize,
     /// Whether the step norm fell below tolerance before the iteration cap.
+    /// The tolerance is `1e-10` m, or four ulps of the largest position
+    /// coordinate when that is coarser (e.g. ≈ 4.8e-9 m at a UTM northing of
+    /// 5.4e6 m), so far-from-origin coordinates can still report convergence.
     pub converged: bool,
 }
 
@@ -88,7 +91,13 @@ pub fn tdoa_locate_2d(
         let step = jtj.inverse()?.matvec(&jtr);
         x[0] -= step[0];
         x[1] -= step[1];
-        if step[0].hypot(step[1]) < 1e-10
+        // Step tolerance: 1e-10 m, or a few ulps of the position when that is
+        // coarser. Far from the origin (projected coordinates such as UTM,
+        // northing ≈ 5e6 m, ulp ≈ 1e-9 m) a fixed 1e-10 m is below the spacing
+        // of representable positions, so `x` stops moving while the step
+        // stays above it and the solve never reported convergence.
+        let resolution = 4.0 * f64::EPSILON * x[0].abs().max(x[1].abs());
+        if step[0].hypot(step[1]) < resolution.max(1e-10)
         {
             converged = true;
             break;
@@ -176,6 +185,49 @@ mod tests {
         let sol = tdoa_locate_2d(&sensors, &t, speed, None, 50).unwrap();
         let err = dist(sol.position, src);
         assert!(err < 0.1, "location error {err} m too large");
+    }
+
+    #[test]
+    fn converges_with_projected_coordinates_far_from_the_origin() {
+        // Regression: the step tolerance was an absolute 1e-10 m. With UTM-like
+        // coordinates (northing ≈ 5.4e6 m, where one ulp is ≈ 9.3e-10 m) and
+        // slightly inconsistent arrival times, the final Gauss–Newton steps
+        // (≈ 2.4e-10 m) are below the spacing of representable positions:
+        // `x` stopped moving, the step never fell below 1e-10 and the solve
+        // ran to `max_iter` with `converged == false`, although the same
+        // geometry centred on the origin converges in a few iterations.
+        let (e0, n0) = (452_000.0, 5_411_000.0);
+        let local = [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]];
+        let speed = 1500.0;
+        let jitter = [1e-5, -8e-6, 6e-6, -4e-6];
+        let solve = |offset: [f64; 2]| {
+            let sensors: Vec<[f64; 2]> = local
+                .iter()
+                .map(|s| [offset[0] + s[0], offset[1] + s[1]])
+                .collect();
+            let src = [offset[0] + 3.0, offset[1] + 7.0];
+            let mut t = arrivals(&sensors, src, speed, 0.0);
+            for (ti, j) in t.iter_mut().zip(jitter)
+            {
+                *ti += j;
+            }
+            let sol = tdoa_locate_2d(&sensors, &t, speed, None, 50).unwrap();
+            (
+                sol,
+                [sol.position[0] - offset[0], sol.position[1] - offset[1]],
+            )
+        };
+        let (near, near_local) = solve([0.0, 0.0]);
+        let (far, far_local) = solve([e0, n0]);
+        assert!(near.converged, "origin-centred solve {near:?}");
+        assert!(far.converged, "UTM-offset solve {far:?}");
+        assert!(far.iterations < 50, "iterations {}", far.iterations);
+        // Same estimate in local coordinates, up to the resolution of the
+        // offset positions.
+        assert!(
+            dist(far_local, near_local) < 1e-6,
+            "{far_local:?} vs {near_local:?}"
+        );
     }
 
     #[test]
