@@ -49,14 +49,24 @@ impl ThermalGuard {
 
     /// Feed a new temperature sample `temp` (°C) taken `dt` (s) after the last,
     /// and get the verdict.
+    ///
+    /// A non-finite `temp` (NaN or ±∞, e.g. a faulty sensor read) is not used
+    /// to update the smoothed rate or the stored previous temperature: the
+    /// verdict for that sample is taken from the current smoothed rate (and
+    /// `+∞` is reported as `Critical`). Otherwise a single such sample would
+    /// make the smoothed rate NaN or infinite for every later update, and
+    /// `Warning` could never be raised again.
     pub fn update(&mut self, temp: f64, dt: f64) -> ThermalState {
-        let rate = match self.last_temp
+        if temp.is_finite()
         {
-            Some(t) if dt > 0.0 => (temp - t) / dt,
-            _ => 0.0,
-        };
-        self.ewma_rate = self.beta * self.ewma_rate + (1.0 - self.beta) * rate;
-        self.last_temp = Some(temp);
+            let rate = match self.last_temp
+            {
+                Some(t) if dt > 0.0 => (temp - t) / dt,
+                _ => 0.0,
+            };
+            self.ewma_rate = self.beta * self.ewma_rate + (1.0 - self.beta) * rate;
+            self.last_temp = Some(temp);
+        }
 
         if temp >= self.critical_temp
         {
@@ -169,6 +179,32 @@ mod tests {
         // dt = 0 with a big temperature jump: rate contribution is 0, ewma stays 0.
         assert_eq!(g.update(55.0, 0.0), ThermalState::Normal);
         assert!((g.rate() - 0.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn non_finite_sample_does_not_disable_later_warnings() {
+        // One NaN / ±∞ reading in an otherwise normal series must not poison
+        // the smoothed rate: a later runaway (+2 °C/s) still has to warn.
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY]
+        {
+            let mut g = ThermalGuard::new(1.0, 200.0);
+            g.update(25.0, 1.0);
+            g.update(25.1, 1.0);
+            g.update(bad, 1.0);
+            assert!(g.rate().is_finite(), "bad {bad}: rate {}", g.rate());
+            let mut temp = 25.1;
+            let mut warned = false;
+            for _ in 0..5
+            {
+                temp += 2.0;
+                warned |= g.update(temp, 1.0) == ThermalState::Warning;
+            }
+            assert!(warned, "bad {bad}: no warning, rate {}", g.rate());
+        }
+        // A +∞ reading itself is reported as Critical.
+        let mut g = ThermalGuard::new(1.0, 200.0);
+        g.update(25.0, 1.0);
+        assert_eq!(g.update(f64::INFINITY, 1.0), ThermalState::Critical);
     }
 
     #[test]
