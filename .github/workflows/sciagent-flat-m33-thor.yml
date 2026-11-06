@@ -251,7 +251,7 @@ jobs:
           echo "thor_idle_settle_seconds=$SCIRUST_THOR_IDLE_SETTLE_SECONDS"
           echo "sciagent_contamination_watch=continuous_1s"
 
-          rustup run nightly-2026-07-02 cargo test -p scirust-sciagent \
+          FLAT_REQUIRE_WGPU=1 rustup run nightly-2026-07-02 cargo test -p scirust-sciagent \
             --features flat-attention --test flat_m33_lifecycle --locked -- --nocapture
           if [[ -s "$contamination" ]]; then
             echo "::error::SciAgent training appeared during M33 lifecycle parity; qualification invalid"
@@ -259,7 +259,7 @@ jobs:
             exit 1
           fi
 
-          rustup run nightly-2026-07-02 cargo test -p scirust-sciagent \
+          FLAT_REQUIRE_WGPU=1 rustup run nightly-2026-07-02 cargo test -p scirust-sciagent \
             --features flat-attention --test flat_runtime_decode --locked -- --nocapture
           if [[ -s "$contamination" ]]; then
             echo "::error::SciAgent training appeared during M32/M15 parity; qualification invalid"
