@@ -27,7 +27,12 @@ fn flat_m32_prefill_and_m15_decode_match_full_greedy() {
     let Some(resident) = ResidentModel::from_model(&model)
     else
     {
-        eprintln!("wgpu: no adapter, skipping FLAT M15 runtime parity");
+        assert_ne!(
+            std::env::var("FLAT_REQUIRE_WGPU").as_deref(),
+            Ok("1"),
+            "FLAT M32/M15 qualification requires a WGPU adapter; refusing a skipped decode test"
+        );
+        eprintln!("wgpu: no adapter; optional FLAT M15 runtime parity test skipped");
         return;
     };
 
