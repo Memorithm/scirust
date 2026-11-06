@@ -36,6 +36,15 @@ fn flat_m32_prefill_and_m15_decode_match_full_greedy() {
         return;
     };
 
+    if let Ok(required) = std::env::var("FLAT_EXPECTED_WGPU_ADAPTER") {
+        assert!(
+            !required.is_empty() && resident.adapter_name().contains(&required),
+            "FLAT qualification selected WGPU adapter {:?}, expected a name containing {:?}",
+            resident.adapter_name(),
+            required
+        );
+    }
+
     eprintln!(
         "FLAT M32 prefill + M15 decode parity on: {}",
         resident.adapter_name()
