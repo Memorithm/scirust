@@ -44,6 +44,7 @@ jobs:
       SCIAGENT_FLAT_M33_KV_HEADS: "2"
       SCIAGENT_FLAT_M33_D_FF: "1408"
       WGPU_BACKEND: vulkan
+      FLAT_EXPECTED_WGPU_ADAPTER: "NVIDIA"
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
