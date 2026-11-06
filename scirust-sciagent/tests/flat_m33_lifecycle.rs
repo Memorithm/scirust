@@ -35,6 +35,15 @@ fn flat_m33_cache_reset_replay_and_eos_are_deterministic() {
         return;
     };
 
+    if let Ok(required) = std::env::var("FLAT_EXPECTED_WGPU_ADAPTER") {
+        assert!(
+            !required.is_empty() && resident.adapter_name().contains(&required),
+            "FLAT qualification selected WGPU adapter {:?}, expected a name containing {:?}",
+            resident.adapter_name(),
+            required
+        );
+    }
+
     eprintln!("FLAT_M33_LIFECYCLE_ADAPTER={}", resident.adapter_name());
 
     let prompt = vec![3u32, 7, 1, 4];
