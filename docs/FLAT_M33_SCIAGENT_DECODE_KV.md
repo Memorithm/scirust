@@ -53,8 +53,10 @@ integration tests. This **must not** count as a physical M33 qualification.
 The physical Thor workflow sets `FLAT_REQUIRE_WGPU=1` for both the resident
 cache reset/replay/EOS test and the prefill/incremental decode parity test.
 When `ResidentModel::from_model` returns `None` under that setting, the test
-fails instead of reporting a successful skip. The lifecycle test logs the
-actual adapter identity when one is available. The existing exclusive GPU
+fails instead of reporting a successful skip. Both tests also check `FLAT_EXPECTED_WGPU_ADAPTER` when present. The Thor workflow
+requires the chosen runtime adapter name to contain `NVIDIA` after separately
+verifying the physical Thor device and Vulkan adapter; a software adapter is not
+accepted as evidence. The lifecycle test logs the actual adapter identity. The existing exclusive GPU
 reservation, physical Vulkan identity check and contamination watchdog remain
 mandatory and unchanged. This change does not by itself establish the exact
 FLAT release-candidate pin or confer a speedup claim.
