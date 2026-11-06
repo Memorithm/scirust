@@ -43,17 +43,20 @@ fn checked_incremental_decode_ms(
     total: Duration,
     decode_steps: usize,
 ) -> Result<f64, &'static str> {
-    if decode_steps == 0 {
+    if decode_steps == 0
+    {
         return Err("zero incremental decode steps");
     }
     let incremental = total
         .checked_sub(prefill)
         .ok_or("total generation time is less than prefill time; reject noisy pair")?;
-    if incremental.is_zero() {
+    if incremental.is_zero()
+    {
         return Err("no measurable incremental decode time; reject invalid pair");
     }
     let per_token_ms = incremental.as_secs_f64() * 1_000.0 / decode_steps as f64;
-    if !per_token_ms.is_finite() || per_token_ms <= 0.0 {
+    if !per_token_ms.is_finite() || per_token_ms <= 0.0
+    {
         return Err("invalid incremental decode latency");
     }
     Ok(per_token_ms)
@@ -66,30 +69,21 @@ mod benchmark_contract_tests {
 
     #[test]
     fn valid_paired_measurement_preserves_real_delta() {
-        let actual = checked_incremental_decode_ms(
-            Duration::from_millis(10),
-            Duration::from_millis(20),
-            5,
-        )
-        .expect("valid timing pair");
+        let actual =
+            checked_incremental_decode_ms(Duration::from_millis(10), Duration::from_millis(20), 5)
+                .expect("valid timing pair");
         assert!((actual - 2.0).abs() < 1e-12);
     }
 
     #[test]
     fn rejects_nonpositive_decode_latency_instead_of_fabricating_throughput() {
-        for total in [Duration::from_millis(9), Duration::from_millis(10)] {
-            assert!(
-                checked_incremental_decode_ms(Duration::from_millis(10), total, 5).is_err()
-            );
+        for total in [Duration::from_millis(9), Duration::from_millis(10)]
+        {
+            assert!(checked_incremental_decode_ms(Duration::from_millis(10), total, 5).is_err());
         }
-        assert!(
-            checked_incremental_decode_ms(
-                Duration::from_millis(10),
-                Duration::from_millis(20),
-                0,
-            )
-            .is_err()
-        );
+        let zero_steps =
+            checked_incremental_decode_ms(Duration::from_millis(10), Duration::from_millis(20), 0);
+        assert!(zero_steps.is_err());
     }
 }
 
@@ -152,12 +146,8 @@ fn main() {
             });
             (prefill, total)
         };
-        let decode = checked_incremental_decode_ms(
-            prefill,
-            total,
-            new_tokens - 1,
-        )
-        .unwrap_or_else(|reason| {
+        let decode_result = checked_incremental_decode_ms(prefill, total, new_tokens - 1);
+        let decode = decode_result.unwrap_or_else(|reason| {
             eprintln!("FLAT M33 measurement rejected: pair {index}: {reason}");
             std::process::exit(3);
         });
