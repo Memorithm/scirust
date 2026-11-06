@@ -60,3 +60,15 @@ accepted as evidence. The lifecycle test logs the actual adapter identity. The e
 reservation, physical Vulkan identity check and contamination watchdog remain
 mandatory and unchanged. This change does not by itself establish the exact
 FLAT release-candidate pin or confer a speedup claim.
+
+## Timing integrity gate (2026-11-06)
+
+The paired prefill-versus-full-generation estimator must reject any measured
+pair for which total elapsed time does not strictly exceed prefill elapsed time.
+The previous `max(f64::MIN_POSITIVE)` clamp fabricated an extremely small
+positive decode latency from an invalid/non-positive difference, producing an
+artificially enormous tokens/s value. The M33 benchmark now terminates with
+nonzero status on such a pair and reports the rejected pair index. Host-only
+regression tests for positive, zero, negative and zero-decode-step inputs run
+in the Thor workflow before the device reservation. This protects evidence
+integrity; it does not make a noisy estimator a precise isolated decode timer.
