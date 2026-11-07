@@ -91,6 +91,18 @@ class PinGateTests(unittest.TestCase):
         )
         self.assertFalse(any("unreadable" in failure for failure in failures))
 
+    def test_non_table_lock_package_fails_closed(self):
+        self.write()
+        (self.root / "Cargo.lock").write_text('version = 4\\npackage = ["not-a-table"]\\n')
+        failures = gate.verify(self.root, RUNTIME)
+        self.assertIn("Cargo.lock package entries must be TOML tables", failures)
+
+    def test_non_list_lock_package_fails_closed(self):
+        self.write()
+        (self.root / "Cargo.lock").write_text('version = 4\\n[package]\\nname = "flat-attention"\\n')
+        failures = gate.verify(self.root, RUNTIME)
+        self.assertIn("Cargo.lock package entries must be TOML tables", failures)
+
     def test_uppercase_candidate_fails_closed(self):
         self.write()
         self.assertTrue(gate.verify(self.root, RUNTIME.upper()))
