@@ -66,6 +66,30 @@ class PinGateTests(unittest.TestCase):
         (self.root / "Cargo.lock").write_text("not = [")
         self.assertTrue(gate.verify(self.root, RUNTIME))
 
+    def test_manifest_declared_revision_must_be_full_sha(self):
+        self.write(declared=RUNTIME[:12])
+        self.assertTrue(gate.verify(self.root, RUNTIME))
+
+    def test_missing_optional_flag_fails_closed(self):
+        self.write()
+        manifest = self.root / "scirust-gpu/Cargo.toml"
+        manifest.write_text(manifest.read_text().replace(", optional = true", ""))
+        self.assertTrue(gate.verify(self.root, RUNTIME))
+
+    def test_planner_only_lock_entry_cannot_impersonate_runtime(self):
+        self.write()
+        lock = self.root / "Cargo.lock"
+        lock.write_text(
+            'version = 4\\n[[package]]\\nname = "flat-attention"\\n'
+            'version = "0.1.0"\\n'
+            f'source = "{REPO}?rev={PLANNER}#{PLANNER}"\\n'
+        )
+        self.assertTrue(gate.verify(self.root, RUNTIME))
+
+    def test_uppercase_candidate_fails_closed(self):
+        self.write()
+        self.assertTrue(gate.verify(self.root, RUNTIME.upper()))
+
 
 if __name__ == "__main__":
     unittest.main()
