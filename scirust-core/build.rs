@@ -7,7 +7,8 @@ use std::{env, path::PathBuf};
 fn main() {
     println!("cargo:rerun-if-env-changed=MKLROOT");
 
-    if env::var_os("CARGO_FEATURE_BLAS_MKL").is_none() {
+    if env::var_os("CARGO_FEATURE_BLAS_MKL").is_none()
+    {
         return;
     }
     assert!(
@@ -22,7 +23,8 @@ fn main() {
     assert!(root.is_absolute(), "MKLROOT must be an absolute path");
 
     let os = env::var("CARGO_CFG_TARGET_OS").expect("Cargo target OS must be present");
-    let library_name = match os.as_str() {
+    let library_name = match os.as_str()
+    {
         "linux" => "libmkl_rt.so",
         "macos" => "libmkl_rt.dylib",
         "windows" => "mkl_rt.lib",
