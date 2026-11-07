@@ -33,7 +33,10 @@ def verify(root: pathlib.Path, candidate: str) -> list[str]:
         errors.append("runtime manifest FLAT rev is not a full immutable SHA")
     elif declared != candidate:
         errors.append(f"runtime manifest rev {declared} != candidate {candidate}")
-    matches = [p for p in lock.get("package", []) if p.get("name") == "flat-attention"
+    packages = lock.get("package", [])
+    if not isinstance(packages, list) or not all(isinstance(p, dict) for p in packages):
+        return errors + ["Cargo.lock package entries must be TOML tables"]
+    matches = [p for p in packages if p.get("name") == "flat-attention"
                and isinstance(p.get("source"), str) and p["source"].startswith(REPO)]
     expected = f"{REPO}?rev={candidate}#{candidate}"
     if not any(p["source"] == expected for p in matches):
