@@ -84,7 +84,12 @@ class PinGateTests(unittest.TestCase):
             'version = "0.1.0"\\n'
             f'source = "{REPO}?rev={PLANNER}#{PLANNER}"\\n'
         )
-        self.assertTrue(gate.verify(self.root, RUNTIME))
+        failures = gate.verify(self.root, RUNTIME)
+        self.assertIn(
+            "Cargo.lock has no runtime FLAT package with matching rev AND resolved SHA",
+            failures,
+        )
+        self.assertFalse(any("unreadable" in failure for failure in failures))
 
     def test_uppercase_candidate_fails_closed(self):
         self.write()
