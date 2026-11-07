@@ -44,6 +44,11 @@ def verify(root: pathlib.Path, candidate: str) -> list[str]:
     expected = f"{REPO}?rev={candidate}#{candidate}"
     if not any(p["source"] == expected for p in matches):
         errors.append("Cargo.lock has no runtime FLAT package with matching rev AND resolved SHA")
+    # Reject ambiguous lockfile identities even when one entry matches exactly.
+    # A second planner revision is permitted only if its declared rev differs.
+    candidate_rev = f"{REPO}?rev={candidate}#"
+    if any(p["source"].startswith(candidate_rev) and p["source"] != expected for p in matches):
+        errors.append("Cargo.lock has conflicting resolved SHA for runtime FLAT rev")
     if not matches:
         errors.append("Cargo.lock contains no FLAT Git package")
     # A second planner revision is permitted, but must never be mistaken for the runtime.
