@@ -52,3 +52,14 @@ Before promoting M33 evidence, capture the intended candidate full SHA and verif
 - SciAgent FLAT M33 Thor run [`42354853200`](https://github.com/Memorithm/scirust/actions/runs/42354853200): **IN PROGRESS at observation**; no outcome or physical measurements asserted.
 - Dependency-security blocker tracked independently in [SciRust #1734](https://github.com/Memorithm/scirust/issues/1734): `blas-mkl -> blas-src -> intel-mkl-src -> ocipkg 0.2.9`, including path traversal advisory `RUSTSEC-2026-0450`. Do not add an advisory ignore; require a compatible graph remediation and new exact-head audit.
 - **Decision:** NOT QUALIFIED; no performance claim, merge or release. Next: resolve security chain on the existing PR, attest runtime Cargo.lock FLAT SHA and run physical paired evidence under RemoteOps reservation.
+
+## Exact-head CI observation — 2026-11-07 11:16 Europe/Paris
+
+- SciRust PR #1733 head at observation: `f2fbf97d7ea4737fa5c7458e8de8e8187e2bed60` (PR metadata, not an inferred merge commit).
+- [CI run 42359346786](https://github.com/Memorithm/scirust/actions/runs/42359346786): **FAILURE**, job [128364186591](https://github.com/Memorithm/scirust/actions/runs/42359346786/job/128364186591), `License & Security Audit`, failing step `Audit MKL dependency graph`; the other enumerated graph audits passed. The step outcome does not independently prove a particular advisory or compatible remediation; see #1734 and retain its separate chain diagnosis.
+- [SciAgent FLAT decode contract run 42359346762](https://github.com/Memorithm/scirust/actions/runs/42359346762): **SUCCESS**, contract scope only.
+- [SciAgent Thor gate run 42359346761](https://github.com/Memorithm/scirust/actions/runs/42359346761): **IN PROGRESS at observation**, no device result asserted.
+- [SciAgent FLAT M33 Thor run 42359346826](https://github.com/Memorithm/scirust/actions/runs/42359346826): **IN PROGRESS at observation**, no resident KV, numerical or physical timing proof asserted.
+- [PR rustfmt diagnostic run 42359346718](https://github.com/Memorithm/scirust/actions/runs/42359346718): **SUCCESS** on the observed head.
+- The newest FLAT commit returned by commit search is `77c8abaa32d374814d9c36eeda25f1c10e0419a6`; this search does **not** independently attest `refs/heads/main` or the resolved Cargo.lock pin.
+- **Disposition: BLOCKED**. Do not merge or claim M33 physical qualification, release readiness or positive performance until security audit, pin equality and hardware evidence are independently demonstrated on the final exact head.
