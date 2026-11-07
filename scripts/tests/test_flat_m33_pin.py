@@ -103,6 +103,13 @@ class PinGateTests(unittest.TestCase):
         failures = gate.verify(self.root, RUNTIME)
         self.assertIn("Cargo.lock package entries must be TOML tables", failures)
 
+    def test_non_table_manifest_dependencies_fails_closed(self):
+        self.write()
+        manifest = self.root / "scirust-gpu/Cargo.toml"
+        manifest.write_text('dependencies = ["not-a-table"]\n')
+        failures = gate.verify(self.root, RUNTIME)
+        self.assertIn("runtime manifest dependencies must be a TOML table", failures)
+
     def test_uppercase_candidate_fails_closed(self):
         self.write()
         self.assertTrue(gate.verify(self.root, RUNTIME.upper()))
