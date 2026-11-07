@@ -124,6 +124,18 @@ class PinGateTests(unittest.TestCase):
         failures = gate.verify(self.root, RUNTIME)
         self.assertIn("runtime manifest dependencies must be a TOML table", failures)
 
+    def test_missing_manifest_fails_closed_with_unreadable_diagnostic(self):
+        self.write()
+        (self.root / "scirust-gpu/Cargo.toml").unlink()
+        failures = gate.verify(self.root, RUNTIME)
+        self.assertTrue(any("unreadable" in failure for failure in failures))
+
+    def test_missing_lockfile_fails_closed_with_unreadable_diagnostic(self):
+        self.write()
+        (self.root / "Cargo.lock").unlink()
+        failures = gate.verify(self.root, RUNTIME)
+        self.assertTrue(any("unreadable" in failure for failure in failures))
+
     def test_uppercase_candidate_fails_closed(self):
         self.write()
         self.assertTrue(gate.verify(self.root, RUNTIME.upper()))
