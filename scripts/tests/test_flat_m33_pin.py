@@ -51,6 +51,20 @@ class PinGateTests(unittest.TestCase):
         self.write(resolved=PLANNER)
         self.assertTrue(gate.verify(self.root, RUNTIME))
 
+    def test_conflicting_runtime_resolution_fails_even_with_valid_entry(self):
+        self.write()
+        lock = self.root / "Cargo.lock"
+        lock.write_text(
+            lock.read_text()
+            + '[[package]]\nname = "flat-attention"\nversion = "0.1.0"\n'
+            + f'source = "{REPO}?rev={RUNTIME}#{PLANNER}"\n'
+        )
+        failures = gate.verify(self.root, RUNTIME)
+        self.assertIn(
+            "Cargo.lock has conflicting resolved SHA for runtime FLAT rev",
+            failures,
+        )
+
     def test_missing_runtime_lock_entry_fails(self):
         self.write()
         lock = self.root / "Cargo.lock"
