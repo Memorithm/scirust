@@ -24,7 +24,10 @@ def verify(root: pathlib.Path, candidate: str) -> list[str]:
         lock = tomllib.loads((root / "Cargo.lock").read_text())
     except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
         return [f"manifest or lockfile unreadable: {exc}"]
-    dep = manifest.get("dependencies", {}).get("flat-attention")
+    dependencies = manifest.get("dependencies", {})
+    if not isinstance(dependencies, dict):
+        return ["runtime manifest dependencies must be a TOML table"]
+    dep = dependencies.get("flat-attention")
     if not isinstance(dep, dict) or dep.get("git") != REPO.removeprefix("git+") or not dep.get("optional"):
         errors.append("runtime FLAT dependency must be an explicit optional Git dependency")
         return errors
