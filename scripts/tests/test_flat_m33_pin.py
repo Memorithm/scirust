@@ -80,9 +80,9 @@ class PinGateTests(unittest.TestCase):
         self.write()
         lock = self.root / "Cargo.lock"
         lock.write_text(
-            'version = 4\\n[[package]]\\nname = "flat-attention"\\n'
-            'version = "0.1.0"\\n'
-            f'source = "{REPO}?rev={PLANNER}#{PLANNER}"\\n'
+            'version = 4\n[[package]]\nname = "flat-attention"\n'
+            'version = "0.1.0"\n'
+            f'source = "{REPO}?rev={PLANNER}#{PLANNER}"\n'
         )
         failures = gate.verify(self.root, RUNTIME)
         self.assertIn(
