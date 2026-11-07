@@ -34,3 +34,11 @@ Record every rejected run with exact run/job/SHA, failure phase, device occupanc
 ## Promotion decision
 
 **BLOCKED** until every required gate above is supported by immutable artifacts. This record is intentionally unfilled; do not substitute historical results from another SciRust or FLAT SHA.
+
+## Source-declared pin preflight (2026-11-07; not a lockfile attestation)
+
+The opt-in runtime edge `scirust-sciagent/flat-attention -> scirust-gpu/flat-attention` declares FLAT Git revision `c74a3806f8cfe621671694692fc14adfe08116f0` in `scirust-gpu/Cargo.toml`. The separate host-only planning edge in the root `Cargo.toml` declares `4529a2079434965e13e90ddd2e98ecc88ee0cb3a`. These are **different dependencies and purposes**; neither may be silently substituted for the other.
+
+The latest FLAT repository commit returned by the GitHub commit search at this preflight was `77c8abaa32d374814d9c36eeda25f1c10e0419a6`. It is **not equal** to either declared revision. This observation alone does not establish which commit is the intended immutable release candidate, and the resolved `Cargo.lock` entries have **not** been independently attested. Therefore the exact-release-candidate integration gate remains **BLOCKED**.
+
+Before promoting M33 evidence, capture the intended candidate full SHA and verify the resolved `Cargo.lock` Git source for the **runtime** `flat-attention` package against that candidate; separately record the planner dependency and its feature scope. Preserve the prior revision as a valid historical test scope, never as evidence for the newer candidate. A physical benchmark on an old pin does not qualify a new FLAT SHA.
