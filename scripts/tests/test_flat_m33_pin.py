@@ -90,6 +90,19 @@ class PinGateTests(unittest.TestCase):
             gate.verify(self.root, RUNTIME),
         )
 
+    def test_malformed_planner_git_source_fails_even_with_valid_runtime(self):
+        self.write()
+        lock = self.root / "Cargo.lock"
+        lock.write_text(
+            lock.read_text()
+            + '[[package]]\nname = "flat-attention"\nversion = "0.1.0"\n'
+            + f'source = "{REPO}?rev=not-a-sha#{PLANNER}"\n'
+        )
+        self.assertIn(
+            "Cargo.lock contains FLAT package with missing or invalid Git source",
+            gate.verify(self.root, RUNTIME),
+        )
+
     def test_missing_runtime_lock_entry_fails(self):
         self.write()
         lock = self.root / "Cargo.lock"
