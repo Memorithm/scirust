@@ -77,6 +77,28 @@ class PinGateTests(unittest.TestCase):
             gate.verify(self.root, RUNTIME),
         )
 
+    def test_non_string_lock_source_fails_even_with_valid_runtime(self):
+        self.write()
+        lock = self.root / "Cargo.lock"
+        lock.write_text(
+            lock.read_text()
+            + '[[package]]\nname = "flat-attention"\nversion = "0.1.0"\n'
+            + 'source = 42\n'
+        )
+        self.assertIn(
+            "Cargo.lock contains FLAT package with missing or invalid Git source",
+            gate.verify(self.root, RUNTIME),
+        )
+
+    def test_optional_integer_one_is_not_accepted_as_true(self):
+        self.write()
+        manifest = self.root / "scirust-gpu/Cargo.toml"
+        manifest.write_text(manifest.read_text().replace("optional = true", "optional = 1"))
+        self.assertIn(
+            "runtime FLAT dependency must be an explicit optional Git dependency",
+            gate.verify(self.root, RUNTIME),
+        )
+
     def test_lookalike_repository_source_is_rejected(self):
         self.write()
         lock = self.root / "Cargo.lock"
