@@ -142,8 +142,8 @@ class PinGateTests(unittest.TestCase):
         lock = self.root / "Cargo.lock"
         lock.write_text(
             lock.read_text()
-            + '[[package]]\\nname = "flat-attention"\\nversion = "0.1.0"\\n'
-            + f'source = "{REPO}?rev={RUNTIME}#{RUNTIME}"\\n'
+            + '[[package]]\nname = "flat-attention"\nversion = "0.1.0"\n'
+            + f'source = "{REPO}?rev={RUNTIME}#{RUNTIME}"\n'
         )
         self.assertIn(
             "Cargo.lock must contain exactly one runtime FLAT package",
