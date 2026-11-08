@@ -137,6 +137,19 @@ class PinGateTests(unittest.TestCase):
             gate.verify(self.root, RUNTIME),
         )
 
+    def test_duplicate_exact_runtime_lock_entries_fail_closed(self):
+        self.write()
+        lock = self.root / "Cargo.lock"
+        lock.write_text(
+            lock.read_text()
+            + '[[package]]\\nname = "flat-attention"\\nversion = "0.1.0"\\n'
+            + f'source = "{REPO}?rev={RUNTIME}#{RUNTIME}"\\n'
+        )
+        self.assertIn(
+            "Cargo.lock must contain exactly one runtime FLAT package",
+            gate.verify(self.root, RUNTIME),
+        )
+
     def test_missing_runtime_lock_entry_fails(self):
         self.write()
         lock = self.root / "Cargo.lock"
