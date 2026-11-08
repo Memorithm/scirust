@@ -39,6 +39,14 @@ def verify(root: pathlib.Path, candidate: str) -> list[str]:
     packages = lock.get("package", [])
     if not isinstance(packages, list) or not all(isinstance(p, dict) for p in packages):
         return errors + ["Cargo.lock package entries must be TOML tables"]
+    # A malformed FLAT package must not be silently ignored just because a
+    # second, valid runtime entry exists. Preserve planner revisions, but
+    # require every FLAT package source to have an explicit Git identity.
+    malformed = [p for p in packages if p.get("name") == "flat-attention"
+                 and (not isinstance(p.get("source"), str)
+                      or not p["source"].startswith(REPO + "?rev="))]
+    if malformed:
+        errors.append("Cargo.lock contains FLAT package with missing or invalid Git source")
     matches = [p for p in packages if p.get("name") == "flat-attention"
                and isinstance(p.get("source"), str) and p["source"].startswith(REPO)]
     expected = f"{REPO}?rev={candidate}#{candidate}"
