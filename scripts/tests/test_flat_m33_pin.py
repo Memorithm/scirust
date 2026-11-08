@@ -65,6 +65,31 @@ class PinGateTests(unittest.TestCase):
             failures,
         )
 
+    def test_missing_source_cannot_hide_behind_valid_runtime_entry(self):
+        self.write()
+        lock = self.root / "Cargo.lock"
+        lock.write_text(
+            lock.read_text()
+            + '[[package]]\nname = "flat-attention"\nversion = "0.1.0"\n'
+        )
+        self.assertIn(
+            "Cargo.lock contains FLAT package with missing or invalid Git source",
+            gate.verify(self.root, RUNTIME),
+        )
+
+    def test_lookalike_repository_source_is_rejected(self):
+        self.write()
+        lock = self.root / "Cargo.lock"
+        lock.write_text(
+            lock.read_text()
+            + '[[package]]\nname = "flat-attention"\nversion = "0.1.0"\n'
+            + f'source = "{REPO}-untrusted?rev={PLANNER}#{PLANNER}"\n'
+        )
+        self.assertIn(
+            "Cargo.lock contains FLAT package with missing or invalid Git source",
+            gate.verify(self.root, RUNTIME),
+        )
+
     def test_missing_runtime_lock_entry_fails(self):
         self.write()
         lock = self.root / "Cargo.lock"
