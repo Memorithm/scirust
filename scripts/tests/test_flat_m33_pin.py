@@ -90,6 +90,15 @@ class PinGateTests(unittest.TestCase):
         manifest.write_text(manifest.read_text().replace(", optional = true", ""))
         self.assertTrue(gate.verify(self.root, RUNTIME))
 
+    def test_non_boolean_optional_flag_fails_closed(self):
+        self.write()
+        manifest = self.root / "scirust-gpu/Cargo.toml"
+        manifest.write_text(manifest.read_text().replace("optional = true", 'optional = "yes"'))
+        self.assertIn(
+            "runtime FLAT dependency must be an explicit optional Git dependency",
+            gate.verify(self.root, RUNTIME),
+        )
+
     def test_planner_only_lock_entry_cannot_impersonate_runtime(self):
         self.write()
         lock = self.root / "Cargo.lock"
