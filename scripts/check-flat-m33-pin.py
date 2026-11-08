@@ -28,7 +28,7 @@ def verify(root: pathlib.Path, candidate: str) -> list[str]:
     if not isinstance(dependencies, dict):
         return ["runtime manifest dependencies must be a TOML table"]
     dep = dependencies.get("flat-attention")
-    if not isinstance(dep, dict) or dep.get("git") != REPO.removeprefix("git+") or not dep.get("optional"):
+    if not isinstance(dep, dict) or dep.get("git") != REPO.removeprefix("git+") or dep.get("optional") is not True:
         errors.append("runtime FLAT dependency must be an explicit optional Git dependency")
         return errors
     declared = dep.get("rev")
