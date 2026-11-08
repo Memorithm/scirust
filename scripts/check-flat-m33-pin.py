@@ -44,7 +44,7 @@ def verify(root: pathlib.Path, candidate: str) -> list[str]:
     # require every FLAT package source to have an explicit Git identity.
     malformed = [p for p in packages if p.get("name") == "flat-attention"
                  and (not isinstance(p.get("source"), str)
-                      or not p["source"].startswith(REPO + "?rev="))]
+                      or not re.fullmatch(re.escape(REPO) + r"\?rev=[0-9a-f]{40}#[0-9a-f]{40}", p["source"]))]
     if malformed:
         errors.append("Cargo.lock contains FLAT package with missing or invalid Git source")
     matches = [p for p in packages if p.get("name") == "flat-attention"
