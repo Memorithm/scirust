@@ -125,6 +125,18 @@ class PinGateTests(unittest.TestCase):
             gate.verify(self.root, RUNTIME),
         )
 
+    def test_planner_resolved_sha_mismatch_fails_even_with_valid_runtime(self):
+        self.write()
+        lock = self.root / "Cargo.lock"
+        lock.write_text(lock.read_text().replace(
+            f"{REPO}?rev={PLANNER}#{PLANNER}",
+            f"{REPO}?rev={PLANNER}#{RUNTIME}",
+        ))
+        self.assertIn(
+            "Cargo.lock FLAT Git rev differs from resolved SHA",
+            gate.verify(self.root, RUNTIME),
+        )
+
     def test_missing_runtime_lock_entry_fails(self):
         self.write()
         lock = self.root / "Cargo.lock"
