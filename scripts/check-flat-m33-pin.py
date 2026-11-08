@@ -61,6 +61,10 @@ def verify(root: pathlib.Path, candidate: str) -> list[str]:
     expected = f"{REPO}?rev={candidate}#{candidate}"
     if not any(p["source"] == expected for p in matches):
         errors.append("Cargo.lock has no runtime FLAT package with matching rev AND resolved SHA")
+    # Duplicate runtime package records are ambiguous even if both pins agree.
+    # Cargo.lock must identify one runtime dependency, not multiple copies.
+    if sum(p.get("source") == expected for p in matches) != 1:
+        errors.append("Cargo.lock must contain exactly one runtime FLAT package")
     # Reject ambiguous lockfile identities even when one entry matches exactly.
     # A second planner revision is permitted only if its declared rev differs.
     candidate_rev = f"{REPO}?rev={candidate}#"
