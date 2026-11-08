@@ -47,6 +47,15 @@ def verify(root: pathlib.Path, candidate: str) -> list[str]:
                       or not re.fullmatch(re.escape(REPO) + r"\?rev=[0-9a-f]{40}#[0-9a-f]{40}", p["source"]))]
     if malformed:
         errors.append("Cargo.lock contains FLAT package with missing or invalid Git source")
+    # A full-SHA Git rev must resolve to itself for every FLAT package,
+    # including the optional planner pin. Otherwise the lockfile is not an
+    # immutable attestation even when the runtime entry is correct.
+    for p in packages:
+        if p.get("name") != "flat-attention" or not isinstance(p.get("source"), str):
+            continue
+        match = re.fullmatch(re.escape(REPO) + r"\?rev=([0-9a-f]{40})#([0-9a-f]{40})", p["source"])
+        if match and match.group(1) != match.group(2):
+            errors.append("Cargo.lock FLAT Git rev differs from resolved SHA")
     matches = [p for p in packages if p.get("name") == "flat-attention"
                and isinstance(p.get("source"), str) and p["source"].startswith(REPO)]
     expected = f"{REPO}?rev={candidate}#{candidate}"
