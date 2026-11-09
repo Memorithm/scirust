@@ -182,6 +182,20 @@ class PinGateTests(unittest.TestCase):
         self.write(declared=RUNTIME[:12])
         self.assertTrue(gate.verify(self.root, RUNTIME))
 
+    def test_runtime_rev_cannot_mix_with_mutable_branch_or_tag(self):
+        for selector in ('branch = "main"', 'tag = "v1.0"'):
+            with self.subTest(selector=selector):
+                self.write()
+                manifest = self.root / "scirust-gpu/Cargo.toml"
+                manifest.write_text(
+                    manifest.read_text().replace("optional = true",
+                                                 f"optional = true, {selector}")
+                )
+                self.assertIn(
+                    "runtime FLAT dependency must not mix immutable rev with branch or tag",
+                    gate.verify(self.root, RUNTIME),
+                )
+
     def test_missing_optional_flag_fails_closed(self):
         self.write()
         manifest = self.root / "scirust-gpu/Cargo.toml"
