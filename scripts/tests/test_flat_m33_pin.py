@@ -27,23 +27,48 @@ class PinGateTests(unittest.TestCase):
 
     def write(self, declared=RUNTIME, resolved=RUNTIME, planner=True):
         (self.root / "scirust-gpu/Cargo.toml").write_text(
-            '[dependencies]\nflat-attention = { git = "https://github.com/Memorithm/FLAT-ATTENTION", '
-            f'rev = "{declared}", optional = true, default-features = false, features = ["wgpu"] }}\n'
+            '[dependencies]
+flat-attention = { git = "https://github.com/Memorithm/FLAT-ATTENTION", '
+            f'rev = "{declared}", optional = true, default-features = false, features = ["wgpu"] }}
+'
         )
         sources = [f'{REPO}?rev={declared}#{resolved}']
         if planner:
             sources.append(f'{REPO}?rev={PLANNER}#{PLANNER}')
-        packages = '\n'.join(
-            '[[package]]\nname = "flat-attention"\nversion = "0.1.0"\n'
-            f'source = "{source}"\n' for source in sources
+        packages = '
+'.join(
+            '[[package]]
+name = "flat-attention"
+version = "0.1.0"
+'
+            f'source = "{source}"
+' for source in sources
         )
-        (self.root / "Cargo.lock").write_text('version = 4\n' + packages)
+        (self.root / "Cargo.lock").write_text('version = 4
+' + packages)
 
     def test_exact_runtime_pin_passes_with_distinct_planner(self):
         self.write()
         self.assertEqual(gate.verify(self.root, RUNTIME), [])
 
-    def test_runtime_wgpu_feature_contract_fails_closed(self):\n        for replacement in (\n            'optional = true, default-features = true, features = ["wgpu"]',\n            'optional = true, default-features = false, features = []',\n            'optional = true, default-features = false, features = ["wgpu", "cuda"]',\n        ):\n            with self.subTest(replacement=replacement):\n                self.write()\n                manifest = self.root / "scirust-gpu/Cargo.toml"\n                manifest.write_text(manifest.read_text().replace(\n                    'optional = true, default-features = false, features = ["wgpu"]', replacement\n                ))\n                self.assertIn(\n                    "runtime FLAT dependency must disable default features and enable only wgpu",\n                    gate.verify(self.root, RUNTIME),\n                )\n\n    def test_candidate_mismatch_fails(self):
+    def test_runtime_wgpu_feature_contract_fails_closed(self):
+        for replacement in (
+            'optional = true, default-features = true, features = ["wgpu"]',
+            'optional = true, default-features = false, features = []',
+            'optional = true, default-features = false, features = ["wgpu", "cuda"]',
+        ):
+            with self.subTest(replacement=replacement):
+                self.write()
+                manifest = self.root / "scirust-gpu/Cargo.toml"
+                manifest.write_text(manifest.read_text().replace(
+                    'optional = true, default-features = false, features = ["wgpu"]', replacement
+                ))
+                self.assertIn(
+                    "runtime FLAT dependency must disable default features and enable only wgpu",
+                    gate.verify(self.root, RUNTIME),
+                )
+
+    def test_candidate_mismatch_fails(self):
         self.write()
         self.assertTrue(gate.verify(self.root, PLANNER))
 
@@ -56,8 +81,12 @@ class PinGateTests(unittest.TestCase):
         lock = self.root / "Cargo.lock"
         lock.write_text(
             lock.read_text()
-            + '[[package]]\nname = "flat-attention"\nversion = "0.1.0"\n'
-            + f'source = "{REPO}?rev={RUNTIME}#{PLANNER}"\n'
+            + '[[package]]
+name = "flat-attention"
+version = "0.1.0"
+'
+            + f'source = "{REPO}?rev={RUNTIME}#{PLANNER}"
+'
         )
         failures = gate.verify(self.root, RUNTIME)
         self.assertIn(
@@ -70,7 +99,10 @@ class PinGateTests(unittest.TestCase):
         lock = self.root / "Cargo.lock"
         lock.write_text(
             lock.read_text()
-            + '[[package]]\nname = "flat-attention"\nversion = "0.1.0"\n'
+            + '[[package]]
+name = "flat-attention"
+version = "0.1.0"
+'
         )
         self.assertIn(
             "Cargo.lock contains FLAT package with missing or invalid Git source",
@@ -82,8 +114,12 @@ class PinGateTests(unittest.TestCase):
         lock = self.root / "Cargo.lock"
         lock.write_text(
             lock.read_text()
-            + '[[package]]\nname = "flat-attention"\nversion = "0.1.0"\n'
-            + 'source = 42\n'
+            + '[[package]]
+name = "flat-attention"
+version = "0.1.0"
+'
+            + 'source = 42
+'
         )
         self.assertIn(
             "Cargo.lock contains FLAT package with missing or invalid Git source",
@@ -104,8 +140,12 @@ class PinGateTests(unittest.TestCase):
         lock = self.root / "Cargo.lock"
         lock.write_text(
             lock.read_text()
-            + '[[package]]\nname = "flat-attention"\nversion = "0.1.0"\n'
-            + f'source = "{REPO}-untrusted?rev={PLANNER}#{PLANNER}"\n'
+            + '[[package]]
+name = "flat-attention"
+version = "0.1.0"
+'
+            + f'source = "{REPO}-untrusted?rev={PLANNER}#{PLANNER}"
+'
         )
         self.assertIn(
             "Cargo.lock contains FLAT package with missing or invalid Git source",
@@ -117,8 +157,12 @@ class PinGateTests(unittest.TestCase):
         lock = self.root / "Cargo.lock"
         lock.write_text(
             lock.read_text()
-            + '[[package]]\nname = "flat-attention"\nversion = "0.1.0"\n'
-            + f'source = "{REPO}?rev=not-a-sha#{PLANNER}"\n'
+            + '[[package]]
+name = "flat-attention"
+version = "0.1.0"
+'
+            + f'source = "{REPO}?rev=not-a-sha#{PLANNER}"
+'
         )
         self.assertIn(
             "Cargo.lock contains FLAT package with missing or invalid Git source",
@@ -142,8 +186,12 @@ class PinGateTests(unittest.TestCase):
         lock = self.root / "Cargo.lock"
         lock.write_text(
             lock.read_text()
-            + '[[package]]\nname = "flat-attention"\nversion = "0.1.0"\n'
-            + f'source = "{REPO}?rev={RUNTIME}#{RUNTIME}"\n'
+            + '[[package]]
+name = "flat-attention"
+version = "0.1.0"
+'
+            + f'source = "{REPO}?rev={RUNTIME}#{RUNTIME}"
+'
         )
         self.assertIn(
             "Cargo.lock must contain exactly one runtime FLAT package",
@@ -155,8 +203,12 @@ class PinGateTests(unittest.TestCase):
         lock = self.root / "Cargo.lock"
         lock.write_text(
             lock.read_text()
-            + '[[package]]\nname = "flat-attention"\nversion = "0.2.0"\n'
-            + f'source = "{REPO}?rev={RUNTIME}#{RUNTIME}"\n'
+            + '[[package]]
+name = "flat-attention"
+version = "0.2.0"
+'
+            + f'source = "{REPO}?rev={RUNTIME}#{RUNTIME}"
+'
         )
         self.assertIn(
             "Cargo.lock must contain exactly one runtime FLAT package",
@@ -166,7 +218,8 @@ class PinGateTests(unittest.TestCase):
     def test_missing_runtime_lock_entry_fails(self):
         self.write()
         lock = self.root / "Cargo.lock"
-        lock.write_text('version = 4\n')
+        lock.write_text('version = 4
+')
         self.assertTrue(gate.verify(self.root, RUNTIME))
 
     def test_short_candidate_fails(self):
@@ -215,9 +268,14 @@ class PinGateTests(unittest.TestCase):
         self.write()
         lock = self.root / "Cargo.lock"
         lock.write_text(
-            'version = 4\n[[package]]\nname = "flat-attention"\n'
-            'version = "0.1.0"\n'
-            f'source = "{REPO}?rev={PLANNER}#{PLANNER}"\n'
+            'version = 4
+[[package]]
+name = "flat-attention"
+'
+            'version = "0.1.0"
+'
+            f'source = "{REPO}?rev={PLANNER}#{PLANNER}"
+'
         )
         failures = gate.verify(self.root, RUNTIME)
         self.assertIn(
@@ -228,20 +286,26 @@ class PinGateTests(unittest.TestCase):
 
     def test_non_table_lock_package_fails_closed(self):
         self.write()
-        (self.root / "Cargo.lock").write_text('version = 4\npackage = ["not-a-table"]\n')
+        (self.root / "Cargo.lock").write_text('version = 4
+package = ["not-a-table"]
+')
         failures = gate.verify(self.root, RUNTIME)
         self.assertIn("Cargo.lock package entries must be TOML tables", failures)
 
     def test_non_list_lock_package_fails_closed(self):
         self.write()
-        (self.root / "Cargo.lock").write_text('version = 4\n[package]\nname = "flat-attention"\n')
+        (self.root / "Cargo.lock").write_text('version = 4
+[package]
+name = "flat-attention"
+')
         failures = gate.verify(self.root, RUNTIME)
         self.assertIn("Cargo.lock package entries must be TOML tables", failures)
 
     def test_non_table_manifest_dependencies_fails_closed(self):
         self.write()
         manifest = self.root / "scirust-gpu/Cargo.toml"
-        manifest.write_text('dependencies = ["not-a-table"]\n')
+        manifest.write_text('dependencies = ["not-a-table"]
+')
         failures = gate.verify(self.root, RUNTIME)
         self.assertIn("runtime manifest dependencies must be a TOML table", failures)
 
