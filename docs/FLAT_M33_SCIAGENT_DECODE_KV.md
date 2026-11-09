@@ -72,3 +72,35 @@ nonzero status on such a pair and reports the rejected pair index. Host-only
 regression tests for positive, zero, negative and zero-decode-step inputs run
 in the Thor workflow before the device reservation. This protects evidence
 integrity; it does not make a noisy estimator a precise isolated decode timer.
+
+## Exact-head qualification evidence register (2026-11-09)
+
+This register is a **negative qualification record**, not a performance result.
+It applies only to SciRust PR #1733 head
+`78f130100bca1b1091312d3f2b1a456340bd531a` and must be
+re-evaluated if that head changes. The intended immutable FLAT 1.0 candidate
+pin is **not established** by these results.
+
+| Gate | GitHub Actions run | Outcome and proof boundary |
+| --- | --- | --- |
+| SciAgent FLAT decode contract | [42538905722](https://github.com/Memorithm/scirust/actions/runs/42538905722) | Success; software/contract CI only, not physical M33 qualification. |
+| FLAT consumer compatibility | [42538905689](https://github.com/Memorithm/scirust/actions/runs/42538905689) | Success; consumer compatibility, not an immutable release-candidate pin proof. |
+| Native ARM64 | [42538905652](https://github.com/Memorithm/scirust/actions/runs/42538905652) | Failure; no physical portability acceptance. |
+| SciAgent Thor gate | [42538905700](https://github.com/Memorithm/scirust/actions/runs/42538905700) | Failure; no physical resident decode/KV acceptance. |
+| M33 Thor | [42538905769](https://github.com/Memorithm/scirust/actions/runs/42538905769) | Failure before accepted physical measurement; no M33 throughput or numerical qualification claim. |
+| M53 Thor | [42538905712](https://github.com/Memorithm/scirust/actions/runs/42538905712) | Failure; no accepted physical candidate result. |
+| M54 Thor | [42538905726](https://github.com/Memorithm/scirust/actions/runs/42538905726) | Failure; no accepted physical full-model prefill result. |
+
+Earlier Thor logs identify a competing `checkupauto-character` process
+preventing the required exclusive idle window. That historical observation
+is **not** proof of current GPU occupancy, nor proof that every failed gate
+has the same root cause. Never turn a reservation timeout into a passing
+numerical test, and never terminate an unrelated workload to obtain a green
+check. Physical scheduling and any rerun must be authorized through
+Memorithm/RemoteOps.
+
+Acceptance remains blocked pending a new exact-head physical run, actual
+adapter/backend/driver identity, resident-KV and no-host-roundtrip evidence,
+reset/replay/EOS parity, immutable SciRust lockfile plus FLAT candidate SHA,
+and an M40-equivalent paired comparison against the old multi-dispatch path.
+No latency, tokens/s, quality, or release 1.0 claim follows from this register.
