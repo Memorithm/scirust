@@ -27,25 +27,17 @@ class PinGateTests(unittest.TestCase):
 
     def write(self, declared=RUNTIME, resolved=RUNTIME, planner=True):
         (self.root / "scirust-gpu/Cargo.toml").write_text(
-            '[dependencies]
-flat-attention = { git = "https://github.com/Memorithm/FLAT-ATTENTION", '
-            f'rev = "{declared}", optional = true, default-features = false, features = ["wgpu"] }}
-'
+            '[dependencies]\nflat-attention = { git = "https://github.com/Memorithm/FLAT-ATTENTION", '
+            f'rev = "{declared}", optional = true, default-features = false, features = ["wgpu"] }}\n'
         )
         sources = [f'{REPO}?rev={declared}#{resolved}']
         if planner:
             sources.append(f'{REPO}?rev={PLANNER}#{PLANNER}')
-        packages = '
-'.join(
-            '[[package]]
-name = "flat-attention"
-version = "0.1.0"
-'
-            f'source = "{source}"
-' for source in sources
+        packages = '\n'.join(
+            '[[package]]\nname = "flat-attention"\nversion = "0.1.0"\n'
+            f'source = "{source}"\n' for source in sources
         )
-        (self.root / "Cargo.lock").write_text('version = 4
-' + packages)
+        (self.root / "Cargo.lock").write_text('version = 4\n' + packages)
 
     def test_exact_runtime_pin_passes_with_distinct_planner(self):
         self.write()
@@ -81,12 +73,8 @@ version = "0.1.0"
         lock = self.root / "Cargo.lock"
         lock.write_text(
             lock.read_text()
-            + '[[package]]
-name = "flat-attention"
-version = "0.1.0"
-'
-            + f'source = "{REPO}?rev={RUNTIME}#{PLANNER}"
-'
+            + '[[package]]\nname = "flat-attention"\nversion = "0.1.0"\n'
+            + f'source = "{REPO}?rev={RUNTIME}#{PLANNER}"\n'
         )
         failures = gate.verify(self.root, RUNTIME)
         self.assertIn(
@@ -99,10 +87,7 @@ version = "0.1.0"
         lock = self.root / "Cargo.lock"
         lock.write_text(
             lock.read_text()
-            + '[[package]]
-name = "flat-attention"
-version = "0.1.0"
-'
+            + '[[package]]\nname = "flat-attention"\nversion = "0.1.0"\n'
         )
         self.assertIn(
             "Cargo.lock contains FLAT package with missing or invalid Git source",
@@ -114,12 +99,8 @@ version = "0.1.0"
         lock = self.root / "Cargo.lock"
         lock.write_text(
             lock.read_text()
-            + '[[package]]
-name = "flat-attention"
-version = "0.1.0"
-'
-            + 'source = 42
-'
+            + '[[package]]\nname = "flat-attention"\nversion = "0.1.0"\n'
+            + 'source = 42\n'
         )
         self.assertIn(
             "Cargo.lock contains FLAT package with missing or invalid Git source",
@@ -140,12 +121,8 @@ version = "0.1.0"
         lock = self.root / "Cargo.lock"
         lock.write_text(
             lock.read_text()
-            + '[[package]]
-name = "flat-attention"
-version = "0.1.0"
-'
-            + f'source = "{REPO}-untrusted?rev={PLANNER}#{PLANNER}"
-'
+            + '[[package]]\nname = "flat-attention"\nversion = "0.1.0"\n'
+            + f'source = "{REPO}-untrusted?rev={PLANNER}#{PLANNER}"\n'
         )
         self.assertIn(
             "Cargo.lock contains FLAT package with missing or invalid Git source",
@@ -157,12 +134,8 @@ version = "0.1.0"
         lock = self.root / "Cargo.lock"
         lock.write_text(
             lock.read_text()
-            + '[[package]]
-name = "flat-attention"
-version = "0.1.0"
-'
-            + f'source = "{REPO}?rev=not-a-sha#{PLANNER}"
-'
+            + '[[package]]\nname = "flat-attention"\nversion = "0.1.0"\n'
+            + f'source = "{REPO}?rev=not-a-sha#{PLANNER}"\n'
         )
         self.assertIn(
             "Cargo.lock contains FLAT package with missing or invalid Git source",
@@ -186,12 +159,8 @@ version = "0.1.0"
         lock = self.root / "Cargo.lock"
         lock.write_text(
             lock.read_text()
-            + '[[package]]
-name = "flat-attention"
-version = "0.1.0"
-'
-            + f'source = "{REPO}?rev={RUNTIME}#{RUNTIME}"
-'
+            + '[[package]]\nname = "flat-attention"\nversion = "0.1.0"\n'
+            + f'source = "{REPO}?rev={RUNTIME}#{RUNTIME}"\n'
         )
         self.assertIn(
             "Cargo.lock must contain exactly one runtime FLAT package",
@@ -203,12 +172,8 @@ version = "0.1.0"
         lock = self.root / "Cargo.lock"
         lock.write_text(
             lock.read_text()
-            + '[[package]]
-name = "flat-attention"
-version = "0.2.0"
-'
-            + f'source = "{REPO}?rev={RUNTIME}#{RUNTIME}"
-'
+            + '[[package]]\nname = "flat-attention"\nversion = "0.2.0"\n'
+            + f'source = "{REPO}?rev={RUNTIME}#{RUNTIME}"\n'
         )
         self.assertIn(
             "Cargo.lock must contain exactly one runtime FLAT package",
@@ -218,8 +183,7 @@ version = "0.2.0"
     def test_missing_runtime_lock_entry_fails(self):
         self.write()
         lock = self.root / "Cargo.lock"
-        lock.write_text('version = 4
-')
+        lock.write_text('version = 4\n')
         self.assertTrue(gate.verify(self.root, RUNTIME))
 
     def test_short_candidate_fails(self):
@@ -268,14 +232,9 @@ version = "0.2.0"
         self.write()
         lock = self.root / "Cargo.lock"
         lock.write_text(
-            'version = 4
-[[package]]
-name = "flat-attention"
-'
-            'version = "0.1.0"
-'
-            f'source = "{REPO}?rev={PLANNER}#{PLANNER}"
-'
+            'version = 4\n[[package]]\nname = "flat-attention"\n'
+            'version = "0.1.0"\n'
+            f'source = "{REPO}?rev={PLANNER}#{PLANNER}"\n'
         )
         failures = gate.verify(self.root, RUNTIME)
         self.assertIn(
@@ -286,26 +245,20 @@ name = "flat-attention"
 
     def test_non_table_lock_package_fails_closed(self):
         self.write()
-        (self.root / "Cargo.lock").write_text('version = 4
-package = ["not-a-table"]
-')
+        (self.root / "Cargo.lock").write_text('version = 4\npackage = ["not-a-table"]\n')
         failures = gate.verify(self.root, RUNTIME)
         self.assertIn("Cargo.lock package entries must be TOML tables", failures)
 
     def test_non_list_lock_package_fails_closed(self):
         self.write()
-        (self.root / "Cargo.lock").write_text('version = 4
-[package]
-name = "flat-attention"
-')
+        (self.root / "Cargo.lock").write_text('version = 4\n[package]\nname = "flat-attention"\n')
         failures = gate.verify(self.root, RUNTIME)
         self.assertIn("Cargo.lock package entries must be TOML tables", failures)
 
     def test_non_table_manifest_dependencies_fails_closed(self):
         self.write()
         manifest = self.root / "scirust-gpu/Cargo.toml"
-        manifest.write_text('dependencies = ["not-a-table"]
-')
+        manifest.write_text('dependencies = ["not-a-table"]\n')
         failures = gate.verify(self.root, RUNTIME)
         self.assertIn("runtime manifest dependencies must be a TOML table", failures)
 
