@@ -5,12 +5,16 @@ on:
     paths:
       - "scirust-sciagent/**"
       - "scirust-gpu/**"
+      - "scripts/check-flat-m33-pin.py"
+      - "scripts/tests/test_flat_m33_pin.py"
       - ".github/workflows/sciagent-flat-decode.yml"
   push:
     branches: [master]
     paths:
       - "scirust-sciagent/**"
       - "scirust-gpu/**"
+      - "scripts/check-flat-m33-pin.py"
+      - "scripts/tests/test_flat_m33_pin.py"
       - ".github/workflows/sciagent-flat-decode.yml"
 
 permissions:
@@ -24,6 +28,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.89.0
         with:
           components: clippy,rustfmt
+      - name: Verify immutable FLAT runtime pin gate regressions (host-only)
+        run: python3 -m unittest discover -s scripts/tests -p "test_flat_m33_pin.py" -v
       - name: Install Mesa lavapipe
         run: |
           sudo apt-get update
