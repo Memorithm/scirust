@@ -28,7 +28,7 @@ class PinGateTests(unittest.TestCase):
     def write(self, declared=RUNTIME, resolved=RUNTIME, planner=True):
         (self.root / "scirust-gpu/Cargo.toml").write_text(
             '[dependencies]\nflat-attention = { git = "https://github.com/Memorithm/FLAT-ATTENTION", '
-            f'rev = "{declared}", optional = true }}\n'
+            f'rev = "{declared}", optional = true, default-features = false, features = ["wgpu"] }}\n'
         )
         sources = [f'{REPO}?rev={declared}#{resolved}']
         if planner:
