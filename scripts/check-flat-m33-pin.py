@@ -31,6 +31,8 @@ def verify(root: pathlib.Path, candidate: str) -> list[str]:
     if not isinstance(dep, dict) or dep.get("git") != REPO.removeprefix("git+") or dep.get("optional") is not True:
         errors.append("runtime FLAT dependency must be an explicit optional Git dependency")
         return errors
+    if "branch" in dep or "tag" in dep:
+        errors.append("runtime FLAT dependency must not mix immutable rev with branch or tag")
     declared = dep.get("rev")
     if not isinstance(declared, str) or not SHA.fullmatch(declared):
         errors.append("runtime manifest FLAT rev is not a full immutable SHA")
