@@ -31,7 +31,12 @@ def verify(root: pathlib.Path, candidate: str) -> list[str]:
     if not isinstance(dep, dict) or dep.get("git") != REPO.removeprefix("git+") or dep.get("optional") is not True:
         errors.append("runtime FLAT dependency must be an explicit optional Git dependency")
         return errors
-    # A matching SHA alone is insufficient: the resident runtime must keep the\n    # portable WGPU feature explicitly enabled and default features disabled.\n    # Otherwise the same pin may resolve to a different execution contract.\n    if dep.get("default-features") is not False or dep.get("features") != ["wgpu"]:\n        errors.append("runtime FLAT dependency must disable default features and enable only wgpu")\n    if "branch" in dep or "tag" in dep:
+    # A matching SHA alone is insufficient: the resident runtime must keep the
+    # portable WGPU feature explicitly enabled and default features disabled.
+    # Otherwise the same pin may resolve to a different execution contract.
+    if dep.get("default-features") is not False or dep.get("features") != ["wgpu"]:
+        errors.append("runtime FLAT dependency must disable default features and enable only wgpu")
+    if "branch" in dep or "tag" in dep:
         errors.append("runtime FLAT dependency must not mix immutable rev with branch or tag")
     declared = dep.get("rev")
     if not isinstance(declared, str) or not SHA.fullmatch(declared):
