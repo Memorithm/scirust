@@ -104,3 +104,30 @@ adapter/backend/driver identity, resident-KV and no-host-roundtrip evidence,
 reset/replay/EOS parity, immutable SciRust lockfile plus FLAT candidate SHA,
 and an M40-equivalent paired comparison against the old multi-dispatch path.
 No latency, tokens/s, quality, or release 1.0 claim follows from this register.
+
+## Follow-up exact-head CI register (2026-11-09, 16:19 Europe/Paris)
+
+This follow-up records the GitHub Actions API snapshot for PR #1733 at
+SciRust commit `da6d0fba78fbeaa92ae0424d3035892e59c3eefb` **before**
+this documentation-only update. The earlier `78f1301` register remains a
+separate negative record and is not retroactively transferred to this commit.
+The follow-up does not establish the immutable FLAT release-candidate pin.
+
+| Gate | Run | API state at observation | Scope |
+| --- | --- | --- | --- |
+| CI | [42615112229](https://github.com/Memorithm/scirust/actions/runs/42615112229) | completed / success | General CI only. |
+| SciAgent FLAT decode contract | [42615112410](https://github.com/Memorithm/scirust/actions/runs/42615112410) | completed / success | Contract, not physical GPU acceptance. |
+| FLAT consumer compatibility | [42615112771](https://github.com/Memorithm/scirust/actions/runs/42615112771) | completed / success | Consumer matrix, not exact FLAT candidate pin. |
+| Native ARM64 | [42615112536](https://github.com/Memorithm/scirust/actions/runs/42615112536) | completed / failure | Physical ARM64 acceptance blocked. |
+| SciAgent Thor | [42615111973](https://github.com/Memorithm/scirust/actions/runs/42615111973) | completed / failure | Physical resident-KV acceptance blocked. |
+| M33 Thor | [42615112424](https://github.com/Memorithm/scirust/actions/runs/42615112424) | in_progress / no conclusion | No qualified result at observation. |
+| M53 Thor | [42615112391](https://github.com/Memorithm/scirust/actions/runs/42615112391) | in_progress / no conclusion | No qualified result at observation. |
+| M54 Thor | [42615112597](https://github.com/Memorithm/scirust/actions/runs/42615112597) | in_progress / no conclusion | No qualified result at observation. |
+
+The historical Thor contention diagnosis identifies
+`checkupauto-character.service` (PID 30957 in earlier logs); this is **not**
+a fresh process-liveness check. No hardware reservation, benchmark, service
+interruption or numerical test was performed in this documentation update.
+The new documentation commit has its own exact SHA and requires fresh CI
+checks; this snapshot cannot qualify that new commit for merge. RemoteOps
+remains the sole machine-control plane. FLAT 1.0 is not authorized.
