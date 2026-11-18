@@ -186,7 +186,8 @@ impl GQAAttention {
         seq_len: usize,
         bridge: &crate::rae9_research::Rae9ResearchBridge,
     ) -> Result<Var<'t>, String> {
-        if bridge.query_head >= self.n_heads || seq_len < 2 || x.shape().0 != seq_len {
+        if bridge.query_head >= self.n_heads || seq_len < 2 || x.shape().0 != seq_len
+        {
             return Err("RAE9_SCIAGENT_SINGLE_SEQUENCE_REQUIRED".into());
         }
         self.forward_with_rae9(tape, x, seq_len, Some(bridge))
@@ -234,25 +235,30 @@ impl GQAAttention {
                     .causal_mask(seq_len)
                     .softmax(1)
                     .matmul(vb);
-                let o = if let Some(adapter) = bridge.filter(|a| a.query_head == head) {
+                let o = if let Some(adapter) = bridge.filter(|a| a.query_head == head)
+                {
                     // Extract actual post-RoPE Q/K and projected V from this
                     // model layer, not fabricated external vector fixtures.
                     let qr = tape.value(qb.idx());
                     let kr = tape.value(kb.idx());
                     let vr = tape.value(vb.idx());
                     let reference = tape.value(o.idx());
-                    let (replacement, _) = adapter.evaluate(
-                        &qr, &kr, &vr, &reference, h, kh, head, scale,
-                    )?;
-                    if let Some(values) = replacement {
+                    let (replacement, _) =
+                        adapter.evaluate(&qr, &kr, &vr, &reference, h, kh, head, scale)?;
+                    if let Some(values) = replacement
+                    {
                         let mut patched = reference.clone();
                         let start = (seq_len - 1) * dh;
                         patched.data[start..start + dh].copy_from_slice(&values);
                         tape.input(patched)
-                    } else {
+                    }
+                    else
+                    {
                         o
                     }
-                } else {
+                }
+                else
+                {
                     o
                 };
                 pb.push(o);
