@@ -53,6 +53,8 @@ allow = [
     "PolyForm-Noncommercial-1.0.0",
 ]
 confidence-threshold = 0.8
+# Workspace crates are unpublished; audit third-party package licenses only.
+private = { ignore = true }
 
 [bans]
 multiple-versions = "allow"
