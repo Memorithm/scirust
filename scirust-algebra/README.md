@@ -87,6 +87,19 @@ others. It cannot locate unknown errors and cannot reliably detect multiple
 faults (two equal substitutions can cancel). The parity must itself remain
 intact; no authentication or adversarial resistance is implied.
 
+For **unknown-location bit errors**, a second, full-block
+`compact_logic::secded128` path implements a systematic, shortened,
+extended-Hamming SECDED code over each 128-bit/64-symbol quaternary block:
+eight syndrome bits plus one overall parity bit. If these 9 bits are tightly
+packed externally, the theoretical overhead is **9/128 = 7.03125%**, versus
+100% for nibble-level SECDED. Using an aligned `u16` tag per block in memory
+will cost more than 9 bits; the caller must account for its actual layout.
+The block decoder corrects any one flipped bit of the 137-bit codeword,
+detects any two, rejects malformed tags, and can selectively admit up to 64
+independently protected blocks with immutable rejected/unselected output
+slots. For 3+ flips, miscorrection/non-detection is possible. No ML or
+cryptographic integrity benefit is claimed without application-level tests.
+
 A separately opt-in, extended Hamming **SECDED (8,4)** path encodes one
 four-bit payload into one byte, correcting one bit error and detecting
 all two-bit errors. Its batch admission helper takes an explicit
