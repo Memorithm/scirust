@@ -184,11 +184,8 @@ impl Rae9ResearchBridge {
         {
             return Err("RAE9_UNKNOWN_RESULT_ROUTE".into());
         }
-        let (admitted, vetoed) = native_budget_admission(
-            &evidence.route,
-            difference,
-            self.max_native_head_delta,
-        );
+        let (admitted, vetoed) =
+            native_budget_admission(&evidence.route, difference, self.max_native_head_delta);
         evidence.native_component_delta = difference;
         evidence.native_budget_vetoed = vetoed;
         evidence.injected = admitted;
@@ -382,20 +379,51 @@ mod tests {
     }
     #[test]
     fn sparse_native_budget_preserves_fallback_and_accepts_boundary() {
-        assert_eq!(native_budget_admission("bounded_sparse", 0.01, None), (true, false));
-        assert_eq!(native_budget_admission("bounded_sparse", 0.01, Some(0.01)), (true, false));
-        assert_eq!(native_budget_admission("bounded_sparse", 0.011, Some(0.01)), (false, true));
-        assert_eq!(native_budget_admission("dense_full", 0.0, Some(0.0)), (false, false));
-        assert_eq!(native_budget_admission("dense_full", 0.5, Some(0.01)), (false, false));
+        assert_eq!(
+            native_budget_admission("bounded_sparse", 0.01, None),
+            (true, false)
+        );
+        assert_eq!(
+            native_budget_admission("bounded_sparse", 0.01, Some(0.01)),
+            (true, false)
+        );
+        assert_eq!(
+            native_budget_admission("bounded_sparse", 0.011, Some(0.01)),
+            (false, true)
+        );
+        assert_eq!(
+            native_budget_admission("dense_full", 0.0, Some(0.0)),
+            (false, false)
+        );
+        assert_eq!(
+            native_budget_admission("dense_full", 0.5, Some(0.01)),
+            (false, false)
+        );
         let executable = std::env::current_exe().unwrap();
-        assert!(Rae9ResearchBridge::new(executable.clone(), 8, 0)
-            .unwrap().with_max_native_head_delta(f64::NAN).is_err());
-        assert!(Rae9ResearchBridge::new(executable.clone(), 8, 0)
-            .unwrap().with_max_native_head_delta(f64::INFINITY).is_err());
-        assert!(Rae9ResearchBridge::new(executable.clone(), 8, 0)
-            .unwrap().with_max_native_head_delta(-0.0001).is_err());
-        assert!(Rae9ResearchBridge::new(executable, 8, 0)
-            .unwrap().with_max_native_head_delta(0.0).is_ok());
+        assert!(
+            Rae9ResearchBridge::new(executable.clone(), 8, 0)
+                .unwrap()
+                .with_max_native_head_delta(f64::NAN)
+                .is_err()
+        );
+        assert!(
+            Rae9ResearchBridge::new(executable.clone(), 8, 0)
+                .unwrap()
+                .with_max_native_head_delta(f64::INFINITY)
+                .is_err()
+        );
+        assert!(
+            Rae9ResearchBridge::new(executable.clone(), 8, 0)
+                .unwrap()
+                .with_max_native_head_delta(-0.0001)
+                .is_err()
+        );
+        assert!(
+            Rae9ResearchBridge::new(executable, 8, 0)
+                .unwrap()
+                .with_max_native_head_delta(0.0)
+                .is_ok()
+        );
     }
     #[test]
     fn private_capture_is_removed_after_use() {
