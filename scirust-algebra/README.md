@@ -120,6 +120,17 @@ assert_eq!(
 );
 ```
 
+Physical microbenchmark with independent per-lane GF(4) truth-table oracle:
+
+```bash
+cargo run -p scirust-algebra --locked --release --example compact_logic_bench
+```
+
+The benchmark separates input preparation from kernel execution, verifies every
+lane before timing and compares a byte-per-symbol scalar baseline with two
+packed 64-bit planes. The reported ratio is specific to that executable,
+host, compiler and hot-cache workload, not a full inference acceleration.
+
 Source qualification: `cargo test -p scirust-algebra --locked compact_logic`.
 A future SIMD implementation or integration into V888/SML/FLAT must be
 tested against this scalar reference on the exact consumer workload,
