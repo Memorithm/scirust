@@ -1,0 +1,31 @@
+name: Security lockfile diagnostic (temporary)
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/lockfile-diagnostic-1734.yml'
+      - 'Cargo.lock'
+      - 'scirust-core/Cargo.toml'
+permissions:
+  contents: read
+
+jobs:
+  lockfile-diff:
+    name: Cargo-generated minimal lockfile correction
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: stable
+      - name: Resolve dependencies without bypassing Cargo lock checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +stable metadata --format-version 1 > /tmp/scirust-lock-metadata.json
+          echo "BEGIN_SCIRUST_LOCK_PATCH"
+          git diff --no-ext-diff --no-color --unified=0 -- Cargo.lock || true
+          echo "END_SCIRUST_LOCK_PATCH"
+          test ! -n "$(git diff --no-ext-diff -- Cargo.lock)"
