@@ -48,6 +48,12 @@ ignore = [
     # time; it is not linked into any SciRust library or binary. Remove this
     # entry once ocipkg/intel-mkl-src move off ureq 2.
     { id = "RUSTSEC-2026-0381", reason = "webpki-roots 0.26.11 shim reaches the graph only via the intel-mkl-src build script (ocipkg -> ureq 2, last 2.x pins ^0.26); all other graphs use webpki-roots 1.0.10" },
+    # INFO/unmaintained only, NOT an established exploitable vulnerability.
+    # Issued 2026-11-17, ALL chrono versions affected and no patched release.
+    # Tracking migration of direct and transitive consumers to jiff/time:
+    # https://github.com/Memorithm/scirust/issues/1737
+    # Temporary scoped waiver expires 2027-02-17; CI checks the deadline.
+    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained INFO advisory, no patched release; tracked migration Memorithm/scirust#1737; expires 2027-02-17" },
 ]
 
 [licenses]
