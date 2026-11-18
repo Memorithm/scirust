@@ -747,7 +747,7 @@ version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3e8aa94d75141228480295a7d0e7feb620b1a5ad9f12bc40be62411e38cce4e"
 dependencies = [
- "dirs-sys 0.5.0",
+ "dirs-sys",
 ]
 
 [[package]]
@@ -758,7 +758,7 @@ checksum = "e01a3366d27ee9890022452ee61b2b63a67e6f13f58900b651ff5665f0bb1fab"
 dependencies = [
  "libc",
  "option-ext",
- "redox_users 0.5.2",
+ "redox_users",
  "windows-sys 0.61.2",
 ]
 
@@ -1957,7 +1957,7 @@ dependencies = [
  "flate2",
  "tar",
  "thiserror 2.0.20",
- "ureq 3.4.0",
+ "ureq",
 ]
 
 [[package]]
@@ -3641,7 +3641,7 @@ dependencies = [
  "scirust-learning",
  "serde",
  "serde_json",
- "ureq 3.4.0",
+ "ureq",
 ]
 
 [[package]]
@@ -3681,7 +3681,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "syn 2.0.119",
- "ureq 3.4.0",
+ "ureq",
 ]
 
 [[package]]
@@ -4900,7 +4900,7 @@ dependencies = [
  "serde_json",
  "ureq-proto",
  "utf8-zero",
- "webpki-roots 1.0.10",
+ "webpki-roots",
 ]
 
 [[package]]
@@ -4951,7 +4951,6 @@ version = "1.24.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2cefc03fd367c0c6d4305de1b312cf00248c4114f4a0418ce6a6af769e3b0bd9"
 dependencies = [
- "getrandom 0.4.3",
  "js-sys",
  "wasm-bindgen",
 ]
