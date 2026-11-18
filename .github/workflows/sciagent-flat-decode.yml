@@ -30,6 +30,10 @@ jobs:
           sudo apt-get install -y mesa-vulkan-drivers
       - name: Format
         run: cargo fmt --all -- --check
+      - name: RAE-9 SciAgent genuine GQA research producer contract
+        run: |
+          cargo check --locked -p scirust-sciagent --bin sciagent-rae9
+          cargo test --locked -p scirust-sciagent rae9_research
       - name: Compile opt-in FLAT decode feature
         run: cargo check -p scirust-sciagent --locked --features flat-attention
       - name: Clippy opt-in FLAT decode feature
