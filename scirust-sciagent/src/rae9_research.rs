@@ -32,6 +32,7 @@ pub struct Rae9HeadEvidence {
 }
 
 impl Rae9ResearchBridge {
+    /// Construct an explicitly operator-authorized, version-pinned FLAT adapter.
     pub fn new(binary: PathBuf, page_size: usize, query_head: usize) -> Result<Self, String> {
         if !binary.is_file() || page_size == 0 || page_size > 4096
         {
