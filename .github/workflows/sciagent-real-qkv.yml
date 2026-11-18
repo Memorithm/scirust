@@ -1,0 +1,31 @@
+name: SciAgent shipped-small real QKV CPU gate
+
+on:
+  pull_request:
+    paths:
+      - "scirust-sciagent/**"
+      - ".github/workflows/sciagent-real-qkv.yml"
+  push:
+    branches: [master]
+    paths:
+      - "scirust-sciagent/**"
+      - ".github/workflows/sciagent-real-qkv.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  checkpoint-qkv:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.89.0
+        with:
+          components: clippy,rustfmt
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+      - name: Compile and test actual shipped safetensors checkpoint on CPU
+        run: cargo test --locked -p scirust-sciagent --test real_small_checkpoint_qkv -- --nocapture
+      - name: Clippy real checkpoint gate
+        run: cargo clippy --locked -p scirust-sciagent --test real_small_checkpoint_qkv -- -D warnings
