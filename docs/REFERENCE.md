@@ -34,8 +34,13 @@ pass:
 | Licenses/Security | `cargo deny check` | advisories, licenses, sources (`cargo install cargo-deny`) |
 
 CI exports `RUSTFLAGS="-D warnings"`: every warning is an error.
-`--all-features` is deliberately forbidden: `blas-openblas` and `blas-mkl` are
-mutually exclusive `blas-src` backends.
+The supported accelerated BLAS provider is now `scirust-core/blas-openblas`
+via `openblas-src` directly. The former optional `blas-mkl` provider was
+withdrawn because its transitive `intel-mkl-src -> ocipkg` download stack
+contains the high-severity RUSTSEC-2026-0450 path-traversal vulnerability.
+Issue #1734 tracks a future secure and physically qualified MKL replacement.
+`--all-features` remains excluded from workspace CI because other unrelated
+feature combinations and specialized toolchains require explicit gates.
 
 ## 2. The `scirust` unified CLI
 
