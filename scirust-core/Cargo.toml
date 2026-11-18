@@ -43,11 +43,11 @@ scirust-bench-schema = { path = "../scirust-bench-schema" }
 default = ["rayon"]
 portable-simd = ["scirust-simd/portable-simd"]
 transformer-inference = ["scirust-simd/transformer-inference"]
-# Provider-independent BLAS bindings; provider selection is explicit per backend.
-blas = ["dep:blas"]
-blas-openblas = ["blas", "dep:blas-src", "blas-src/openblas"]
-# System-installed oneMKL only. Never pull intel-mkl-src/ocipkg at build time:
-# RUSTSEC-2026-0450 permits OCI archive path traversal in ocipkg 0.2.9.
+blas = ["dep:blas", "dep:blas-src"]
+blas-openblas = ["blas", "blas-src/openblas"]
+# Use only operator-installed system MKL. Never invoke the vulnerable
+# intel-mkl-src -> ocipkg OCI downloader (RUSTSEC-2026-0450).
+# build.rs checks SCIRUST_MKL_LIB_DIR and emits the explicit mkl_rt link.
 blas-mkl = ["blas"]
 
 # Depends on representation_graph_quaternion, itself gated behind

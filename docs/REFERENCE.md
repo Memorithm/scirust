@@ -35,7 +35,9 @@ pass:
 
 CI exports `RUSTFLAGS="-D warnings"`: every warning is an error.
 `--all-features` is deliberately forbidden: `blas-openblas` and `blas-mkl` are
-mutually exclusive `blas-src` backends.
+mutually exclusive BLAS backends. Since RUSTSEC-2026-0450, `blas-mkl` links
+**only an operator-installed local MKL runtime**; it does not invoke the
+vulnerable `intel-mkl-src`/`ocipkg` OCI downloader.
 
 ## 2. The `scirust` unified CLI
 
@@ -378,6 +380,21 @@ cargo test -p scirust-som-inference --release -- --ignored --nocapture
 | scirust-core / scirust-simd | `portable-simd` | kernels and generic `std::simd` API (nightly; the `scirust-core` feature activates the `scirust-simd` one) |
 | scirust-simd | `nightly-simd` | AMX on x86_64; SVE/SME, dotprod and i8mm on AArch64 (pinned nightly, architecture-selected paths) |
 | scirust-core | `blas-openblas` / `blas-mkl` | matmul via system BLAS — mutually exclusive, require the system toolchain |
+
+For the optional **Linux x86_64 only** `blas-mkl` feature, provide an absolute
+trusted directory containing `libmkl_rt.so` before compiling. For example,
+**after** the operator has installed and validated MKL:
+
+```bash
+SCIRUST_MKL_LIB_DIR=/path/to/trusted/mkl/lib \
+  cargo build --locked -p scirust-core --no-default-features --features blas-mkl
+```
+
+Without that directory, the MKL build deliberately fails; normal Rust and
+OpenBLAS paths do not use it. CI checks that the optional MKL dependency graph
+contains neither `ocipkg` nor `intel-mkl-src`. RustSec reference:
+[RUSTSEC-2026-0450](https://rustsec.org/advisories/RUSTSEC-2026-0450.html).
+
 | scirust-gpu | `wgpu` / `cuda` | Real opt-in backends: portable WGSL compute via wgpu, or CUDA bf16/cuBLASLt GEMM with fp32 accumulation |
 | scirust (root) | `tensor-canonical[-cpu\|-wgpu\|-cuda]` | Canonical tensor facade, backend-free by default; adapters are opt-in |
 
