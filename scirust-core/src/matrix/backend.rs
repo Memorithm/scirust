@@ -644,6 +644,42 @@ mod tests {
         assert!((c[3] - 6.0).abs() < 1e-6);
     }
 
+    // Exercise the actual BLAS FFI provider in the dedicated CI job,
+    // separately from the scalar backend oracle. This compiles and links
+    // against distro OpenBLAS, with no unsafe OCI/MKL build chain.
+    #[cfg(feature = "blas-openblas-system")]
+    #[test]
+    fn system_openblas_native_ffi_matches_scalar_oracle() {
+        let x = [1.0f32, -2.0, 4.0, 0.5];
+        let mut actual_y = [2.0f32, 3.0, -1.0, 7.0];
+        let mut expected_y = actual_y;
+        ScalarBackend.saxpy_f32(1.25, &x, &mut expected_y);
+        BlasBackend.saxpy_f32(1.25, &x, &mut actual_y);
+        assert_eq!(actual_y, expected_y);
+
+        let a = [1.0f32, 2.0, 3.0, 4.0];
+        let b = [5.0f32, 6.0, 7.0, 8.0];
+        let mut blas_c = [0.25f32, -0.5, 0.75, -1.0];
+        let mut oracle_c = blas_c;
+        ScalarBackend.sgemm_f32(
+            0.75,
+            MatrixView::from_slice(&a, 2, 2),
+            MatrixView::from_slice(&b, 2, 2),
+            0.5,
+            MatrixViewMut::from_slice(&mut oracle_c, 2, 2),
+        );
+        BlasBackend.sgemm_f32(
+            0.75,
+            MatrixView::from_slice(&a, 2, 2),
+            MatrixView::from_slice(&b, 2, 2),
+            0.5,
+            MatrixViewMut::from_slice(&mut blas_c, 2, 2),
+        );
+        for (got, expected) in blas_c.into_iter().zip(oracle_c) {
+            assert!((got - expected).abs() <= 1e-5, "GEMM result {got} != {expected}");
+        }
+    }
+
     #[test]
     fn test_cholesky() {
         // A = [[4, 12, -16], [12, 37, -43], [-16, -43, 98]]
