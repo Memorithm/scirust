@@ -15,12 +15,7 @@ use std::time::Instant;
 
 const BLOCKS: usize = 2_048;
 const REPEATS: usize = 32;
-const GF4_MUL: [[u8; 4]; 4] = [
-    [0, 0, 0, 0],
-    [0, 1, 2, 3],
-    [0, 2, 3, 1],
-    [0, 3, 1, 2],
-];
+const GF4_MUL: [[u8; 4]; 4] = [[0, 0, 0, 0], [0, 1, 2, 3], [0, 2, 3, 1], [0, 3, 1, 2]];
 
 fn next_word(seed: &mut u64) -> u64 {
     *seed ^= *seed >> 12;
@@ -34,7 +29,8 @@ fn main() {
     let mut packed_inputs = Vec::with_capacity(BLOCKS);
     let mut scalar_inputs = Vec::with_capacity(BLOCKS);
 
-    for _ in 0..BLOCKS {
+    for _ in 0..BLOCKS
+    {
         let a = QuadBitplanes {
             low: next_word(&mut seed),
             high: next_word(&mut seed),
@@ -46,7 +42,8 @@ fn main() {
         let mut left = [0u8; 64];
         let mut right = [0u8; 64];
         let product = a.gf4_mul(b);
-        for lane in 0..64u32 {
+        for lane in 0..64u32
+        {
             let index = lane as usize;
             left[index] = a.get(lane).expect("lane within block");
             right[index] = b.get(lane).expect("lane within block");
@@ -61,8 +58,10 @@ fn main() {
 
     let packed_start = Instant::now();
     let mut packed_digest = 0u64;
-    for _ in 0..REPEATS {
-        for &(a, b) in &packed_inputs {
+    for _ in 0..REPEATS
+    {
+        for &(a, b) in &packed_inputs
+        {
             let product = black_box(a).gf4_mul(black_box(b));
             packed_digest = packed_digest
                 .wrapping_mul(0x9e37_79b9_7f4a_7c15)
@@ -73,13 +72,16 @@ fn main() {
 
     let scalar_start = Instant::now();
     let mut scalar_digest = 0u64;
-    for _ in 0..REPEATS {
-        for (left, right) in &scalar_inputs {
+    for _ in 0..REPEATS
+    {
+        for (left, right) in &scalar_inputs
+        {
             let mut low = 0u64;
             let mut high = 0u64;
-            for lane in 0..64usize {
-                let value = GF4_MUL[black_box(left[lane]) as usize]
-                    [black_box(right[lane]) as usize];
+            for lane in 0..64usize
+            {
+                let value =
+                    GF4_MUL[black_box(left[lane]) as usize][black_box(right[lane]) as usize];
                 low |= u64::from(value & 1) << lane;
                 high |= u64::from(value >> 1) << lane;
             }
