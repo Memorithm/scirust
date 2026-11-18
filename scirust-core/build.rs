@@ -29,7 +29,7 @@ fn main() {
     let canonical = dir.canonicalize().expect("cannot resolve MKL library directory");
     let printed = canonical.to_string_lossy();
     assert!(
-        !printed.contains(['\n', '\r']),
+        !printed.contains('\n') && !printed.contains('\r'),
         "MKL library path must not contain line breaks"
     );
 
