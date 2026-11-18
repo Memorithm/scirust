@@ -77,6 +77,16 @@ multiplication (with `alpha² = alpha + 1`), and masked GF(4) parity.
 Four symbolic labels do **not** intrinsically imply GF(4) arithmetic:
 callers must opt in to the mathematical field interpretation.
 
+A *separate two-bit GF(4) block parity* is also available: compute one
+GF(4) sum over 64 packed symbols and retain the parity externally (130
+total bits per protected 128-bit block: 1.5625% storage overhead when
+amortized at this block size). It detects every single-symbol substitution.
+If an **independent detector already supplies the exact erased lane**,
+`recover_known_erasure` reconstructs that symbol without modifying any
+others. It cannot locate unknown errors and cannot reliably detect multiple
+faults (two equal substitutions can cancel). The parity must itself remain
+intact; no authentication or adversarial resistance is implied.
+
 A separately opt-in, extended Hamming **SECDED (8,4)** path encodes one
 four-bit payload into one byte, correcting one bit error and detecting
 all two-bit errors. Its batch admission helper takes an explicit
