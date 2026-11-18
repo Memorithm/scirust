@@ -533,6 +533,17 @@ jobs:
           rust-version: stable
           manifest-path: scirust-core/Cargo.toml
           arguments: --locked --no-default-features --features blas-openblas
+      - name: Reject vulnerable OCI unpacker in optional MKL graph
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo tree --locked -p scirust-core --no-default-features --features blas-mkl > /tmp/scirust-mkl-deps.txt
+          if grep -Eq '(^|[[:space:]])(ocipkg|intel-mkl-src) v[0-9]' /tmp/scirust-mkl-deps.txt; then
+            echo "STOP_VULNERABLE_MKL_IMAGE_DOWNLOAD_DEPENDENCY"
+            exit 1
+          fi
+          grep -F 'blas v' /tmp/scirust-mkl-deps.txt >/dev/null
+          echo "SYSTEM_MKL_NO_OCIPKG_DEPENDENCY=PASS"
       - name: Audit MKL dependency graph
         uses: EmbarkStudios/cargo-deny-action@bb137d7af7e4fb67e5f82a49c4fce4fad40782fe # v2
         with:
