@@ -98,21 +98,41 @@ jobs:
           classify_compute_apps() {
             local compute_apps="$1"
             local managed_training=true
+            local managed_shared_services=true
             printf '%s\n' "$compute_apps"
             while IFS=',' read -r raw_pid process_name; do
               pid="$(printf '%s' "$raw_pid" | tr -d '[:space:]')"
-              [[ "$pid" =~ ^[0-9]+$ ]] || { managed_training=false; continue; }
+              if [[ ! "$pid" =~ ^[0-9]+$ ]]; then
+                managed_training=false
+                managed_shared_services=false
+                continue
+              fi
               cmdline="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
               proc_user="$(ps -p "$pid" -o user= 2>/dev/null | xargs || true)"
               ppid="$(ps -p "$pid" -o ppid= 2>/dev/null | tr -d '[:space:]')"
               cgroup="$(cat "/proc/$pid/cgroup" 2>/dev/null || true)"
               echo "pid=$pid user=$proc_user ppid=$ppid process=${process_name# } cmdline=$cmdline cgroup=$cgroup"
-              if [[ "${process_name# }" != "/root/scirust/target/release/examples/cuda_pretrain" ]] \
-                || [[ "$cmdline" != *"/root/scirust/target/release/examples/cuda_pretrain"* ]] \
-                || [[ "$proc_user" != "root" ]] \
-                || [[ "$ppid" != "1" ]] \
-                || [[ "$cgroup" != 0::/user.slice/user-0.slice/session-*.scope ]]; then
+              if [[ "${process_name# }" == "/root/scirust/target/release/examples/cuda_pretrain" ]] \
+                && [[ "$cmdline" == *"/root/scirust/target/release/examples/cuda_pretrain"* ]] \
+                && [[ "$proc_user" == "root" ]] \
+                && [[ "$ppid" == "1" ]] \
+                && [[ "$cgroup" == 0::/user.slice/user-0.slice/session-*.scope ]]; then
+                managed_shared_services=false
+              elif [[ "$proc_user" == "remoteops" ]] \
+                && [[ "$ppid" == "1" ]] \
+                && [[ "$cgroup" == "0::/system.slice/checkupauto-character.service" ]] \
+                && [[ "${process_name# }" == "/srv/models/checkupauto-character/venv/bin/python" ]] \
+                && [[ "$cmdline" == *"/srv/models/checkupauto-character/app/worker.py"* ]]; then
                 managed_training=false
+              elif [[ "$proc_user" == "ollama" ]] \
+                && [[ "$cgroup" == "0::/system.slice/ollama.service" ]] \
+                && [[ "${process_name# }" == "/usr/local/lib/ollama/llama-server" ]] \
+                && [[ "$cmdline" == *"/usr/local/lib/ollama/llama-server --model "* ]] \
+                && [[ "$cmdline" == *" --offline "* ]]; then
+                managed_training=false
+              else
+                managed_training=false
+                managed_shared_services=false
               fi
             done <<< "$compute_apps"
 
@@ -120,6 +140,12 @@ jobs:
               echo "available=false" >> "$GITHUB_OUTPUT"
               echo "reason=managed-production-training" >> "$GITHUB_OUTPUT"
               echo "::notice::Detached SciAgent production training owns the GPU; CUDA runtime tests/benchmark are deferred and the training process is left untouched."
+              exit 0
+            fi
+            if [[ "$managed_shared_services" == true ]]; then
+              echo "available=false" >> "$GITHUB_OUTPUT"
+              echo "reason=managed-shared-gpu-services" >> "$GITHUB_OUTPUT"
+              echo "::notice::Only verified resident CheckupAuto/Ollama services occupy Thor; deferring CUDA tests without touching these services."
               exit 0
             fi
           }

@@ -62,9 +62,11 @@ jobs:
   full-model-prefill-thor:
     name: SCIAGENT 304M portable vs vec4 prefill
     needs: m54-software-contract
-    if: >
-      github.event_name != 'pull_request' ||
-      github.event.pull_request.head.repo.full_name == github.repository
+    # PRs run only the hosted pinned-example compile + Clippy contract.
+    # Physical Thor timing requires an explicit trusted-master dispatch.
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/master'
     runs-on: [self-hosted, Linux, ARM64, scirust-arm64, jetson-thor, internal]
     timeout-minutes: 360
     defaults:

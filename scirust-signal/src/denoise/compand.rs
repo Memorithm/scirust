@@ -26,7 +26,7 @@
 //! |------|---------|----------------------|
 //! | [`SoftClipKind::Tanh`] | `limit·tanh(x/limit)` | exponential (fastest) |
 //! | [`SoftClipKind::Atan`] | `(2·limit/π)·atan(π·x/(2·limit))` | ∝ 1/x |
-//! | [`SoftClipKind::Softsign`] | `x/(1 + |x|/limit)` | ∝ 1/x (cheapest, no transcendentals) |
+//! | [`SoftClipKind::Softsign`] | `x/(1 + abs(x)/limit)` | ∝ 1/x (cheapest, no transcendentals) |
 
 use super::{mad, median};
 
