@@ -704,21 +704,45 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y mesa-vulkan-drivers vulkan-tools
+      - name: Pin and identify the Mesa lavapipe Vulkan ICD
+        shell: bash
+        run: |
+          set -euo pipefail
+          icd=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          test -s "$icd" || {
+            echo "::error::Mesa lavapipe Vulkan ICD not installed"
+            exit 2
+          }
+          echo "VK_ICD_FILENAMES=$icd" >> "$GITHUB_ENV"
+          echo "WGPU_BACKEND=vulkan" >> "$GITHUB_ENV"
+          echo "LIBGL_ALWAYS_SOFTWARE=1" >> "$GITHUB_ENV"
+          echo "SCIRUST_REQUIRE_WGPU=1" >> "$GITHUB_ENV"
+          dpkg-query -W mesa-vulkan-drivers libvulkan1 vulkan-tools
+          vulkaninfo --summary
       - name: Cache cargo
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-      # SCIRUST_REQUIRE_WGPU turns "no adapter -> skip" into "no adapter ->
-      # fail". Without it a driverless runner would report a green wgpu job
-      # having executed nothing at all.
-      - name: Test wgpu backend on lavapipe
-        env:
-          SCIRUST_REQUIRE_WGPU: "1"
-        run: cargo +nightly-2026-07-02 test -p scirust-gpu --features wgpu --locked
+      # SCIAGENT's WGPU test module acquires many independent software-Vulkan
+      # devices. Parallel execution can overload lavapipe/LLVM internally and
+      # result in a native SIGSEGV rather than a Rust assertion. Run the *full*
+      # suite serially, preserving every assertion and the required real WGPU
+      # device. Log adapter identities before each test for reproducible crash
+      # diagnosis; a missing adapter remains an error, never an implicit skip.
+      - name: Test wgpu backend on lavapipe (serial, all tests)
+        shell: bash
+        run: |
+          set -euo pipefail
+          RUST_TEST_THREADS=1 cargo +nightly-2026-07-02 test \
+            -p scirust-gpu --features wgpu --locked \
+            -- --test-threads=1 --nocapture
       # The same canonical plans, driven end to end through the public facade:
       # CanonicalProgram -> WgpuReferenceAdapter -> generated WGSL -> TensorND.
-      - name: Test the canonical WGPU pipeline on lavapipe
-        env:
-          SCIRUST_REQUIRE_WGPU: "1"
-        run: cargo +nightly-2026-07-02 test -p scirust --features tensor-canonical-wgpu --locked
+      - name: Test the canonical WGPU pipeline on lavapipe (serial, all tests)
+        shell: bash
+        run: |
+          set -euo pipefail
+          RUST_TEST_THREADS=1 cargo +nightly-2026-07-02 test \
+            -p scirust --features tensor-canonical-wgpu --locked \
+            -- --test-threads=1 --nocapture
 
   # The CUDA feature uses dynamic loading. Hosted runners have no CUDA runtime,
   # which makes them the right place to enforce the public no-device contract:
