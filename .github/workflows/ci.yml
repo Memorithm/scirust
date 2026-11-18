@@ -751,18 +751,18 @@ jobs:
           sudo apt-get update -q
           sudo apt-get install -y --no-install-recommends libopenblas-dev pkg-config
           pkg-config --modversion openblas
-          ldconfig -p | grep -E 'libopenblas\\.so'
+          ldconfig -p | grep -F libopenblas.so
       - name: Test native BLAS ABI and scalar numerical oracle
         shell: bash
         env:
           OPENBLAS_NUM_THREADS: '1'
         run: |
           set -euo pipefail
-          cargo +1.89.0 test --locked -p scirust-core \\
-            --no-default-features --features blas-openblas-system \\
-            system_openblas_native_ffi_matches_scalar_oracle -- --exact --nocapture
-          cargo +1.89.0 test --locked -p scirust-core \\
-            --no-default-features --features blas-openblas-system \\
+          cargo +1.89.0 test --locked -p scirust-core \
+            --no-default-features --features blas-openblas-system \
+            matrix::backend::tests::system_openblas_native_ffi_matches_scalar_oracle -- --exact --nocapture
+          cargo +1.89.0 test --locked -p scirust-core \
+            --no-default-features --features blas-openblas-system \
             matrix::backend::tests::test_sgemm_identity
 
   # The CUDA feature uses dynamic loading. Hosted runners have no CUDA runtime,
