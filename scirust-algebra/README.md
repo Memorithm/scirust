@@ -66,3 +66,52 @@ let ss = SchreierSims::<3, 2, 8>::build(group).unwrap();
 assert_eq!(ss.order(), Some(6));
 assert!(ss.contains(&Permutation::new([0, 2, 1]).unwrap()));
 ```
+
+## Packed binary/quaternary reference (research)
+
+The `compact_logic` module adds a CPU-portable, allocation-free reference
+for **64 independently addressed 2-bit lanes in 16 bytes**, represented as
+two `u64` bitplanes. It provides exact lane get/set, mask-based equality,
+conditional replacement and selection, lane-wise GF(4) XOR/addition and
+multiplication (with `alpha² = alpha + 1`), and masked GF(4) parity.
+Four symbolic labels do **not** intrinsically imply GF(4) arithmetic:
+callers must opt in to the mathematical field interpretation.
+
+A separately opt-in, extended Hamming **SECDED (8,4)** path encodes one
+four-bit payload into one byte, correcting one bit error and detecting
+all two-bit errors. Its batch admission helper takes an explicit
+64-lane mask, never writes unselected or rejected output entries, and
+reports accepted, corrected and rejected lane masks. This redundancy
+cost is **8 bits per 4 payload bits**, and is not hidden inside the dense
+2-bit state representation. Three or more bit flips may be miscorrected
+or undetected. No adversarial integrity, authenticated storage,
+biological fidelity, quantum capability or numerical speedup is claimed.
+
+Example (a 64-lane block is a caller-owned value):
+
+```rust
+use scirust_algebra::compact_logic::{
+    QuadBitplanes, DecodedNibble, secded_encode, secded_decode,
+};
+
+let mut state = QuadBitplanes::default();
+state.set(7, 3).unwrap();
+let active = state.matches(3).unwrap();
+assert_eq!(active, 1 << 7);
+assert_eq!(state.select(active).get(7), Ok(3));
+
+let encoded = secded_encode(0b1011).unwrap();
+assert_eq!(
+    secded_decode(encoded ^ 1),
+    Ok(DecodedNibble::Corrected {
+        value: 0b1011,
+        bit_position: 1,
+    })
+);
+```
+
+Source qualification: `cargo test -p scirust-algebra --locked compact_logic`.
+A future SIMD implementation or integration into V888/SML/FLAT must be
+tested against this scalar reference on the exact consumer workload,
+including end-to-end memory traffic and runtime cost. No implicit model
+behavior or feature is changed by adding this isolated module.
