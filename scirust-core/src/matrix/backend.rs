@@ -675,8 +675,12 @@ mod tests {
             0.5,
             MatrixViewMut::from_slice(&mut blas_c, 2, 2),
         );
-        for (got, expected) in blas_c.into_iter().zip(oracle_c) {
-            assert!((got - expected).abs() <= 1e-5, "GEMM result {got} != {expected}");
+        for (got, expected) in blas_c.into_iter().zip(oracle_c)
+        {
+            assert!(
+                (got - expected).abs() <= 1e-5,
+                "GEMM result {got} != {expected}"
+            );
         }
     }
 
