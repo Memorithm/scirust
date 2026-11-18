@@ -22,6 +22,13 @@ pub struct Rae9ResearchBridge {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Rae9HeadEvidence {
+    /// Verified response provenance; must match the SciAgent source request.
+    pub model: String,
+    pub head: usize,
+    pub kv_head: usize,
+    pub query_heads: usize,
+    pub kv_heads: usize,
+    pub physical_bandwidth_measured: bool,
     pub route: String,
     pub keys: usize,
     pub executed_keys: usize,
@@ -128,6 +135,15 @@ impl Rae9ResearchBridge {
         }
         let text = run_child(&self.binary, &capture.path)?;
         let (mut evidence, output) = parse_result(&text, v.cols)?;
+        if evidence.model != "sciagent"
+            || evidence.head != head
+            || evidence.kv_head != head / (q_heads / kv_heads)
+            || evidence.query_heads != q_heads
+            || evidence.kv_heads != kv_heads
+            || evidence.physical_bandwidth_measured
+        {
+            return Err("RAE9_RESULT_PROVENANCE_MISMATCH".into());
+        }
         if evidence.keys != n || evidence.executed_keys > n || evidence.scored_keys > n
         {
             return Err("RAE9_INVALID_RESULT_COUNTS".into());
@@ -271,7 +287,18 @@ fn parse_result(text: &str, width: usize) -> Result<(Rae9HeadEvidence, Vec<f32>)
             {
                 return Err("RAE9_INVALID_ERROR_BOUND".into());
             }
+            if value("physical_bandwidth_measured")? != "false"
+                || value("trained_route")? != "false"
+            {
+                return Err("RAE9_UNSUPPORTED_EXTERNAL_ROUTE_CLAIM".into());
+            }
             record = Some(Rae9HeadEvidence {
+                model: value("model")?.to_owned(),
+                head: size("head")?,
+                kv_head: size("kv_head")?,
+                query_heads: size("q_heads")?,
+                kv_heads: size("kv_heads")?,
+                physical_bandwidth_measured: false,
                 route: value("route")?.to_owned(),
                 keys: size("keys")?,
                 executed_keys: size("executed_keys")?,
@@ -311,7 +338,7 @@ mod tests {
     #[test]
     fn protocol_rejects_malformed_and_accepts_bounded_result() {
         let (r, vec) = parse_result(
-            "RAE9_RESULT route=bounded_sparse keys=3 executed_keys=2 scored_keys=2 max_error_bound=0.01\nRAE9_OUTPUT 1.0 -2.0\n", 2
+            "RAE9_RESULT model=sciagent head=1 kv_head=0 q_heads=4 kv_heads=2 physical_bandwidth_measured=false trained_route=false route=bounded_sparse keys=3 executed_keys=2 scored_keys=2 max_error_bound=0.01\nRAE9_OUTPUT 1.0 -2.0\n", 2
         ).unwrap();
         assert_eq!(r.executed_keys, 2);
         assert_eq!(vec, [1.0, -2.0]);
