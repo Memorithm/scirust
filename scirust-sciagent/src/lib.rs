@@ -1,8 +1,6 @@
 pub mod agentic;
 pub mod artifact_provenance;
 pub mod attention;
-/// Explicit host-only experimental real-model FLAT RAE-9 numerical bridge.
-pub mod rae9_research;
 pub mod block;
 pub mod bpe;
 pub mod bpe_dispatch;
@@ -41,6 +39,8 @@ pub mod gpu;
 pub mod inference;
 pub mod model;
 pub mod norm;
+/// Explicit host-only experimental real-model FLAT RAE-9 numerical bridge.
+pub mod rae9_research;
 // The orchestration helper passes frozen task/run evidence explicitly instead of
 // hiding it in ambient mutable state; keep that trade-off local to this module.
 #[allow(clippy::too_many_arguments)]
