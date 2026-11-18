@@ -14,6 +14,10 @@ on:
   pull_request:
     branches: [master, main, develop]
 
+# Pin the Linux CI image. The floating ubuntu-latest alias moved to 26.04
+# during this work; it changed Vulkan ICD paths and destabilized the pinned
+# July 2026 Rust nightly installation. Keep the reproducible 24.04 baseline
+# until separate migration proof exists.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -37,7 +41,7 @@ env:
 jobs:
   corpus-location:
     name: SCIAGENT Corpus Location
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Reject generated corpora in the source checkout
@@ -45,7 +49,7 @@ jobs:
 
   fmt:
     name: Format Check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       # rustfmt output is version-sensitive and this repo's rustfmt.toml uses
@@ -64,7 +68,7 @@ jobs:
 
   clippy:
     name: Clippy
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Install nightly toolchain
@@ -91,7 +95,7 @@ jobs:
   # Ambiguïtés f32/f64 = WARNING non bloquant (zéro faux positif).
   epsilon-audit:
     name: Epsilon Audit (σ gate)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Install nightly toolchain
@@ -109,7 +113,7 @@ jobs:
   # warning counts (7/8) are preserved. Coreutils only — no toolchain needed.
   cobol-corpus:
     name: COBOL Corpus Integrity
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Verify COBOL reference corpus
@@ -144,7 +148,7 @@ jobs:
 
   build-test:
     name: Build & Test (nightly, x86_64)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       # The full `--workspace --all-targets` debug build here writes tens of GB
@@ -181,7 +185,7 @@ jobs:
   # testing warning-clean (RUSTFLAGS=-D warnings is set workspace-wide above).
   portable-simd:
     name: Build & Test (portable-simd, nightly)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Install nightly toolchain
@@ -201,7 +205,7 @@ jobs:
   # `--locked`: like `fuzz`, it keeps no committed lockfile.
   hypermemory:
     name: Build & Test (scirust-hypermemory, nightly)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Install nightly toolchain
@@ -231,7 +235,7 @@ jobs:
   # only the amx/qtransformer combination above does).
   transformer-inference:
     name: Build & Test (transformer-inference, stable)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Install stable toolchain
@@ -248,7 +252,7 @@ jobs:
   # nightly while the default scirust-simd build remains MSRV-compatible.
   nightly-simd:
     name: Build & Test (nightly SIMD extensions)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Install nightly toolchain
@@ -268,7 +272,7 @@ jobs:
   # this is the gate industrial consumers care about.
   build-test-stable:
     name: Build & Test (stable, x86_64)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       # Same root-filesystem exhaustion as the nightly `build-test` job above
@@ -353,7 +357,7 @@ jobs:
 
   msrv:
     name: Check (MSRV 1.89.0)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Install exact MSRV
@@ -385,7 +389,7 @@ jobs:
 
   opt-in-features:
     name: Check opt-in network features
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Install stable toolchain
@@ -412,7 +416,7 @@ jobs:
   # x86_64 Debian, LIVESTATE volet 112).
   cross-check-aarch64:
     name: Cross-check (aarch64)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Install nightly toolchain
@@ -467,7 +471,7 @@ jobs:
 
   deny:
     name: License & Security Audit
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Reject insecure MKL OCI downloader and expire chrono exception
@@ -545,7 +549,7 @@ jobs:
   # shard succeeds.
   miri-shards:
     name: Miri shard (${{ matrix.name }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -586,7 +590,7 @@ jobs:
     name: Miri (memory safety and numeric crates)
     needs: miri-shards
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Require every Miri shard to pass
         env:
@@ -603,7 +607,7 @@ jobs:
   # job log. Long-running campaigns are run out-of-band.
   fuzz:
     name: Fuzz (untrusted parsers, smoke)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     continue-on-error: true
     # cargo-fuzz builds third-party crates (libfuzzer-sys) and instruments the
     # binary itself; do not impose the workspace-wide `-D warnings`.
@@ -659,7 +663,7 @@ jobs:
   # with the exact stage that diverged.
   determinism:
     name: Determinism fingerprint (rayon vs serial)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Install stable toolchain
@@ -682,7 +686,7 @@ jobs:
   # Vulkan adapter (Mesa lavapipe) — no physical GPU required.
   gpu-wgpu:
     name: GPU (wgpu / lavapipe)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Install nightly toolchain
@@ -697,11 +701,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          icd=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
-          test -s "$icd" || {
-            echo "::error::Mesa lavapipe Vulkan ICD not installed"
+          icd=""
+          for candidate in /usr/share/vulkan/icd.d/lvp_icd*.json /etc/vulkan/icd.d/lvp_icd*.json; do
+            if [ -s "$candidate" ]; then
+              icd="$candidate"
+              break
+            fi
+          done
+          if [ -z "$icd" ]; then
+            echo "::error::Mesa lavapipe Vulkan ICD not found; refusing GPU test skip"
+            find /usr/share/vulkan/icd.d /etc/vulkan/icd.d -maxdepth 1 \
+              -name '*.json' -type f -print 2>/dev/null || true
             exit 2
-          }
+          fi
+          echo "LAVAPIPE_ICD=$icd"
           echo "VK_ICD_FILENAMES=$icd" >> "$GITHUB_ENV"
           echo "WGPU_BACKEND=vulkan" >> "$GITHUB_ENV"
           echo "LIBGL_ALWAYS_SOFTWARE=1" >> "$GITHUB_ENV"
@@ -775,7 +788,7 @@ jobs:
   # SCIRUST_REQUIRE_CUDA=1 so that skipping becomes a failure.
   gpu-cuda-fallback:
     name: GPU (CUDA no-runtime fallback — compile and lint only)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Install stable toolchain
@@ -801,7 +814,7 @@ jobs:
   # Generate and validate a complete workspace CycloneDX SBOM.
   sbom:
     name: SBOM (CycloneDX)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Install stable toolchain
@@ -824,7 +837,7 @@ jobs:
   # must not gate merges.
   coverage:
     name: Code Coverage
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     continue-on-error: true
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
