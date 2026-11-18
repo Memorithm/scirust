@@ -141,38 +141,49 @@ impl SciAgentModel {
         bridge: &crate::rae9_research::Rae9ResearchBridge,
     ) -> Result<Var<'t>, String> {
         let seq_len = input_ids.len();
-        if seq_len < 2 || seq_len > self.config.max_seq_len {
+        if seq_len < 2 || seq_len > self.config.max_seq_len
+        {
             return Err("RAE9_INVALID_SCIAGENT_SEQUENCE_LENGTH".into());
         }
-        if input_ids.iter().any(|&id| id >= self.config.vocab_size) {
+        if input_ids.iter().any(|&id| id >= self.config.vocab_size)
+        {
             return Err("RAE9_INVALID_TOKEN_ID".into());
         }
         // Preserve the same tied-embedding registration as the normal tape.
         let mut h;
-        let tied_table = if self.lm_head.is_none() {
+        let tied_table = if self.lm_head.is_none()
+        {
             let indices: Vec<u32> = input_ids.iter().map(|&id| id as u32).collect();
             let table = tape.input(self.embed.weight.clone());
             self.tied_w_idx = Some(table.idx());
             h = table.embedding(indices);
             Some(table)
-        } else {
+        }
+        else
+        {
             self.tied_w_idx = None;
             let data: Vec<f32> = input_ids.iter().map(|&id| id as f32).collect();
             let idx = tape.input(Tensor::from_vec(data, seq_len, 1));
             h = self.embed.forward(tape, idx);
             None
         };
-        for (index, layer) in self.layers.iter_mut().enumerate() {
-            h = if index == 0 {
+        for (index, layer) in self.layers.iter_mut().enumerate()
+        {
+            h = if index == 0
+            {
                 layer.forward_research_rae9(tape, h, seq_len, bridge)?
-            } else {
+            }
+            else
+            {
                 layer.forward(tape, h, seq_len)
             };
         }
         h = self.rms_final.forward(tape, h);
-        Ok(match (self.lm_head.as_mut(), tied_table) {
+        Ok(match (self.lm_head.as_mut(), tied_table)
+        {
             (Some(head), _) => head.forward(tape, h),
-            (None, Some(table)) => h.try_matmul(table.transpose_2d())
+            (None, Some(table)) => h
+                .try_matmul(table.transpose_2d())
                 .map_err(|e| format!("RAE9_SCIAGENT_OUTPUT_MATMUL: {e}"))?,
             (None, None) => unreachable!("tied weights always have a shared table"),
         })
