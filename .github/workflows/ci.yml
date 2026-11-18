@@ -703,7 +703,9 @@ jobs:
       - name: Test wgpu backend on lavapipe
         env:
           SCIRUST_REQUIRE_WGPU: "1"
-        run: cargo +nightly-2026-07-02 test -p scirust-gpu --features wgpu --locked
+        # Mesa lavapipe is software Vulkan: serialize test cases to avoid
+        # concurrent device creation/use; all test targets still execute.
+        run: cargo +nightly-2026-07-02 test -p scirust-gpu --features wgpu --locked -- --test-threads=1
       # The same canonical plans, driven end to end through the public facade:
       # CanonicalProgram -> WgpuReferenceAdapter -> generated WGSL -> TensorND.
       - name: Test the canonical WGPU pipeline on lavapipe
