@@ -471,6 +471,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      # RUSTSEC-2026-0543 is an informational unmaintained chrono notice, not
+      # a documented exploitable vulnerability. Issue #1737 requires migration
+      # by 2027-02-17; fail closed if its temporary waiver survives that date.
+      # Other advisories remain fatal under cargo-deny.
+      - name: Expire the narrowly scoped chrono maintenance exception
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -Fq 'id = "RUSTSEC-2026-0543"' deny.toml && \
+             [[ "$(date -u +%F)" > "2027-02-17" ]]; then
+            echo "::error::chrono waiver expired; migrate chrono and remove RUSTSEC-2026-0543 from deny.toml (issue #1737)"
+            exit 1
+          fi
       - name: Audit default dependency graph
         uses: EmbarkStudios/cargo-deny-action@bb137d7af7e4fb67e5f82a49c4fce4fad40782fe # v2
         with:
