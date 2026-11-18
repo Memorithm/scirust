@@ -71,20 +71,17 @@ impl Rae9ResearchBridge {
         let n = q.rows;
         let d = q.cols;
         if head != self.query_head
-            || n < 2
-            || n > 4096
-            || d == 0
-            || d > 256
+            || !(2..=4096).contains(&n)
+            || !(1..=256).contains(&d)
             || k.rows != n
             || k.cols != d
             || v.rows != n
-            || v.cols == 0
-            || v.cols > 256
+            || !(1..=256).contains(&v.cols)
             || native.rows != n
             || native.cols != v.cols
             || q_heads == 0
             || kv_heads == 0
-            || q_heads % kv_heads != 0
+            || !q_heads.is_multiple_of(kv_heads)
             || head >= q_heads
             || self.page_size > n
             || n.div_ceil(self.page_size) > 512
