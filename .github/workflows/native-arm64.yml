@@ -181,6 +181,22 @@ jobs:
               && [[ "$cgroup" == "0::/system.slice/memorithm-clm-encoder.service" ]] \
               && [[ "$process_name" == "VLLM::EngineCore" ]]; then
               known_managed=true
+            # Existing CheckupAuto/OLLAMA system services can reserve the GPU.
+            # They are never stopped or preempted by SciRust. Require exact
+            # service account, cgroup and executable/command provenance to
+            # classify them as *occupied*, not as safe to run CUDA alongside.
+            elif [[ "$proc_user" == "remoteops" ]] \
+              && [[ "$ppid" == "1" ]] \
+              && [[ "$cgroup" == "0::/system.slice/checkupauto-character.service" ]] \
+              && [[ "$process_name" == "/srv/models/checkupauto-character/venv/bin/python" ]] \
+              && [[ "$cmdline" == *"/srv/models/checkupauto-character/app/worker.py"* ]]; then
+              known_managed=true
+            elif [[ "$proc_user" == "ollama" ]] \
+              && [[ "$cgroup" == "0::/system.slice/ollama.service" ]] \
+              && [[ "$process_name" == "/usr/local/lib/ollama/llama-server" ]] \
+              && [[ "$cmdline" == *"/usr/local/lib/ollama/llama-server --model /usr/share/ollama/.ollama/models/blobs/sha256-"* ]] \
+              && [[ "$cmdline" == *" --host 127.0.0.1 "* ]]; then
+              known_managed=true
             fi
 
             if [[ "$known_managed" != true ]]; then
