@@ -48,6 +48,9 @@ transformer-inference = ["scirust-simd/transformer-inference"]
 # See issue #1734. Restore MKL only through a separately qualified safe source.
 blas = ["dep:blas"]
 blas-openblas = ["blas", "dep:openblas-src"]
+# Physical CI can link an installed, trusted OpenBLAS shared library rather
+# than downloading/building its source. No extra Cargo dependency is added.
+blas-openblas-system = ["blas-openblas", "openblas-src/system"]
 
 # Depends on representation_graph_quaternion, itself gated behind
 # portable-simd (scirust_simd::geometry::quaternion) -- without this,
