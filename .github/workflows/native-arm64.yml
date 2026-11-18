@@ -22,6 +22,8 @@ on:
       - "src/lib.rs"
       - "tests/**"
       - ".github/workflows/native-arm64.yml"
+      - "scripts/native_arm64_gpu_occupant.sh"
+      - "scripts/test_native_arm64_gpu_occupant.sh"
   push:
     branches: [master, main, develop]
     paths:
@@ -43,6 +45,8 @@ on:
       - "src/lib.rs"
       - "tests/**"
       - ".github/workflows/native-arm64.yml"
+      - "scripts/native_arm64_gpu_occupant.sh"
+      - "scripts/test_native_arm64_gpu_occupant.sh"
   workflow_dispatch:
 
 permissions:
@@ -53,6 +57,18 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  gpu-occupancy-policy:
+    name: ARM64 GPU occupancy provenance (CPU-only)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - name: Test fail-closed busy GPU service classification without CUDA
+        shell: bash
+        run: bash scripts/test_native_arm64_gpu_occupant.sh
+
   native-arm64:
     name: Native ARM64 (Jetson Thor)
     if: >
