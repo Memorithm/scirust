@@ -172,6 +172,33 @@ impl Clone for GQAAttention {
 
 impl GQAAttention {
     pub fn forward<'t>(&mut self, tape: &'t Tape, x: Var<'t>, seq_len: usize) -> Var<'t> {
+        self.forward_with_rae9(tape, x, seq_len, None)
+            .expect("the original full dense forward has no RAE adapter failure")
+    }
+
+    /// Research-only inference: consume FLAT RAE-9 numerical output in the
+    /// final query of the chosen head. Other rows/heads remain original.
+    /// The injected row is detached; NEVER invoke from training/backward.
+    pub fn forward_research_rae9<'t>(
+        &mut self,
+        tape: &'t Tape,
+        x: Var<'t>,
+        seq_len: usize,
+        bridge: &crate::rae9_research::Rae9ResearchBridge,
+    ) -> Result<Var<'t>, String> {
+        if bridge.query_head >= self.n_heads || seq_len < 2 || x.shape().0 != seq_len {
+            return Err("RAE9_SCIAGENT_SINGLE_SEQUENCE_REQUIRED".into());
+        }
+        self.forward_with_rae9(tape, x, seq_len, Some(bridge))
+    }
+
+    fn forward_with_rae9<'t>(
+        &mut self,
+        tape: &'t Tape,
+        x: Var<'t>,
+        seq_len: usize,
+        bridge: Option<&crate::rae9_research::Rae9ResearchBridge>,
+    ) -> Result<Var<'t>, String> {
         let batch = x.shape().0 / seq_len;
         let h = self.n_heads;
         let dh = self.d_head;
@@ -207,6 +234,27 @@ impl GQAAttention {
                     .causal_mask(seq_len)
                     .softmax(1)
                     .matmul(vb);
+                let o = if let Some(adapter) = bridge.filter(|a| a.query_head == head) {
+                    // Extract actual post-RoPE Q/K and projected V from this
+                    // model layer, not fabricated external vector fixtures.
+                    let qr = tape.value(qb.idx());
+                    let kr = tape.value(kb.idx());
+                    let vr = tape.value(vb.idx());
+                    let reference = tape.value(o.idx());
+                    let (replacement, _) = adapter.evaluate(
+                        &qr, &kr, &vr, &reference, h, kh, head, scale,
+                    )?;
+                    if let Some(values) = replacement {
+                        let mut patched = reference.clone();
+                        let start = (seq_len - 1) * dh;
+                        patched.data[start..start + dh].copy_from_slice(&values);
+                        tape.input(patched)
+                    } else {
+                        o
+                    }
+                } else {
+                    o
+                };
                 pb.push(o);
             }
             // Differentiable concat (Op::Concat), NOT a value copy: the old
@@ -221,7 +269,7 @@ impl GQAAttention {
         {
             acc = acc.add(ho);
         }
-        self.w_o.forward(tape, acc)
+        Ok(self.w_o.forward(tape, acc))
     }
 
     pub fn infer_step<'t>(&mut self, tape: &'t Tape, x_token: Var<'t>, pos: usize) -> Var<'t> {
