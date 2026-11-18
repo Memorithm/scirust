@@ -25,6 +25,11 @@ fn next_word(seed: &mut u64) -> u64 {
 }
 
 fn main() {
+    assert_eq!(
+        std::mem::size_of::<QuadBitplanes>(),
+        16,
+        "64 two-bit lanes must occupy exactly 16 bytes"
+    );
     let mut seed = 0x5eed_d15c_8a47_2026_u64;
     let mut packed_inputs = Vec::with_capacity(BLOCKS);
     let mut scalar_inputs = Vec::with_capacity(BLOCKS);
@@ -76,12 +81,16 @@ fn main() {
     {
         for (left, right) in &scalar_inputs
         {
+            // One optimization barrier per input block, matching the packed
+            // path. Barriers on every scalar lane would unfairly exaggerate
+            // the apparent bitplane speedup by charging 128 extra calls.
+            let left = black_box(left);
+            let right = black_box(right);
             let mut low = 0u64;
             let mut high = 0u64;
             for lane in 0..64usize
             {
-                let value =
-                    GF4_MUL[black_box(left[lane]) as usize][black_box(right[lane]) as usize];
+                let value = GF4_MUL[left[lane] as usize][right[lane] as usize];
                 low |= u64::from(value & 1) << lane;
                 high |= u64::from(value >> 1) << lane;
             }
