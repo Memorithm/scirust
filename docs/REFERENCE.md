@@ -35,7 +35,11 @@ pass:
 
 CI exports `RUSTFLAGS="-D warnings"`: every warning is an error.
 The supported accelerated BLAS provider is now `scirust-core/blas-openblas`
-via `openblas-src` directly. The former optional `blas-mkl` provider was
+via `openblas-src` directly. For systems with a preinstalled OpenBLAS
+library, `scirust-core/blas-openblas-system` additionally selects
+`openblas-src/system` and requires a visible `libopenblas` native linker
+provider. CI qualifies the latter using Ubuntu 24.04 `libopenblas-dev`
+with real AXPY/GEMM FFI calls compared against the scalar backend. The former optional `blas-mkl` provider was
 withdrawn because its transitive `intel-mkl-src -> ocipkg` download stack
 contains the high-severity RUSTSEC-2026-0450 path-traversal vulnerability.
 Issue #1734 tracks a future secure and physically qualified MKL replacement.
