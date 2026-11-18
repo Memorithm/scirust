@@ -7,15 +7,17 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 static CAPTURE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Rae9ResearchBridge {
     binary: PathBuf,
     pub page_size: usize,
     pub query_head: usize,
+    observations: Mutex<Vec<Rae9HeadEvidence>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -34,7 +36,13 @@ impl Rae9ResearchBridge {
         if !binary.is_file() || page_size == 0 || page_size > 4096 {
             return Err("RAE9_INVALID_CONFIGURATION".into());
         }
-        Ok(Self { binary, page_size, query_head })
+        Ok(Self { binary, page_size, query_head, observations: Mutex::new(Vec::new()) })
+    }
+
+    /// Read non-secret numerical execution evidence for the latest experiment.
+    pub fn observations(&self) -> Result<Vec<Rae9HeadEvidence>, String> {
+        self.observations.lock().map(|guard| guard.clone())
+            .map_err(|_| "RAE9_EVIDENCE_LOCK_POISONED".into())
     }
 
     /// Input Q/K are already RoPE-rotated by SciAgent's differentiable tape.
@@ -117,6 +125,8 @@ impl Rae9ResearchBridge {
         }
         evidence.native_component_delta = difference;
         evidence.injected = admitted;
+        self.observations.lock().map_err(|_| "RAE9_EVIDENCE_LOCK_POISONED")?
+            .push(evidence.clone());
         Ok((admitted.then_some(output), evidence))
     }
 }
