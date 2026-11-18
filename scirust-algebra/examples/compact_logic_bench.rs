@@ -24,6 +24,48 @@ fn next_word(seed: &mut u64) -> u64 {
     (*seed).wrapping_mul(0x2545_f491_4f6c_dd1d)
 }
 
+fn time_packed(packed_inputs: &[(QuadBitplanes, QuadBitplanes)]) -> (u128, u64) {
+    let start = Instant::now();
+    let mut digest = 0u64;
+    for _ in 0..REPEATS
+    {
+        for &(a, b) in packed_inputs
+        {
+            let product = black_box(a).gf4_mul(black_box(b));
+            digest = digest
+                .wrapping_mul(0x9e37_79b9_7f4a_7c15)
+                .wrapping_add(black_box(product.low ^ product.high.rotate_left(1)));
+        }
+    }
+    (start.elapsed().as_nanos(), black_box(digest))
+}
+
+fn time_scalar(scalar_inputs: &[([u8; 64], [u8; 64])]) -> (u128, u64) {
+    let start = Instant::now();
+    let mut digest = 0u64;
+    for _ in 0..REPEATS
+    {
+        for (left, right) in scalar_inputs
+        {
+            // Two optimization barriers per block, matching the packed path.
+            let left = black_box(left);
+            let right = black_box(right);
+            let mut low = 0u64;
+            let mut high = 0u64;
+            for lane in 0..64usize
+            {
+                let value = GF4_MUL[left[lane] as usize][right[lane] as usize];
+                low |= u64::from(value & 1) << lane;
+                high |= u64::from(value >> 1) << lane;
+            }
+            digest = digest
+                .wrapping_mul(0x9e37_79b9_7f4a_7c15)
+                .wrapping_add(black_box(low ^ high.rotate_left(1)));
+        }
+    }
+    (start.elapsed().as_nanos(), black_box(digest))
+}
+
 fn main() {
     assert_eq!(
         std::mem::size_of::<QuadBitplanes>(),
@@ -61,46 +103,48 @@ fn main() {
         scalar_inputs.push((left, right));
     }
 
-    let packed_start = Instant::now();
-    let mut packed_digest = 0u64;
-    for _ in 0..REPEATS
-    {
-        for &(a, b) in &packed_inputs
-        {
-            let product = black_box(a).gf4_mul(black_box(b));
-            packed_digest = packed_digest
-                .wrapping_mul(0x9e37_79b9_7f4a_7c15)
-                .wrapping_add(black_box(product.low ^ product.high.rotate_left(1)));
-        }
-    }
-    let packed_elapsed = packed_start.elapsed();
+    // Alternating call order limits systematic thermal/frequency/cache-order
+    // bias; seven separate samples give a median rather than a single sample.
+    // The two kernels perform the same logical computation, including a
+    // packed output digest. Host noise and scalar repacking still matter.
+    const TRIALS: usize = 7;
+    let mut packed_samples = [0u128; TRIALS];
+    let mut scalar_samples = [0u128; TRIALS];
+    let mut expected_digest = None;
 
-    let scalar_start = Instant::now();
-    let mut scalar_digest = 0u64;
-    for _ in 0..REPEATS
+    for trial in 0..TRIALS
     {
-        for (left, right) in &scalar_inputs
+        let (packed, scalar) = if trial % 2 == 0
         {
-            // One optimization barrier per input block, matching the packed
-            // path. Barriers on every scalar lane would unfairly exaggerate
-            // the apparent bitplane speedup by charging 128 extra calls.
-            let left = black_box(left);
-            let right = black_box(right);
-            let mut low = 0u64;
-            let mut high = 0u64;
-            for lane in 0..64usize
-            {
-                let value = GF4_MUL[left[lane] as usize][right[lane] as usize];
-                low |= u64::from(value & 1) << lane;
-                high |= u64::from(value >> 1) << lane;
-            }
-            scalar_digest = scalar_digest
-                .wrapping_mul(0x9e37_79b9_7f4a_7c15)
-                .wrapping_add(black_box(low ^ high.rotate_left(1)));
+            let packed = time_packed(&packed_inputs);
+            let scalar = time_scalar(&scalar_inputs);
+            (packed, scalar)
         }
+        else
+        {
+            let scalar = time_scalar(&scalar_inputs);
+            let packed = time_packed(&packed_inputs);
+            (packed, scalar)
+        };
+        assert_eq!(packed.1, scalar.1, "product digest differs");
+        if let Some(expected) = expected_digest
+        {
+            assert_eq!(packed.1, expected, "digest changed across trials");
+        }
+        expected_digest = Some(packed.1);
+        packed_samples[trial] = packed.0;
+        scalar_samples[trial] = scalar.0;
     }
-    let scalar_elapsed = scalar_start.elapsed();
-    assert_eq!(packed_digest, scalar_digest, "product digest differs");
+
+    packed_samples.sort_unstable();
+    scalar_samples.sort_unstable();
+    let packed_ns = packed_samples[TRIALS / 2];
+    let scalar_ns = scalar_samples[TRIALS / 2];
+    let packed_min = packed_samples[0];
+    let packed_max = packed_samples[TRIALS - 1];
+    let scalar_min = scalar_samples[0];
+    let scalar_max = scalar_samples[TRIALS - 1];
+    let packed_digest = expected_digest.expect("nonzero trial count");
 
     let symbols = BLOCKS * 64 * REPEATS;
     let packed_input_bytes = 2 * BLOCKS * 16;
@@ -118,12 +162,13 @@ fn main() {
         packed_input_bytes, scalar_input_bytes
     );
     println!(
-        "gf4_mul_packed_ns={} gf4_mul_scalar_ns={} digest={packed_digest}",
-        packed_elapsed.as_nanos(),
-        scalar_elapsed.as_nanos()
+        "gf4_mul_packed_median_ns={packed_ns} gf4_mul_scalar_median_ns={scalar_ns} digest={packed_digest}"
     );
     println!(
-        "relative_kernel_ratio_scalar_over_packed={:.4} (same-host microbenchmark, not a model speedup)",
-        scalar_elapsed.as_secs_f64() / packed_elapsed.as_secs_f64()
+        "gf4_mul_packed_range_ns={packed_min}..{packed_max} gf4_mul_scalar_range_ns={scalar_min}..{scalar_max} trials={TRIALS}"
+    );
+    println!(
+        "relative_kernel_median_ratio_scalar_over_packed={:.4} (same-host cache-resident microbenchmark including scalar repacking, not a model speedup)",
+        scalar_ns as f64 / packed_ns as f64
     );
 }
