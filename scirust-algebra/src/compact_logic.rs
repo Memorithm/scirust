@@ -13,6 +13,10 @@
 //! No model routing policy is embedded here. Callers provide admission masks.
 //! All operations are deterministic, CPU-portable, allocation-free references.
 
+/// Extended Hamming protection for full 128-bit quaternary blocks.
+#[rustfmt::skip]
+pub mod secded128;
+
 /// Invalid index, value, batch size, or a detected uncorrectable codeword.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CompactLogicError {
@@ -22,6 +26,8 @@ pub enum CompactLogicError {
     InvalidSymbol,
     /// A four-bit payload was not in 0..=15.
     InvalidNibble,
+    /// A full-block SECDED tag contains bits outside the defined 9-bit range.
+    InvalidTag,
     /// Erasure repair requires exactly one externally identified lost lane.
     InvalidErasureMask,
     /// Selection batches support at most 64 codewords and require enough output.
