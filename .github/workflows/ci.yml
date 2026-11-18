@@ -3,11 +3,10 @@ name: CI
 # Gates are the same commands documented in README.md / CLAUDE workflow:
 # they must stay runnable locally with identical results.
 #
-# Deliberately NOT using `--all-features`: in scirust-core the features
-# `blas-openblas` and `blas-mkl` are mutually exclusive backends of
-# blas-src and require system toolchains the runners do not have —
-# `--all-features` can never build. Feature-specific paths are exercised by
-# dedicated jobs with the toolchain and system setup they require.
+# Deliberately NOT using `--all-features`: specialized device/BLAS
+# backends require separate native toolchains or mutually incompatible
+# runtime assumptions. The retired `blas-mkl` and `blas-src` OCI chain must
+# never return. Feature-specific paths have dedicated qualified jobs.
 
 on:
   push:
@@ -540,16 +539,6 @@ jobs:
           rust-version: stable
           manifest-path: scirust-core/Cargo.toml
           arguments: --locked --no-default-features --features blas-openblas
-      # The unsafe legacy Intel MKL provider was retired in #1734.
-      # Retain coverage of the supported accelerated CPU backend instead.
-      - name: Audit supported OpenBLAS dependency graph
-        uses: EmbarkStudios/cargo-deny-action@bb137d7af7e4fb67e5f82a49c4fce4fad40782fe # v2
-        with:
-          command: check
-          rust-version: stable
-          manifest-path: scirust-core/Cargo.toml
-          arguments: --locked --no-default-features --features blas-openblas
-
   # Miri exercises the same memory-view/allocation regressions and pure
   # numeric suites as before, but in independent shards. The final `miri`
   # job preserves the historical required-check name and fails unless every
@@ -743,6 +732,38 @@ jobs:
           RUST_TEST_THREADS=1 cargo +nightly-2026-07-02 test \
             -p scirust --features tensor-canonical-wgpu --locked \
             -- --test-threads=1 --nocapture
+
+  # Native linkage and numerical equivalence of the secure OpenBLAS
+  # replacement: cargo-deny alone cannot prove BLAS FFI symbols resolve.
+  core-openblas-system:
+    name: Native OpenBLAS FFI (system provider)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master
+        with:
+          toolchain: '1.89.0'
+      - name: Install distribution-provided OpenBLAS
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends libopenblas-dev pkg-config
+          pkg-config --modversion openblas
+          ldconfig -p | grep -E 'libopenblas\\.so'
+      - name: Test native BLAS ABI and scalar numerical oracle
+        shell: bash
+        env:
+          OPENBLAS_NUM_THREADS: '1'
+        run: |
+          set -euo pipefail
+          cargo +1.89.0 test --locked -p scirust-core \\
+            --no-default-features --features blas-openblas-system \\
+            system_openblas_native_ffi_matches_scalar_oracle -- --exact --nocapture
+          cargo +1.89.0 test --locked -p scirust-core \\
+            --no-default-features --features blas-openblas-system \\
+            matrix::backend::tests::test_sgemm_identity
 
   # The CUDA feature uses dynamic loading. Hosted runners have no CUDA runtime,
   # which makes them the right place to enforce the public no-device contract:
