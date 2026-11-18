@@ -26,7 +26,7 @@ fn next_word(seed: &mut u64) -> u64 {
     *seed ^= *seed >> 12;
     *seed ^= *seed << 25;
     *seed ^= *seed >> 27;
-    seed.wrapping_mul(0x2545_f491_4f6c_dd1d)
+    (*seed).wrapping_mul(0x2545_f491_4f6c_dd1d)
 }
 
 fn main() {
@@ -64,7 +64,9 @@ fn main() {
     for _ in 0..REPEATS {
         for &(a, b) in &packed_inputs {
             let product = black_box(a).gf4_mul(black_box(b));
-            packed_digest ^= black_box(product.low ^ product.high.rotate_left(1));
+            packed_digest = packed_digest
+                .wrapping_mul(0x9e37_79b9_7f4a_7c15)
+                .wrapping_add(black_box(product.low ^ product.high.rotate_left(1)));
         }
     }
     let packed_elapsed = packed_start.elapsed();
@@ -81,11 +83,13 @@ fn main() {
                 low |= u64::from(value & 1) << lane;
                 high |= u64::from(value >> 1) << lane;
             }
-            scalar_digest ^= black_box(low ^ high.rotate_left(1));
+            scalar_digest = scalar_digest
+                .wrapping_mul(0x9e37_79b9_7f4a_7c15)
+                .wrapping_add(black_box(low ^ high.rotate_left(1)));
         }
     }
     let scalar_elapsed = scalar_start.elapsed();
-    assert_eq!(packed_digest, scalar_digest, "product parity differs");
+    assert_eq!(packed_digest, scalar_digest, "product digest differs");
 
     let symbols = BLOCKS * 64 * REPEATS;
     let packed_input_bytes = 2 * BLOCKS * 16;
