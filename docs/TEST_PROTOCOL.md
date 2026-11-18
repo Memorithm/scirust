@@ -165,9 +165,11 @@ directly, or `scripts/test-protocol.sh --only <gate>`.
 - `gpu` needs a Vulkan adapter (CI uses Mesa **lavapipe**, a software adapter).
   Without one the gate is skipped, not failed.
 - `--all-features` is intentionally **not** used: `scirust-core`'s
-  `blas-openblas` / `blas-mkl` features are mutually exclusive backends that
-  require system toolchains, so `--all-features` can never build. Feature paths
-  that matter are gated explicitly (`simd`, `gpu`).
+  `blas-openblas` uses a separate native OpenBLAS toolchain and other
+  workspace features still require mutually incompatible or specialized
+  toolchains. The former `blas-mkl` feature was explicitly withdrawn
+  after RUSTSEC-2026-0450; issue #1734 records its security replacement.
+  Feature paths that matter are gated explicitly (`simd`, `gpu`, OpenBLAS audit).
 - The data-dependent example binaries (MNIST/CIFAR/sentiment) are not run by
   `--with-examples`; their training data is not part of the repository.
 - **Disk:** a full `--all-targets` debug tree for the whole workspace is

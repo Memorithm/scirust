@@ -3,11 +3,10 @@ name: CI
 # Gates are the same commands documented in README.md / CLAUDE workflow:
 # they must stay runnable locally with identical results.
 #
-# Deliberately NOT using `--all-features`: in scirust-core the features
-# `blas-openblas` and `blas-mkl` are mutually exclusive backends of
-# blas-src and require system toolchains the runners do not have —
-# `--all-features` can never build. Feature-specific paths are exercised by
-# dedicated jobs with the toolchain and system setup they require.
+# Deliberately NOT using `--all-features`: specialized device/BLAS
+# backends require separate native toolchains or mutually incompatible
+# runtime assumptions. The retired `blas-mkl` and `blas-src` OCI chain must
+# never return. Feature-specific paths have dedicated qualified jobs.
 
 on:
   push:
@@ -471,6 +470,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Reject insecure MKL OCI downloader and expire chrono exception
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Security regression gate: never restore the vulnerable source
+          # automatically via a generic BLAS umbrella dependency.
+          for package in ocipkg intel-mkl-src blas-src; do
+            if grep -Fq "name = \"$package\"" Cargo.lock; then
+              echo "::error::unsafe retired MKL source $package is present in Cargo.lock"
+              exit 1
+            fi
+          done
+          if grep -Eq '^blas-mkl[[:space:]]*=' scirust-core/Cargo.toml; then
+            echo "::error::retired blas-mkl feature reintroduced without security review"
+            exit 1
+          fi
+          if grep -Fq 'id = "RUSTSEC-2026-0543"' deny.toml && \
+             [[ "$(date -u +%F)" > "2027-02-17" ]]; then
+            echo "::error::chrono maintenance waiver expired (issue #1737)"
+            exit 1
+          fi
       - name: Audit default dependency graph
         uses: EmbarkStudios/cargo-deny-action@bb137d7af7e4fb67e5f82a49c4fce4fad40782fe # v2
         with:
@@ -519,14 +539,6 @@ jobs:
           rust-version: stable
           manifest-path: scirust-core/Cargo.toml
           arguments: --locked --no-default-features --features blas-openblas
-      - name: Audit MKL dependency graph
-        uses: EmbarkStudios/cargo-deny-action@bb137d7af7e4fb67e5f82a49c4fce4fad40782fe # v2
-        with:
-          command: check
-          rust-version: stable
-          manifest-path: scirust-core/Cargo.toml
-          arguments: --locked --no-default-features --features blas-mkl
-
   # Miri exercises the same memory-view/allocation regressions and pure
   # numeric suites as before, but in independent shards. The final `miri`
   # job preserves the historical required-check name and fails unless every
@@ -667,10 +679,12 @@ jobs:
           cat /tmp/fingerprint_rayon.txt
 
   # Real wgpu compute path, validated against the CPU oracle on a software
-  # Vulkan adapter (Mesa lavapipe) — no physical GPU required.
+  # Vulkan adapter (Mesa lavapipe) — no physical GPU required. Pin Ubuntu
+  # 24.04 only here: it has a qualified lavapipe ICD, unlike the recently
+  # updated floating ubuntu-latest image.
   gpu-wgpu:
     name: GPU (wgpu / lavapipe)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Install nightly toolchain
@@ -681,21 +695,86 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y mesa-vulkan-drivers vulkan-tools
+      - name: Pin and identify the Mesa lavapipe Vulkan ICD
+        shell: bash
+        run: |
+          set -euo pipefail
+          icd=""
+          for candidate in /usr/share/vulkan/icd.d/lvp_icd*.json /etc/vulkan/icd.d/lvp_icd*.json; do
+            if [ -s "$candidate" ]; then
+              icd="$candidate"
+              break
+            fi
+          done
+          if [ -z "$icd" ]; then
+            echo "::error::Mesa lavapipe Vulkan ICD not found; refusing GPU test skip"
+            find /usr/share/vulkan/icd.d /etc/vulkan/icd.d -maxdepth 1 \
+              -name '*.json' -type f -print 2>/dev/null || true
+            exit 2
+          fi
+          echo "LAVAPIPE_ICD=$icd"
+          echo "VK_ICD_FILENAMES=$icd" >> "$GITHUB_ENV"
+          echo "WGPU_BACKEND=vulkan" >> "$GITHUB_ENV"
+          echo "LIBGL_ALWAYS_SOFTWARE=1" >> "$GITHUB_ENV"
+          echo "SCIRUST_REQUIRE_WGPU=1" >> "$GITHUB_ENV"
+          dpkg-query -W mesa-vulkan-drivers libvulkan1 vulkan-tools
+          vulkaninfo --summary
       - name: Cache cargo
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-      # SCIRUST_REQUIRE_WGPU turns "no adapter -> skip" into "no adapter ->
-      # fail". Without it a driverless runner would report a green wgpu job
-      # having executed nothing at all.
-      - name: Test wgpu backend on lavapipe
-        env:
-          SCIRUST_REQUIRE_WGPU: "1"
-        run: cargo +nightly-2026-07-02 test -p scirust-gpu --features wgpu --locked
+      # SCIAGENT's WGPU test module acquires many independent software-Vulkan
+      # devices. Parallel execution can overload lavapipe/LLVM internally and
+      # result in a native SIGSEGV rather than a Rust assertion. Run the *full*
+      # suite serially, preserving every assertion and the required real WGPU
+      # device. Log adapter identities before each test for reproducible crash
+      # diagnosis; a missing adapter remains an error, never an implicit skip.
+      - name: Test wgpu backend on lavapipe (serial, all tests)
+        shell: bash
+        run: |
+          set -euo pipefail
+          RUST_TEST_THREADS=1 cargo +nightly-2026-07-02 test \
+            -p scirust-gpu --features wgpu --locked \
+            -- --test-threads=1 --nocapture
       # The same canonical plans, driven end to end through the public facade:
       # CanonicalProgram -> WgpuReferenceAdapter -> generated WGSL -> TensorND.
-      - name: Test the canonical WGPU pipeline on lavapipe
+      - name: Test the canonical WGPU pipeline on lavapipe (serial, all tests)
+        shell: bash
+        run: |
+          set -euo pipefail
+          RUST_TEST_THREADS=1 cargo +nightly-2026-07-02 test \
+            -p scirust --features tensor-canonical-wgpu --locked \
+            -- --test-threads=1 --nocapture
+
+  # Native linkage and numerical equivalence of the secure OpenBLAS
+  # replacement: cargo-deny alone cannot prove BLAS FFI symbols resolve.
+  core-openblas-system:
+    name: Native OpenBLAS FFI (system provider)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master
+        with:
+          toolchain: '1.89.0'
+      - name: Install distribution-provided OpenBLAS
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends libopenblas-dev pkg-config
+          pkg-config --modversion openblas
+          ldconfig -p | grep -F libopenblas.so
+      - name: Test native BLAS ABI and scalar numerical oracle
+        shell: bash
         env:
-          SCIRUST_REQUIRE_WGPU: "1"
-        run: cargo +nightly-2026-07-02 test -p scirust --features tensor-canonical-wgpu --locked
+          OPENBLAS_NUM_THREADS: '1'
+        run: |
+          set -euo pipefail
+          cargo +1.89.0 test --locked -p scirust-core \
+            --no-default-features --features blas-openblas-system \
+            matrix::backend::tests::system_openblas_native_ffi_matches_scalar_oracle -- --exact --nocapture
+          cargo +1.89.0 test --locked -p scirust-core \
+            --no-default-features --features blas-openblas-system \
+            matrix::backend::tests::test_sgemm_identity
 
   # The CUDA feature uses dynamic loading. Hosted runners have no CUDA runtime,
   # which makes them the right place to enforce the public no-device contract:

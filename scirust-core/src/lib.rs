@@ -52,6 +52,13 @@
 //! a maintenance contract — every new `Op` must be added to the duplicated
 //! backward match in `autodiff/parallel.rs`; see their module headers.
 
+// Explicitly retain OpenBLAS native link directives when the optional
+// backend is selected. A bare `blas` feature exposes the FFI API only;
+// `blas-openblas` is the supported bundled provider. The former MKL downloader
+// was retired after RUSTSEC-2026-0450 (tracked by issue #1734).
+#[cfg(feature = "blas-openblas")]
+use openblas_src as _;
+
 pub mod io;
 pub mod nn;
 // Local cache-aware SIMD tiling kernels. This module lives at

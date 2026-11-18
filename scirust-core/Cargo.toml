@@ -17,7 +17,7 @@ scirust-special = { path = "../scirust-special" }
 rand = "0.8"
 rand_distr = "0.4"
 blas = { version = "0.22", optional = true }
-blas-src = { version = "0.10", optional = true }
+openblas-src = { version = "0.10", optional = true }
 rayon = { version = "1.8", optional = true }
 matrixmultiply = "0.3.10"
 num-bigint = "0.4"
@@ -43,9 +43,14 @@ scirust-bench-schema = { path = "../scirust-bench-schema" }
 default = ["rayon"]
 portable-simd = ["scirust-simd/portable-simd"]
 transformer-inference = ["scirust-simd/transformer-inference"]
-blas = ["dep:blas", "dep:blas-src"]
-blas-openblas = ["blas", "blas-src/openblas"]
-blas-mkl = ["blas", "blas-src/intel-mkl"]
+# The BLAS API can be enabled without a vendor; link OpenBLAS explicitly.
+# Retired the insecure intel-mkl-src 0.8.1 -> ocipkg 0.2.9 downloader.
+# See issue #1734. Restore MKL only through a separately qualified safe source.
+blas = ["dep:blas"]
+blas-openblas = ["blas", "dep:openblas-src"]
+# Physical CI can link an installed, trusted OpenBLAS shared library rather
+# than downloading/building its source. No extra Cargo dependency is added.
+blas-openblas-system = ["blas-openblas", "openblas-src/system"]
 
 # Depends on representation_graph_quaternion, itself gated behind
 # portable-simd (scirust_simd::geometry::quaternion) -- without this,

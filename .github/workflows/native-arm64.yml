@@ -22,6 +22,8 @@ on:
       - "src/lib.rs"
       - "tests/**"
       - ".github/workflows/native-arm64.yml"
+      - "scripts/native_arm64_gpu_occupant.sh"
+      - "scripts/test_native_arm64_gpu_occupant.sh"
   push:
     branches: [master, main, develop]
     paths:
@@ -43,6 +45,8 @@ on:
       - "src/lib.rs"
       - "tests/**"
       - ".github/workflows/native-arm64.yml"
+      - "scripts/native_arm64_gpu_occupant.sh"
+      - "scripts/test_native_arm64_gpu_occupant.sh"
   workflow_dispatch:
 
 permissions:
@@ -53,6 +57,18 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  gpu-occupancy-policy:
+    name: ARM64 GPU occupancy provenance (CPU-only)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - name: Test fail-closed busy GPU service classification without CUDA
+        shell: bash
+        run: bash scripts/test_native_arm64_gpu_occupant.sh
+
   native-arm64:
     name: Native ARM64 (Jetson Thor)
     if: >
@@ -160,30 +176,10 @@ jobs:
             cgroup="$(cat "/proc/$pid/cgroup" 2>/dev/null || true)"
             echo "pid=$pid user=$proc_user ppid=$ppid name=$process_name cmdline=$cmdline cgroup=$cgroup"
 
-            known_managed=false
-            if [[ "$process_name" == "/root/scirust/target/release/examples/cuda_pretrain" ]] \
-              && [[ "$cmdline" == *"/root/scirust/target/release/examples/cuda_pretrain"* ]] \
-              && [[ "$proc_user" == "root" ]] \
-              && [[ "$ppid" == "1" ]] \
-              && [[ "$cgroup" == 0::/user.slice/user-0.slice/session-*.scope ]]; then
-              known_managed=true
-            elif [[ "$proc_user" == "remoteops" ]] \
-              && [[ "$ppid" == "1" ]] \
-              && [[ "$cgroup" == "0::/system.slice/memorithm-viggle-lan.service" ]] \
-              && [[ "$cmdline" == *"/srv/models/qwen-image-2.1-viggle-turbo/lan-server.py"* ]]; then
-              known_managed=true
-            elif [[ "$proc_user" == "memorithm-clm" ]] \
-              && [[ "$cgroup" == "0::/system.slice/memorithm-clm.service" ]] \
-              && [[ "$cmdline" == *"/srv/models/clm-v0.1-8b/"* ]] \
-              && [[ "$cmdline" == *"clm-serve"* ]]; then
-              known_managed=true
-            elif [[ "$proc_user" == "memorithm-clm" ]] \
-              && [[ "$cgroup" == "0::/system.slice/memorithm-clm-encoder.service" ]] \
-              && [[ "$process_name" == "VLLM::EngineCore" ]]; then
-              known_managed=true
-            fi
-
-            if [[ "$known_managed" != true ]]; then
+            # Only exact, known service identities may be deferred.
+            # Unknown occupants still fail closed; no CUDA launch is allowed.
+            if ! bash scripts/native_arm64_gpu_occupant.sh \
+              "$proc_user" "$ppid" "$cgroup" "$process_name" "$cmdline"; then
               managed_gpu_occupancy=false
             fi
           done <<< "$compute_apps"

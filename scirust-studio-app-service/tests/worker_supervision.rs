@@ -6,8 +6,10 @@
 //! exercised end to end, because those are exactly the behaviours that only
 //! exist once there is a second process to lose.
 //!
-//! The worker is located beside the test executable in Cargo's target
-//! directory. It is not a path dependency because it is a binary-only crate,
+//! The worker is built into Cargo's target profile directory. Some Cargo
+//! test executables live in nested build/output directories, so the integration
+//! tests locate that profile ancestor rather than assuming a fixed sibling.
+//! The worker is not a path dependency because it is a binary-only crate,
 //! so the gate command builds it first:
 //!
 //! ```text
@@ -28,22 +30,59 @@ const SPRING_MASS: &str =
 const SIR: &str = include_str!("../../docs/studio/tutorials/sir_epidemic.scirust.toml");
 const ROBERTSON: &str = include_str!("../../docs/studio/tutorials/robertson_stiff.scirust.toml");
 
-/// The compiled worker, beside this test executable.
+/// Find the worker in Cargo's profile root, not the test executable's
+/// immediate directory. Rust tooling can place tests under
+/// `target/debug/build/<crate>/<hash>/out` as well as `target/debug/deps`.
+fn find_worker_in_profile(test_exe: &std::path::Path, worker_name: &str) -> Option<PathBuf> {
+    test_exe
+        .ancestors()
+        .filter(|dir| {
+            matches!(
+                dir.file_name().and_then(|value| value.to_str()),
+                Some("debug" | "release")
+            )
+        })
+        .map(|profile_dir| profile_dir.join(worker_name))
+        .find(|candidate| candidate.is_file())
+}
+
+/// The real worker must have been built as a binary on the same target profile.
 fn worker_path() -> PathBuf {
-    let mut dir = std::env::current_exe().expect("the test executable has a path");
-    dir.pop(); // the test binary's own name
-    if dir.ends_with("deps")
-    {
-        dir.pop();
-    }
-    let path = dir.join(WorkerLaunchConfig::executable_name());
-    assert!(
-        path.is_file(),
-        "the worker binary is missing at {}.\n\
-         Build it first:  cargo build -p scirust-studio-worker",
-        path.display()
+    let exe = std::env::current_exe().expect("the test executable has a path");
+    find_worker_in_profile(&exe, WorkerLaunchConfig::executable_name()).unwrap_or_else(|| {
+        panic!(
+            "the worker binary is missing in a Cargo debug/release profile ancestor of {}.\n\
+             Build it first: cargo build -p scirust-studio-worker",
+            exe.display()
+        )
+    })
+}
+
+#[test]
+fn worker_resolution_handles_nested_cargo_test_locations() {
+    let root = tempfile::tempdir().unwrap();
+    let profile = root.path().join("target").join("debug");
+    std::fs::create_dir_all(&profile).unwrap();
+    let worker = profile.join(WorkerLaunchConfig::executable_name());
+    std::fs::write(&worker, b"test-only placeholder").unwrap();
+
+    let deps_test = profile.join("deps").join("worker_supervision-hash");
+    let build_test = profile
+        .join("build")
+        .join("scirust-studio-app-service")
+        .join("hash")
+        .join("out")
+        .join("worker_supervision-hash");
+
+    assert_eq!(
+        find_worker_in_profile(&deps_test, WorkerLaunchConfig::executable_name()),
+        Some(worker.clone())
     );
-    path
+    assert_eq!(
+        find_worker_in_profile(&build_test, WorkerLaunchConfig::executable_name()),
+        Some(worker)
+    );
+    assert_eq!(find_worker_in_profile(&build_test, "not-a-worker"), None);
 }
 
 fn service_with_store() -> (tempfile::TempDir, StudioAppService) {
