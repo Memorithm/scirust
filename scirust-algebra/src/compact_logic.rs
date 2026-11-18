@@ -22,6 +22,8 @@ pub enum CompactLogicError {
     InvalidSymbol,
     /// A four-bit payload was not in 0..=15.
     InvalidNibble,
+    /// Erasure repair requires exactly one externally identified lost lane.
+    InvalidErasureMask,
     /// Selection batches support at most 64 codewords and require enough output.
     InvalidBatch,
     /// A two-bit error was detected; more errors may escape detection.
@@ -112,6 +114,54 @@ impl QuadBitplanes {
             low: (self.low & rhs.low) ^ high_product,
             high: cross ^ high_product,
         }
+    }
+
+    /// Two-bit parity for this 64-symbol block (a GF(4) field sum).
+    ///
+    /// Store the returned two bits separately to detect any one symbol
+    /// substitution. Multiple substitutions can cancel; the parity does not
+    /// identify the corrupted lane or detect all multi-symbol faults.
+    #[must_use]
+    pub fn gf4_parity(self) -> u8 {
+        self.gf4_sum_selected(u64::MAX)
+    }
+
+    /// Check the separately stored two-bit block parity.
+    ///
+    /// A mismatched parity means reject the block unless a separate mechanism
+    /// identifies a known erasure. A match is not an integrity guarantee.
+    pub fn gf4_parity_matches(self, expected: u8) -> Result<bool, CompactLogicError> {
+        if expected > 3 {
+            return Err(CompactLogicError::InvalidSymbol);
+        }
+        Ok(self.gf4_parity() == expected)
+    }
+
+    /// Recover one externally *located* missing symbol from a saved GF(4) parity.
+    ///
+    /// The erasure mask must have exactly one bit. Its location must come from
+    /// an independent fault indicator: parity mismatch alone cannot locate it.
+    /// Other lanes must be correct, and the saved parity must be trustworthy.
+    /// This requires only two extra parity bits per block of 64 symbols (128
+    /// data bits), provided the location of the erasure is already known.
+    ///
+    /// No input state is mutated on failure. This does not correct unknown
+    /// arbitrary bit errors or authenticate adversarially modified data.
+    pub fn recover_known_erasure(
+        self,
+        saved_parity: u8,
+        erasure_mask: u64,
+    ) -> Result<Self, CompactLogicError> {
+        if saved_parity > 3 {
+            return Err(CompactLogicError::InvalidSymbol);
+        }
+        if erasure_mask.count_ones() != 1 {
+            return Err(CompactLogicError::InvalidErasureMask);
+        }
+        let recovered = saved_parity ^ self.gf4_sum_selected(!erasure_mask);
+        let mut restored = self;
+        restored.set(erasure_mask.trailing_zeros(), recovered)?;
+        Ok(restored)
     }
 
     /// XOR-sum of admitted GF(4) values, encoded in two bits.
@@ -331,6 +381,57 @@ mod tests {
             }
         }
         assert_eq!(source.gf4_sum_selected(mask), expected_sum);
+    }
+
+    #[test]
+    fn gf4_two_bit_parity_detects_one_corruption_and_recovers_known_erasure() {
+        let mut original = QuadBitplanes::default();
+        for lane in 0..64 {
+            // A reproducible mixed-symbol block, including every GF(4) symbol.
+            original.set(lane, ((lane * 7 + lane / 3) % 4) as u8).unwrap();
+        }
+        let saved_parity = original.gf4_parity();
+        assert_eq!(original.gf4_parity_matches(saved_parity), Ok(true));
+        assert_eq!(original.gf4_parity_matches(4), Err(CompactLogicError::InvalidSymbol));
+
+        for lane in 0..64 {
+            let original_symbol = original.get(lane).unwrap();
+            for replacement in 0..4u8 {
+                if replacement == original_symbol {
+                    continue;
+                }
+                let mut damaged = original;
+                damaged.set(lane, replacement).unwrap();
+                assert_eq!(damaged.gf4_parity_matches(saved_parity), Ok(false));
+                let repaired = damaged.recover_known_erasure(saved_parity, 1u64 << lane).unwrap();
+                assert_eq!(repaired, original);
+                assert_eq!(repaired.gf4_parity_matches(saved_parity), Ok(true));
+            }
+        }
+
+        assert_eq!(
+            original.recover_known_erasure(saved_parity, 0),
+            Err(CompactLogicError::InvalidErasureMask)
+        );
+        assert_eq!(
+            original.recover_known_erasure(saved_parity, 0b11),
+            Err(CompactLogicError::InvalidErasureMask)
+        );
+        assert_eq!(
+            original.recover_known_erasure(4, 1),
+            Err(CompactLogicError::InvalidSymbol)
+        );
+    }
+
+    #[test]
+    fn gf4_parity_documents_multi_error_cancellation() {
+        let baseline = QuadBitplanes::default();
+        let mut damaged = baseline;
+        damaged.set(0, 1).unwrap();
+        damaged.set(1, 1).unwrap();
+        // Two identical substitutions cancel in characteristic two.
+        assert_ne!(damaged, baseline);
+        assert!(damaged.gf4_parity_matches(baseline.gf4_parity()).unwrap());
     }
 
     #[test]
