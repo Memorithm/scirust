@@ -219,7 +219,7 @@ mod tests {
         } else {
             let mut index = 0usize;
             for p in 1..position {
-                if !(p as u16).is_power_of_two() {
+                if !p.is_power_of_two() {
                     index += 1;
                 }
             }
