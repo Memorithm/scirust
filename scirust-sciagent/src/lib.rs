@@ -1,6 +1,8 @@
 pub mod agentic;
 pub mod artifact_provenance;
 pub mod attention;
+/// Explicit host-only experimental real-model FLAT RAE-9 numerical bridge.
+pub mod rae9_research;
 pub mod block;
 pub mod bpe;
 pub mod bpe_dispatch;
