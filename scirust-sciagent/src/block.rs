@@ -49,6 +49,22 @@ impl SciAgentBlock {
         x.add(b)
     }
 
+    /// Inference-only numerical hybrid head at one explicitly selected layer.
+    pub fn forward_research_rae9<'t>(
+        &mut self,
+        tape: &'t Tape,
+        x: Var<'t>,
+        seq_len: usize,
+        bridge: &crate::rae9_research::Rae9ResearchBridge,
+    ) -> Result<Var<'t>, String> {
+        let a = self.rms_attn.forward(tape, x);
+        let a = self.attn.forward_research_rae9(tape, a, seq_len, bridge)?;
+        let x = x.add(a);
+        let b = self.rms_ffn.forward(tape, x);
+        let b = self.ffn.forward(tape, b);
+        Ok(x.add(b))
+    }
+
     pub fn infer_step<'t>(&mut self, tape: &'t Tape, x: Var<'t>, pos: usize) -> Var<'t> {
         let a = self.rms_attn.forward(tape, x);
         let a = self.attn.infer_step(tape, a, pos);

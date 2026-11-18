@@ -21,11 +21,45 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  m53-software-contract:
+    name: M53 pinned-revision compile + lint (hosted)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CARGO_INCREMENTAL: 0
+      RUSTFLAGS: "-D warnings"
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: nightly-2026-07-02
+          components: rustfmt
+      - name: Verify exact M53 source and compile without GPU
+        shell: bash
+        run: |
+          set -euo pipefail
+          pin=c74a3806f8cfe621671694692fc14adfe08116f0
+          grep -F "rev = \"$pin\"" scirust-gpu/Cargo.toml >/dev/null
+          grep -F "#$pin" Cargo.lock >/dev/null
+          rustup run nightly-2026-07-02 rustfmt --check --edition 2021 \
+            scirust-gpu/src/flat_m11.rs \
+            scirust-gpu/src/chain.rs \
+            scirust-gpu/examples/flat_m53_prefill_vec4_candidate.rs
+          rustup run nightly-2026-07-02 cargo check --locked \
+            -p scirust-gpu --features flat-attention \
+            --example flat_m53_prefill_vec4_candidate
+
   asymmetric-vec4-thor:
     name: Product attention portable vs vec4 on physical Thor
-    if: >
-      github.event_name != 'pull_request' ||
-      github.event.pull_request.head.repo.full_name == github.repository
+    needs: m53-software-contract
+    # Never run PR source on privileged Thor. Only an explicit control-plane
+    # dispatch against trusted master may request independent GPU evidence.
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/master'
     runs-on: [self-hosted, Linux, ARM64, scirust-arm64, jetson-thor, internal]
     timeout-minutes: 360
     defaults:

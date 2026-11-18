@@ -28,22 +28,56 @@ const SPRING_MASS: &str =
 const SIR: &str = include_str!("../../docs/studio/tutorials/sir_epidemic.scirust.toml");
 const ROBERTSON: &str = include_str!("../../docs/studio/tutorials/robertson_stiff.scirust.toml");
 
-/// The compiled worker, beside this test executable.
+/// Find the worker in Cargo's profile directory. The test harness may be
+/// placed in `target/debug/deps` or, on some Cargo versions, in a nested
+/// `target/debug/build/<package>/<hash>/out` directory. In either case the
+/// worker built by Cargo is in the enclosing `debug` or `release` directory.
+fn worker_from_test_exe(exe: &std::path::Path) -> Option<PathBuf> {
+    let name = WorkerLaunchConfig::executable_name();
+    exe.parent()?
+        .ancestors()
+        .filter(|dir| {
+            dir.file_name()
+                .is_some_and(|part| part == "debug" || part == "release")
+        })
+        .map(|dir| dir.join(name))
+        .find(|candidate| candidate.is_file())
+}
+
+/// The real compiled worker, never a fabricated stub or silently skipped test.
 fn worker_path() -> PathBuf {
-    let mut dir = std::env::current_exe().expect("the test executable has a path");
-    dir.pop(); // the test binary's own name
-    if dir.ends_with("deps")
+    let exe = std::env::current_exe().expect("the test executable has a path");
+    worker_from_test_exe(&exe).unwrap_or_else(|| {
+        panic!(
+            "worker binary is missing in the Cargo profile directory for {}.\n\
+             Build it first: cargo build -p scirust-studio-worker",
+            exe.display()
+        )
+    })
+}
+
+#[test]
+fn resolves_compiled_worker_from_both_cargo_test_layouts() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = temp.path().join("target").join("debug");
+    std::fs::create_dir_all(&profile).unwrap();
+    let worker = profile.join(WorkerLaunchConfig::executable_name());
+    std::fs::write(&worker, b"test-path-placeholder").unwrap();
+
+    let deps = profile.join("deps").join("worker_supervision-hash");
+    let nested = profile
+        .join("build")
+        .join("scirust-studio-app-service")
+        .join("hash")
+        .join("out")
+        .join("worker_supervision-hash");
+    for exe in [&deps, &nested]
     {
-        dir.pop();
+        assert_eq!(worker_from_test_exe(exe), Some(worker.clone()));
     }
-    let path = dir.join(WorkerLaunchConfig::executable_name());
-    assert!(
-        path.is_file(),
-        "the worker binary is missing at {}.\n\
-         Build it first:  cargo build -p scirust-studio-worker",
-        path.display()
-    );
-    path
+
+    std::fs::remove_file(&worker).unwrap();
+    assert_eq!(worker_from_test_exe(&nested), None);
 }
 
 fn service_with_store() -> (tempfile::TempDir, StudioAppService) {

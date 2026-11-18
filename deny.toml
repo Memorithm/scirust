@@ -27,27 +27,14 @@ ignore = [
     # undertaken for that reason would be wasted churn. The blocker is the
     # Metal backend of the GPU stack, not the linear-algebra stack.
     { id = "RUSTSEC-2024-0436", reason = "paste unmaintained; reaches the graph via wgpu-hal -> metal, which depends on it in every published version — upgrading nalgebra/simba does not remove it" },
-    # Unmaintained notice, not a vulnerability — no CVSS score is assigned.
-    # Pulled in only by the optional Intel MKL source package, four levels down:
-    #
-    #   intel-mkl-src -> ocipkg -> oci-spec -> getset -> proc-macro-error2
-    #
-    # `getset` is the crate that would have to move; the advisory lists no safe
-    # upgrade.
-    { id = "RUSTSEC-2026-0173", reason = "proc-macro-error2 unmaintained; reaches the graph only via intel-mkl-src -> ocipkg -> oci-spec -> getset, no safe upgrade available" },
-    # Vulnerability in the bundled root store (emSign ECC Root CA - G3), fixed in
-    # webpki-roots 1.0.10. The workspace and every network feature already use
-    # webpki-roots 1.0.10 (directly or via ureq 3). The only remaining copy is the
-    # 0.26.11 compatibility shim, reached solely through the MKL build script:
-    #
-    #   intel-mkl-src (build-dependency) -> ocipkg 0.2.9 -> ureq 2.12.1 -> webpki-roots 0.26.11
-    #
-    # ureq 2.12.1 is the last 2.x release and pins webpki-roots ^0.26, and
-    # 0.26.11 is the last 0.26 release, so no lockfile change can clear it. It
-    # is only used when the optional `blas-mkl` feature downloads MKL at build
-    # time; it is not linked into any SciRust library or binary. Remove this
-    # entry once ocipkg/intel-mkl-src move off ureq 2.
-    { id = "RUSTSEC-2026-0381", reason = "webpki-roots 0.26.11 shim reaches the graph only via the intel-mkl-src build script (ocipkg -> ureq 2, last 2.x pins ^0.26); all other graphs use webpki-roots 1.0.10" },
+    # Former optional MKL downloader (`intel-mkl-src` -> `ocipkg`) removed from
+    # this lockfile; its stale 0173/0381 exceptions are no longer warranted.
+    # INFO/unmaintained only, NOT an established exploitable vulnerability.
+    # Issued 2026-11-17, ALL chrono versions affected and no patched release.
+    # Tracking migration of direct and transitive consumers to jiff/time:
+    # https://github.com/Memorithm/scirust/issues/1737
+    # Temporary scoped waiver expires 2027-02-17; CI checks the deadline.
+    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained INFO advisory, no patched release; tracked migration Memorithm/scirust#1737; expires 2027-02-17" },
 ]
 
 [licenses]
@@ -69,21 +56,9 @@ allow = [
     "PolyForm-Noncommercial-1.0.0",
 ]
 confidence-threshold = 0.8
-exceptions = [
-    { allow = ["LicenseRef-Intel-Simplified-Software-License"], crate = "intel-mkl-src@0.8.1" },
-]
+exceptions = []
 # Workspace members are unpublished; skip license checks for them.
 private = { ignore = true }
-
-# intel-mkl-src ships its license in a non-SPDX license-file field. Pin the
-# reviewed Intel Simplified Software License text so an upstream change fails
-# closed instead of silently inheriting this clarification.
-[[licenses.clarify]]
-crate = "intel-mkl-src@0.8.1"
-expression = "LicenseRef-Intel-Simplified-Software-License"
-license-files = [
-    { path = "License.txt", hash = 0x3bf8c2d0 },
-]
 
 [bans]
 multiple-versions = "allow"
