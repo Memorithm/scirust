@@ -48,6 +48,13 @@ ignore = [
     # time; it is not linked into any SciRust library or binary. Remove this
     # entry once ocipkg/intel-mkl-src move off ureq 2.
     { id = "RUSTSEC-2026-0381", reason = "webpki-roots 0.26.11 shim reaches the graph only via the intel-mkl-src build script (ocipkg -> ureq 2, last 2.x pins ^0.26); all other graphs use webpki-roots 1.0.10" },
+    # RUSTSEC-2026-0543 (2026-11-17): chrono is declared unmaintained,
+    # informational notice without a specific exploitable vulnerability.
+    # Temporary, advisory-specific exception tracked by SciRust issue #1737.
+    # Required migration off chrono is due 2027-02-17. The CI deny job has
+    # a UTC expiry guard and blocks once that date passes if this exception
+    # remains. Do not extend without a separate audited decision.
+    { id = "RUSTSEC-2026-0543", reason = "temporary informational unmaintained chrono advisory; tracked by issue #1737, expires 2027-02-17 with CI guard; migrate time APIs before deadline" },
 ]
 
 [licenses]
