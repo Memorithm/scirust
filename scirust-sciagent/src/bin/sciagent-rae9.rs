@@ -21,6 +21,10 @@ struct Args {
     head: usize,
     #[arg(long, default_value_t = 8)]
     page_size: usize,
+    /// Independent absolute error cap vs the native SciAgent head output.
+    /// Exceeding it retains dense attention; this experiment then fails closed.
+    #[arg(long)]
+    max_native_head_delta: Option<f64>,
     /// Comma-separated token IDs for a bounded, non-padded test sequence.
     #[arg(long, default_value = "4,18,61,7,19,24,9,42,3,80,121,5,8,22,31,63")]
     ids: String,
@@ -40,7 +44,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         return Err("RAE9_INVALID_TRAINED_MODEL_TOKEN_IDS".into());
     }
-    let bridge = Rae9ResearchBridge::new(args.bridge, args.page_size, args.head)?;
+    let mut bridge = Rae9ResearchBridge::new(args.bridge, args.page_size, args.head)?;
+    if let Some(budget) = args.max_native_head_delta
+    {
+        bridge = bridge.with_max_native_head_delta(budget)?;
+    }
     let mut model = SciAgentModel::new(&meta.config);
     load_checkpoint(&mut model, &args.checkpoint)?;
     let original = Tape::new();
@@ -96,6 +104,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "scored_keys": head.scored_keys,
             "logical_key_reduction": head.executed_keys < head.keys,
             "native_head_abs_difference": head.native_component_delta,
+            "native_head_budget": args.max_native_head_delta,
+            "native_budget_vetoed": head.native_budget_vetoed,
             "maximum_output_error": head.maximum_output_error,
             "actual_injected_heads": 1,
             "max_abs_logit_delta": max_logit_delta,

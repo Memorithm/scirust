@@ -71,3 +71,31 @@ l'absence de résultat ou d'injection est un échec de qualification.
   à une optimisation creuse.
 - Un gain de performances, l'apprentissage du routeur ou la comparaison
   de qualité doivent être mesurés séparément sur des requêtes réelles.
+
+## Garde hybride locale sur la sortie de tête
+
+L'admission d'une route `bounded_sparse` peut maintenant recevoir un **budget
+d'erreur absolue indépendant** de la borne calculée par FLAT. Ce budget est
+comparé à l'écart maximum composante par composante entre la sortie FLAT et
+l'attention dense réelle du modèle. À budget dépassé, SciAgent conserve
+l'attention native : l'injection ne se produit pas et l'observation
+`native_budget_vetoed=true` le distingue d'un repli décidé par FLAT.
+
+Activation explicite (choisir le budget en fonction d'une campagne
+d'étalonnage, et non comme seuil de qualité supposé) :
+
+```bash
+cargo run --locked -p scirust-sciagent --bin sciagent-rae9 -- \
+  --checkpoint scirust-sciagent/checkpoints/small-20M/final \
+  --bridge /chemin/rae9_real_model_bridge \
+  --head 1 --page-size 8 --max-native-head-delta 0.01
+```
+
+L'absence du paramètre conserve la route RAE-9 antérieure. Le budget doit
+être fini et positif ou nul ; NaN, infini et valeurs négatives sont
+refusés. Si le budget impose un repli dense, le CLI expérimental échoue
+explicitement avec `RAE9_MODEL_HEAD_NOT_INJECTED` au lieu de prétendre
+avoir expérimenté une injection. Cette tolérance ne garantit **ni**
+l'identité de l'argmax final **ni** une qualité de réponse préservée. Les
+observations numériques et les essais réels sur checkpoint doivent
+toujours être qualifiés séparément.

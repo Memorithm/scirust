@@ -17,6 +17,8 @@ pub struct Rae9ResearchBridge {
     binary: PathBuf,
     pub page_size: usize,
     pub query_head: usize,
+    // Independent native SciAgent absolute head-output budget; opt-in.
+    max_native_head_delta: Option<f64>,
     observations: Mutex<Vec<Rae9HeadEvidence>>,
 }
 
@@ -35,6 +37,8 @@ pub struct Rae9HeadEvidence {
     pub scored_keys: usize,
     pub maximum_output_error: f64,
     pub native_component_delta: f64,
+    /// True if an opt-in local parity budget rejected a sparse FLAT output.
+    pub native_budget_vetoed: bool,
     pub injected: bool,
 }
 
@@ -49,8 +53,22 @@ impl Rae9ResearchBridge {
             binary,
             page_size,
             query_head,
+            max_native_head_delta: None,
             observations: Mutex::new(Vec::new()),
         })
+    }
+
+    /// Require an independent absolute error budget against the real, dense
+    /// SciAgent head. A bounded sparse output beyond this budget is rejected
+    /// in favour of the unchanged differentiable dense attention result.
+    /// This guards numerical drift; it does not establish task quality.
+    pub fn with_max_native_head_delta(mut self, budget: f64) -> Result<Self, String> {
+        if !budget.is_finite() || budget < 0.0
+        {
+            return Err("RAE9_INVALID_NATIVE_ERROR_BUDGET".into());
+        }
+        self.max_native_head_delta = Some(budget);
+        Ok(self)
     }
 
     /// Read non-secret numerical execution evidence for the latest experiment.
@@ -161,12 +179,15 @@ impl Rae9ResearchBridge {
                 evidence.maximum_output_error
             ));
         }
-        let admitted = evidence.route == "bounded_sparse";
-        if !admitted && !evidence.route.starts_with("dense_")
+        let sparse_route = evidence.route == "bounded_sparse";
+        if !sparse_route && !evidence.route.starts_with("dense_")
         {
             return Err("RAE9_UNKNOWN_RESULT_ROUTE".into());
         }
+        let (admitted, vetoed) =
+            native_budget_admission(&evidence.route, difference, self.max_native_head_delta);
         evidence.native_component_delta = difference;
+        evidence.native_budget_vetoed = vetoed;
         evidence.injected = admitted;
         self.observations
             .lock()
@@ -174,6 +195,14 @@ impl Rae9ResearchBridge {
             .push(evidence.clone());
         Ok((admitted.then_some(output), evidence))
     }
+}
+
+// Pure admission policy, exercised independently of the external executable.
+// The source route remains in the evidence even after a local veto.
+fn native_budget_admission(route: &str, difference: f64, budget: Option<f64>) -> (bool, bool) {
+    let sparse = route == "bounded_sparse";
+    let vetoed = sparse && budget.is_some_and(|limit| difference > limit);
+    (sparse && !vetoed, vetoed)
 }
 
 struct Capture {
@@ -305,6 +334,7 @@ fn parse_result(text: &str, width: usize) -> Result<(Rae9HeadEvidence, Vec<f32>)
                 scored_keys: size("scored_keys")?,
                 maximum_output_error: bound,
                 native_component_delta: 0.0,
+                native_budget_vetoed: false,
                 injected: false,
             });
         }
@@ -346,6 +376,54 @@ mod tests {
         assert!(parse_result(
             "RAE9_RESULT route=bounded_sparse keys=3 executed_keys=2 scored_keys=2 max_error_bound=NaN\nRAE9_OUTPUT 0\n", 1
         ).is_err());
+    }
+    #[test]
+    fn sparse_native_budget_preserves_fallback_and_accepts_boundary() {
+        assert_eq!(
+            native_budget_admission("bounded_sparse", 0.01, None),
+            (true, false)
+        );
+        assert_eq!(
+            native_budget_admission("bounded_sparse", 0.01, Some(0.01)),
+            (true, false)
+        );
+        assert_eq!(
+            native_budget_admission("bounded_sparse", 0.011, Some(0.01)),
+            (false, true)
+        );
+        assert_eq!(
+            native_budget_admission("dense_full", 0.0, Some(0.0)),
+            (false, false)
+        );
+        assert_eq!(
+            native_budget_admission("dense_full", 0.5, Some(0.01)),
+            (false, false)
+        );
+        let executable = std::env::current_exe().unwrap();
+        assert!(
+            Rae9ResearchBridge::new(executable.clone(), 8, 0)
+                .unwrap()
+                .with_max_native_head_delta(f64::NAN)
+                .is_err()
+        );
+        assert!(
+            Rae9ResearchBridge::new(executable.clone(), 8, 0)
+                .unwrap()
+                .with_max_native_head_delta(f64::INFINITY)
+                .is_err()
+        );
+        assert!(
+            Rae9ResearchBridge::new(executable.clone(), 8, 0)
+                .unwrap()
+                .with_max_native_head_delta(-0.0001)
+                .is_err()
+        );
+        assert!(
+            Rae9ResearchBridge::new(executable, 8, 0)
+                .unwrap()
+                .with_max_native_head_delta(0.0)
+                .is_ok()
+        );
     }
     #[test]
     fn private_capture_is_removed_after_use() {
