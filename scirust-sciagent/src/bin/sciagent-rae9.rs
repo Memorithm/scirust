@@ -41,7 +41,14 @@ struct Args {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let meta = read_meta(&args.checkpoint)?;
-    let input_mode = if args.prompt.is_some() { "bpe_prompt" } else { "token_ids" };
+    let input_mode = if args.prompt.is_some()
+    {
+        "bpe_prompt"
+    }
+    else
+    {
+        "token_ids"
+    };
     let ids: Vec<usize> = if let Some(prompt) = &args.prompt
     {
         if prompt.is_empty() || prompt.len() > 4096
