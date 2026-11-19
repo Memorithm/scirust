@@ -99,3 +99,40 @@ avoir expérimenté une injection. Cette tolérance ne garantit **ni**
 l'identité de l'argmax final **ni** une qualité de réponse préservée. Les
 observations numériques et les essais réels sur checkpoint doivent
 toujours être qualifiés séparément.
+
+## Relecture CPU du checkpoint réel — interface explicite et CI
+
+La CLI de recherche accepte désormais deux modes d'entrée, mutuellement
+exclusifs : \`--ids 4,18,...\` (ancien protocole, mode par défaut) ou
+\`--prompt 'pub fn f(x: u32) -> u32 {'\` (BPE intégré SciAgent, maximum 4 096
+octets en entrée, puis vérification des IDs et de la longueur du contexte).
+Le prompt et les vecteurs Q/K/V ne sont pas reproduits dans le JSON.
+
+Le comportement par défaut continue de **rejeter l'absence d'injection RAE**.
+Pour mesurer explicitement un vrai **repli dense**, on peut ajouter
+\`--allow-dense-fallback\`. Le résultat JSON distingue
+\`actual_injected_heads=0\`, \`dense_fallback_accepted=true\` et
+\`effective_route=native_dense_fallback\` du cas d'injection réelle. Un veto
+par budget natif est identifié séparément par
+\`effective_route=native_budget_fallback\`. En cas de repli, le flag
+\`logical_key_reduction\` reste \`false\`, même si la tentative FLAT a
+sélectionné moins de clés ; il serait trompeur d'attribuer au modèle une
+réduction qui n'a pas été utilisée. Les logits non finis et les divergences
+inattendues entre deux chemins denses sont rejetés.
+
+Le nouveau workflow hébergé
+\`.github/workflows/sciagent-trained-rae9.yml\` :
+- fige le consommateur SciRust au SHA d'exécution et FLAT-ATTENTION au commit
+  fusionné **\`83caa67849205724f177206dd8bf91774a946355\`** (PR #402) ;
+- compile et teste son exécutable Rust
+  \`flat-algebraic-attention/examples/rae9_real_model_bridge\` ;
+- charge le checkpoint suivi \`small-20M/final\`, passe un vrai prompt Rust
+  par BPE et exécute l'inférence complète avec la route FLAT ;
+- vérifie les métriques et les conditions de repli sans imposer un résultat
+  sparse préjugé.
+
+Les contrôles sont des **preuves CPU logicielles** sur un runner GitHub hébergé
+non privilégié. Ils ne contrôlent ni le Dell ni Thor. L'exécution physique,
+l'analyse des coûts de lecture/latence et toute qualification de service
+restent du ressort exclusif de \`Memorithm/RemoteOps\`. Ce protocole ne
+promet ni réduction de trafic physique ni amélioration de qualité.
