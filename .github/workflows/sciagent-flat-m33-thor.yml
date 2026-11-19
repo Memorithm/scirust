@@ -48,6 +48,9 @@ jobs:
           rustup run nightly-2026-07-02 cargo check --locked \
             -p scirust-sciagent --features flat-attention \
             --example flat_m33_thor_bench
+          rustup run nightly-2026-07-02 cargo test --locked \
+            -p scirust-sciagent --features flat-attention \
+            --example flat_m33_thor_bench
 
   m33-thor:
     name: FLAT M33 resident decode + KV benchmark
@@ -78,6 +81,7 @@ jobs:
       SCIAGENT_FLAT_M33_KV_HEADS: "2"
       SCIAGENT_FLAT_M33_D_FF: "1408"
       WGPU_BACKEND: vulkan
+      FLAT_EXPECTED_WGPU_ADAPTER: "NVIDIA"
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
@@ -285,7 +289,7 @@ jobs:
           echo "thor_idle_settle_seconds=$SCIRUST_THOR_IDLE_SETTLE_SECONDS"
           echo "sciagent_contamination_watch=continuous_1s"
 
-          rustup run nightly-2026-07-02 cargo test -p scirust-sciagent \
+          FLAT_REQUIRE_WGPU=1 rustup run nightly-2026-07-02 cargo test -p scirust-sciagent \
             --features flat-attention --test flat_m33_lifecycle --locked -- --nocapture
           if [[ -s "$contamination" ]]; then
             echo "::error::SciAgent training appeared during M33 lifecycle parity; qualification invalid"
@@ -293,7 +297,7 @@ jobs:
             exit 1
           fi
 
-          rustup run nightly-2026-07-02 cargo test -p scirust-sciagent \
+          FLAT_REQUIRE_WGPU=1 rustup run nightly-2026-07-02 cargo test -p scirust-sciagent \
             --features flat-attention --test flat_runtime_decode --locked -- --nocapture
           if [[ -s "$contamination" ]]; then
             echo "::error::SciAgent training appeared during M32/M15 parity; qualification invalid"

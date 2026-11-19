@@ -45,3 +45,22 @@ The harness emits `performance_claim=none`; measured values become a performance
 ## Sovereignty
 
 M33 remains Rust-native host code plus WGPU/WGSL. It introduces no project-authored C/C++, C ABI bridge, mandatory CUDA C++/`nvcc`, WMMA/WGMMA, CUTLASS, cuDNN or vendor SDK. The Thor workflow may inspect machine state, but FLAT's build and execution path does not depend on CUDA SDK components.
+
+## Adapter physique et intégrité des mesures — correction SciAgent #1733
+
+Les tests `flat_m33_lifecycle` et `flat_runtime_decode` restent facultatifs
+sur une machine de développement sans WGPU. Lorsqu'ils sont lancés par le job
+matériel **uniquement sur `workflow_dispatch` depuis `master`**, ils exigent
+`FLAT_REQUIRE_WGPU=1`. L'absence d'adaptateur fait alors échouer la preuve
+physique au lieu de constituer un faux succès. L'identité de l'adaptateur doit
+correspondre à l'identité de matériel attendue par le job et être journalisée.
+Le job logiciel GitHub hébergé vérifie le contrat et les tests de temps du
+benchmark sans revendiquer d'exécution GPU.
+
+Le benchmark refuse les paires où `total <= prefill` ou le nombre de pas
+d'inférence est nul, au lieu de créer un débit artificiel par clamp. Un
+vérificateur Python séparé s'assure que le pin Git FLAT du manifeste et du
+`Cargo.lock` correspond à un SHA candidat explicite, sans remplacer la
+qualification exacte sur RemoteOps. Aucun test hébergé ne prouve le débit
+ou l'identité matérielle réelle ; RemoteOps reste le seul plan de contrôle
+distant autorisé.
