@@ -181,6 +181,21 @@ jobs:
               && [[ "$cgroup" == "0::/system.slice/memorithm-clm-encoder.service" ]] \
               && [[ "$process_name" == "VLLM::EngineCore" ]]; then
               known_managed=true
+            # These two managed resident services were verified in the
+            # exact self-hosted CI 44331721883 GPU occupancy log. Do not
+            # treat them as GPU capacity available for another job.
+            elif [[ "$proc_user" == "remoteops" ]] \
+              && [[ "$ppid" == "1" ]] \
+              && [[ "$cgroup" == "0::/system.slice/checkupauto-character.service" ]] \
+              && [[ "$process_name" == "/srv/models/checkupauto-character/venv/bin/python" ]] \
+              && [[ "$cmdline" == *"/srv/models/checkupauto-character/app/worker.py"* ]]; then
+              known_managed=true
+            elif [[ "$proc_user" == "ollama" ]] \
+              && [[ "$cgroup" == "0::/system.slice/ollama.service" ]] \
+              && [[ "$process_name" == "/usr/local/lib/ollama/llama-server" ]] \
+              && [[ "$cmdline" == *"/usr/local/lib/ollama/llama-server --model "* ]] \
+              && [[ "$cmdline" == *" --offline "* ]]; then
+              known_managed=true
             fi
 
             if [[ "$known_managed" != true ]]; then

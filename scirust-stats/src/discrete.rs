@@ -1063,9 +1063,9 @@ impl DiscreteDistribution for PoissonBinomial {
             return 1.0;
         }
         let mut acc = 0.0;
-        for i in 0..=k as usize
+        for &mass in self.mass.iter().take(k as usize + 1)
         {
-            acc += self.mass[i];
+            acc += mass;
         }
         acc.min(1.0)
     }
@@ -1075,9 +1075,9 @@ impl DiscreteDistribution for PoissonBinomial {
             return 0.0;
         }
         let mut acc = 0.0;
-        for i in (k as usize + 1)..self.mass.len()
+        for &mass in self.mass.iter().skip(k as usize + 1)
         {
-            acc += self.mass[i];
+            acc += mass;
         }
         acc.min(1.0)
     }

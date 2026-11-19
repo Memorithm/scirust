@@ -26,9 +26,26 @@ fn flat_m33_cache_reset_replay_and_eos_are_deterministic() {
     let Some(resident) = ResidentModel::from_model(&model)
     else
     {
-        eprintln!("wgpu: no adapter, skipping FLAT M33 lifecycle parity");
+        assert_ne!(
+            std::env::var("FLAT_REQUIRE_WGPU").as_deref(),
+            Ok("1"),
+            "FLAT M33 qualification requires a WGPU adapter; refusing a skipped lifecycle test"
+        );
+        eprintln!("wgpu: no adapter; optional FLAT M33 lifecycle test skipped");
         return;
     };
+
+    if let Ok(required) = std::env::var("FLAT_EXPECTED_WGPU_ADAPTER")
+    {
+        assert!(
+            !required.is_empty() && resident.adapter_name().contains(&required),
+            "FLAT qualification selected WGPU adapter {:?}, expected a name containing {:?}",
+            resident.adapter_name(),
+            required
+        );
+    }
+
+    eprintln!("FLAT_M33_LIFECYCLE_ADAPTER={}", resident.adapter_name());
 
     let prompt = vec![3u32, 7, 1, 4];
     let replay_a = resident.generate_cached(&prompt, 6);
