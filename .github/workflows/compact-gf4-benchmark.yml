@@ -1,0 +1,48 @@
+name: Compact GF4 CPU reference benchmark
+
+on:
+  pull_request:
+    paths:
+      - 'scirust-algebra/src/compact_logic.rs'
+      - 'scirust-algebra/src/compact_logic/**'
+      - 'scirust-algebra/examples/compact_logic_bench.rs'
+      - '.github/workflows/compact-gf4-benchmark.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  packed-vs-scalar:
+    name: GF4 scalar vs bitplane (hosted x86_64; informational)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: '1.89.0'
+      - name: Record host and compiler identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "GF4_BENCH_SHA=$(git rev-parse HEAD)"
+          rustc +1.89.0 --version
+          grep -m 1 '^model name' /proc/cpuinfo || true
+          uname -m
+      - name: Qualify reference including exhaustive fault tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 180s cargo +1.89.0 test --locked -p scirust-algebra compact_logic
+      - name: Compare equal-work scalar and packed kernels
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Run on a GitHub-hosted runner only. This is an informational
+          # same-machine microbenchmark, not Dell/Thor physical qualification.
+          # Correctness checks precede timing; no performance ratio is gated.
+          nice -n 10 timeout 180s cargo +1.89.0 run --locked --release \
+            -p scirust-algebra --example compact_logic_bench

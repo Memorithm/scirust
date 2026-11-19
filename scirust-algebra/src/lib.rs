@@ -15,6 +15,9 @@ pub mod angular_momentum;
 /// Decomposition of real finite-group characters into irreducible multiplicities.
 #[rustfmt::skip]
 pub mod character_decomposition;
+/// Packed 2-bit quaternary lanes, GF(4) bitwise arithmetic, and optional SECDED.
+#[rustfmt::skip]
+pub mod compact_logic;
 /// Certification and inter-reduction helpers for bounded rewriting systems.
 #[rustfmt::skip]
 pub mod completion;

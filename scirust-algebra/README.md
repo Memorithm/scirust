@@ -66,3 +66,86 @@ let ss = SchreierSims::<3, 2, 8>::build(group).unwrap();
 assert_eq!(ss.order(), Some(6));
 assert!(ss.contains(&Permutation::new([0, 2, 1]).unwrap()));
 ```
+
+## Packed binary/quaternary reference (research)
+
+The `compact_logic` module adds a CPU-portable, allocation-free reference
+for **64 independently addressed 2-bit lanes in 16 bytes**, represented as
+two `u64` bitplanes. It provides exact lane get/set, mask-based equality,
+conditional replacement and selection, lane-wise GF(4) XOR/addition and
+multiplication (with `alpha² = alpha + 1`), and masked GF(4) parity.
+Four symbolic labels do **not** intrinsically imply GF(4) arithmetic:
+callers must opt in to the mathematical field interpretation.
+
+A *separate two-bit GF(4) block parity* is also available: compute one
+GF(4) sum over 64 packed symbols and retain the parity externally (130
+total bits per protected 128-bit block: 1.5625% storage overhead when
+amortized at this block size). It detects every single-symbol substitution.
+If an **independent detector already supplies the exact erased lane**,
+`recover_known_erasure` reconstructs that symbol without modifying any
+others. It cannot locate unknown errors and cannot reliably detect multiple
+faults (two equal substitutions can cancel). The parity must itself remain
+intact; no authentication or adversarial resistance is implied.
+
+For **unknown-location bit errors**, a second, full-block
+`compact_logic::secded128` path implements a systematic, shortened,
+extended-Hamming SECDED code over each 128-bit/64-symbol quaternary block:
+eight syndrome bits plus one overall parity bit. If these 9 bits are tightly
+packed externally, the theoretical overhead is **9/128 = 7.03125%**, versus
+100% for nibble-level SECDED. Using an aligned `u16` tag per block in memory
+will cost more than 9 bits; the caller must account for its actual layout.
+The block decoder corrects any one flipped bit of the 137-bit codeword,
+detects any two, rejects malformed tags, and can selectively admit up to 64
+independently protected blocks with immutable rejected/unselected output
+slots. For 3+ flips, miscorrection/non-detection is possible. No ML or
+cryptographic integrity benefit is claimed without application-level tests.
+
+A separately opt-in, extended Hamming **SECDED (8,4)** path encodes one
+four-bit payload into one byte, correcting one bit error and detecting
+all two-bit errors. Its batch admission helper takes an explicit
+64-lane mask, never writes unselected or rejected output entries, and
+reports accepted, corrected and rejected lane masks. This redundancy
+cost is **8 bits per 4 payload bits**, and is not hidden inside the dense
+2-bit state representation. Three or more bit flips may be miscorrected
+or undetected. No adversarial integrity, authenticated storage,
+biological fidelity, quantum capability or numerical speedup is claimed.
+
+Example (a 64-lane block is a caller-owned value):
+
+```rust
+use scirust_algebra::compact_logic::{
+    QuadBitplanes, DecodedNibble, secded_encode, secded_decode,
+};
+
+let mut state = QuadBitplanes::default();
+state.set(7, 3).unwrap();
+let active = state.matches(3).unwrap();
+assert_eq!(active, 1 << 7);
+assert_eq!(state.select(active).get(7), Ok(3));
+
+let encoded = secded_encode(0b1011).unwrap();
+assert_eq!(
+    secded_decode(encoded ^ 1),
+    Ok(DecodedNibble::Corrected {
+        value: 0b1011,
+        bit_position: 1,
+    })
+);
+```
+
+Physical microbenchmark with independent per-lane GF(4) truth-table oracle:
+
+```bash
+cargo run -p scirust-algebra --locked --release --example compact_logic_bench
+```
+
+The benchmark separates input preparation from kernel execution, verifies every
+lane before timing and compares a byte-per-symbol scalar baseline with two
+packed 64-bit planes. The reported ratio is specific to that executable,
+host, compiler and hot-cache workload, not a full inference acceleration.
+
+Source qualification: `cargo test -p scirust-algebra --locked compact_logic`.
+A future SIMD implementation or integration into V888/SML/FLAT must be
+tested against this scalar reference on the exact consumer workload,
+including end-to-end memory traffic and runtime cost. No implicit model
+behavior or feature is changed by adding this isolated module.

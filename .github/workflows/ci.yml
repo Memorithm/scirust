@@ -471,20 +471,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - name: Enforce expiry of scoped chrono maintenance waiver
+      # RUSTSEC-2026-0543 is an informational unmaintained chrono notice, not
+      # a documented exploitable vulnerability. Issue #1737 requires migration
+      # by 2027-02-17; fail closed if its temporary waiver survives that date.
+      # Other advisories remain fatal under cargo-deny.
+      - name: Expire the narrowly scoped chrono maintenance exception
         shell: bash
         run: |
-          python3 - <<'PY'
-          from datetime import date, datetime, timezone
-          from pathlib import Path
-          content = Path('deny.toml').read_text(encoding='utf-8')
-          if 'RUSTSEC-2026-0543' in content:
-              assert 'Memorithm/scirust#1737' in content
-              assert datetime.now(timezone.utc).date() < date(2027, 2, 17), (
-                  'chrono advisory waiver expired: migrate per SciRust issue #1737'
-              )
-          print('CHRONO_ADVISORY_WAIVER_EXPIRY_GUARD=PASS')
-          PY
+          set -euo pipefail
+          if grep -Fq 'id = "RUSTSEC-2026-0543"' deny.toml && \
+             [[ "$(date -u +%F)" > "2027-02-17" ]]; then
+            echo "::error::chrono waiver expired; migrate chrono and remove RUSTSEC-2026-0543 from deny.toml (issue #1737)"
+            exit 1
+          fi
       - name: Audit default dependency graph
         uses: EmbarkStudios/cargo-deny-action@bb137d7af7e4fb67e5f82a49c4fce4fad40782fe # v2
         with:
