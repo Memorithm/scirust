@@ -1,0 +1,123 @@
+name: SciAgent trained-checkpoint FLAT RAE-9 CPU replay
+
+on:
+  pull_request:
+    paths:
+      - "scirust-sciagent/src/rae9_research.rs"
+      - "scirust-sciagent/src/bin/sciagent-rae9.rs"
+      - "scirust-sciagent/src/attention.rs"
+      - "scirust-sciagent/src/block.rs"
+      - "scirust-sciagent/src/model.rs"
+      - "scirust-sciagent/checkpoints/small-20M/final/**"
+      - ".github/workflows/sciagent-trained-rae9.yml"
+  push:
+    branches: [master]
+    paths:
+      - "scirust-sciagent/src/rae9_research.rs"
+      - "scirust-sciagent/src/bin/sciagent-rae9.rs"
+      - "scirust-sciagent/src/attention.rs"
+      - "scirust-sciagent/src/block.rs"
+      - "scirust-sciagent/src/model.rs"
+      - "scirust-sciagent/checkpoints/small-20M/final/**"
+      - ".github/workflows/sciagent-trained-rae9.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  trained-sciagent-rae9:
+    name: Trained SciAgent + exact FLAT RAE-9 CPU software replay
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      FLAT_RAE9_SHA: "83caa67849205724f177206dd8bf91774a946355"
+    steps:
+      - name: Checkout SciRust exact SHA (unprivileged hosted runner)
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - name: Checkout merged, exact-SHA FLAT RAE-9 executable source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          repository: Memorithm/FLAT-ATTENTION
+          ref: 83caa67849205724f177206dd8bf91774a946355
+          path: .ci-flat-rae9
+          persist-credentials: false
+      - name: Pin Rust 1.89 (CPU only)
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: 1.89.0
+      - name: Verify both immutable source revisions
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C .ci-flat-rae9 rev-parse HEAD)" = "$FLAT_RAE9_SHA"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA" || {
+            echo "::error::SciRust checkout does not match the workflow SHA"
+            exit 1
+          }
+          sha256sum scirust-sciagent/checkpoints/small-20M/final/model.safetensors
+      - name: Compile and verify pinned FLAT RAE-9 CPU executable
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked --release --manifest-path .ci-flat-rae9/Cargo.toml \
+            -p flat-algebraic-attention --example rae9_real_model_bridge
+          cargo build --locked --release --manifest-path .ci-flat-rae9/Cargo.toml \
+            -p flat-algebraic-attention --example rae9_real_model_bridge
+          test -x .ci-flat-rae9/target/release/examples/rae9_real_model_bridge
+      - name: Exercise native Rust tokenizer and full trained SciAgent model
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run --locked -p scirust-sciagent --bin sciagent-rae9 -- \
+            --checkpoint scirust-sciagent/checkpoints/small-20M/final \
+            --bridge "$PWD/.ci-flat-rae9/target/release/examples/rae9_real_model_bridge" \
+            --head 1 --page-size 8 \
+            --prompt 'pub fn f(x: u32) -> u32 {' \
+            --allow-dense-fallback \
+            | tee "$RUNNER_TEMP/sciagent-rae9-model.jsonl"
+      - name: Check observed route, numerical bounds and absence of false sparse claims
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "$RUNNER_TEMP/sciagent-rae9-model.jsonl" <<'PY'
+          import json
+          import math
+          import pathlib
+          import sys
+
+          prefix = "RAE9_SCIAGENT_MODEL_RESULT "
+          lines = pathlib.Path(sys.argv[1]).read_text().splitlines()
+          results = [json.loads(line[len(prefix):]) for line in lines if line.startswith(prefix)]
+          assert len(results) == 1, f"Expected one model result, got {len(results)}"
+          r = results[0]
+          assert r["model"] == "sciagent"
+          assert r["input_mode"] == "bpe_prompt"
+          assert r["source_query_heads"] == 4 and r["source_kv_heads"] == 2
+          assert r["context_tokens"] >= 2
+          assert r["original_keys"] == r["context_tokens"]
+          assert r["actual_injected_heads"] in (0, 1)
+          assert r["physical_bandwidth_measured"] is False
+          assert r["production_wgpu_backend_changed"] is False
+          assert r["training_semantics_changed"] is False
+          for name in ("max_abs_logit_delta", "native_head_abs_difference", "maximum_output_error"):
+              assert math.isfinite(r[name]) and r[name] >= 0, name
+          if r["actual_injected_heads"] == 0:
+              assert r["dense_fallback_accepted"] is True
+              assert r["effective_route"] in ("native_dense_fallback", "native_budget_fallback")
+              assert r["logical_key_reduction"] is False
+              assert r["max_abs_logit_delta"] <= 0.001
+              assert r["reference_argmax"] == r["candidate_argmax"]
+          else:
+              assert r["route"] == "bounded_sparse"
+              assert r["effective_route"] == "bounded_sparse"
+              assert r["native_head_abs_difference"] <= r["maximum_output_error"] + 0.001
+              assert r["dense_fallback_accepted"] is False
+              assert r["logical_key_reduction"] == (r["executed_keys"] < r["original_keys"])
+          print("TRAINED_SCIAGENT_RAE9_CPU_GATE=PASS")
+          print("effective_route=", r["effective_route"])
+          print("actual_injected_heads=", r["actual_injected_heads"])
+          print("performance_claim=none; physical_gpu_claim=none")
+          PY
